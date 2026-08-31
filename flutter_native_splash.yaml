@@ -1,0 +1,30 @@
+# Native splash screen configuration (flutter_native_splash).
+#
+# Draws a plain brand-colored splash at process launch — before the Flutter
+# engine boots — so users no longer see a blank/gray frame or the in-app
+# spinner. Deliberately icon-less: the center image is a transparent PNG so no
+# logo shows (including in Android 12's SplashScreen icon slot); only the solid
+# background color is painted. The colors match the app's scaffold
+# (see app_theme.dart), so the splash flows seamlessly into the first screen.
+#
+# Regenerate after changing anything here:
+#   dart run flutter_native_splash:create
+flutter_native_splash:
+  # Legacy splash (Android 11-, iOS): solid brand color, no logo.
+  color: "#F6F8FC"
+  color_dark: "#0F1724"
+  image: assets/splash/blank.png
+  image_dark: assets/splash/blank.png
+
+  # Android 12+ uses the system SplashScreen API. A transparent icon keeps the
+  # splash icon-less (no app launcher icon shown), leaving just the color.
+  android_12:
+    color: "#F6F8FC"
+    color_dark: "#0F1724"
+    image: assets/splash/blank.png
+    image_dark: assets/splash/blank.png
+
+  android: true
+  ios: true
+  web: false
+  fullscreen: false

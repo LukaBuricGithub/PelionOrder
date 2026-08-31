@@ -1,0 +1,25 @@
+name: driftgen
+description: Throwaway package to generate drift code without Flutter plugin hooks.
+publish_to: 'none'
+version: 0.0.1
+
+environment:
+  sdk: ^3.10.7
+  flutter: ">=3.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  drift: ^2.34.3
+
+dev_dependencies:
+  drift_dev: ^2.34.0
+  build_runner: ^2.15.1
+
+# sqlite3 >= 3.0.0 ships a native-asset `hook/build.dart` that breaks
+# build_runner's entrypoint compilation on this SDK. drift only touches sqlite3
+# from `package:drift/native.dart` (not imported during codegen), so forcing the
+# last hook-free version (2.9.4) is safe here — this package exists purely to
+# generate the drift code, never to run it.
+dependency_overrides:
+  sqlite3: 2.9.4
