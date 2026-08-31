@@ -51,10 +51,12 @@ const _kDarkAssetTint =
     ColorFilter.mode(Color(0xFF434A53), BlendMode.modulate);
 
 /// Choose a terrace/zone, then a table to work. Tables are drawn as a flat
-/// top-down floor plan: a walled room (nine-slice SVG frame) with a scrolling
-/// grid of table sprites, colour-coded by status. The size setting picks the
-/// column count (small 4 / medium 3 / large 2). Selecting an openable table
-/// reserves it and opens the ordering screen.
+/// top-down floor plan: a walled room (nine-slice SVG frame) holding a grid of
+/// table sprites, colour-coded by status. The size setting picks the column
+/// count (small 4 / medium 3 / large 2), and each page is a full grid sized to
+/// the width — exactly like a fixed vertical grid. When tables overflow a page
+/// you swipe sideways to the next page. Selecting an openable table reserves it
+/// and opens the ordering screen.
 class TableSelectScreen extends ConsumerStatefulWidget {
   const TableSelectScreen({super.key});
 
@@ -79,8 +81,15 @@ class _TableSelectScreenState extends ConsumerState<TableSelectScreen> {
     return Scaffold(
       appBar: AppBar(
         title: const Text('Odabir stola'),
-        actions: const [
-          Padding(
+        actions: [
+          // Reload moved here from pull-to-refresh: a horizontal scroller can't
+          // drive a (vertical) RefreshIndicator.
+          IconButton(
+            tooltip: 'Osvježi',
+            icon: const Icon(Icons.refresh),
+            onPressed: controller.reload,
+          ),
+          const Padding(
             padding: EdgeInsets.only(right: 12),
             child: Center(child: OnlineStatusBadge()),
           ),
@@ -112,38 +121,15 @@ class _TableSelectScreenState extends ConsumerState<TableSelectScreen> {
             padding: const EdgeInsets.fromLTRB(10, 2, 10, 10),
             child: _WallFrame(
               floor: _floorColor(context),
-              child: RefreshIndicator(
-                onRefresh: controller.reload,
-                child: tables.isEmpty
-                    ? ListView(
-                        physics: const AlwaysScrollableScrollPhysics(),
-                        children: const [
-                          SizedBox(height: 80),
-                          Center(child: Text('Nema stolova u ovoj zoni.')),
-                        ],
-                      )
-                    : GridView.builder(
-                        physics: const AlwaysScrollableScrollPhysics(),
-                        padding: const EdgeInsets.all(6),
-                        gridDelegate:
-                            SliverGridDelegateWithFixedCrossAxisCount(
-                          crossAxisCount: columns,
-                          childAspectRatio: 1,
-                          crossAxisSpacing: 6,
-                          mainAxisSpacing: 6,
-                        ),
-                        itemCount: tables.length,
-                        itemBuilder: (context, i) {
-                          final table = tables[i];
-                          return _TableCell(
-                            table: table,
-                            status: controller.statusFor(table),
-                            showName: columns < 4, // drop naziv at "small"
-                            onTap: () => _onTap(context, controller, table),
-                          );
-                        },
-                      ),
-              ),
+              child: tables.isEmpty
+                  ? const Center(child: Text('Nema stolova u ovoj zoni.'))
+                  : _PagedTableGrid(
+                      tables: tables,
+                      columns: columns,
+                      showName: columns < 4, // drop naziv at "small"
+                      statusFor: controller.statusFor,
+                      onTapTable: (t) => _onTap(context, controller, t),
+                    ),
             ),
           ),
         ),
@@ -178,6 +164,76 @@ class _TableSelectScreenState extends ConsumerState<TableSelectScreen> {
     await context.push('/new-order/${table.code}');
     // Returning from the order flow — refresh table ownership.
     controller.reload();
+  }
+}
+
+/// A horizontally-paged grid of tables. Each page is a full fixed grid sized to
+/// the width — so cells look identical to a plain vertical grid — and when the
+/// tables overflow a page the user swipes sideways to the next. The number of
+/// rows per page is whatever fits the floor's height.
+class _PagedTableGrid extends StatelessWidget {
+  const _PagedTableGrid({
+    required this.tables,
+    required this.columns,
+    required this.showName,
+    required this.statusFor,
+    required this.onTapTable,
+  });
+
+  final List<VenueTable> tables;
+  final int columns;
+  final bool showName;
+  final TableStatus Function(VenueTable) statusFor;
+  final ValueChanged<VenueTable> onTapTable;
+
+  static const double _pad = 6;
+  static const double _spacing = 6;
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, c) {
+        // Square cells sized to the width, exactly like the old vertical grid.
+        final cell =
+            (c.maxWidth - _pad * 2 - _spacing * (columns - 1)) / columns;
+        // How many whole rows of those cells fit the available height.
+        final rows = ((c.maxHeight - _pad * 2 + _spacing) / (cell + _spacing))
+            .floor()
+            .clamp(1, 999);
+        final perPage = columns * rows;
+        final pageCount = (tables.length + perPage - 1) ~/ perPage;
+
+        return PageView.builder(
+          itemCount: pageCount,
+          itemBuilder: (context, page) {
+            final start = page * perPage;
+            final end = (start + perPage).clamp(0, tables.length);
+            final pageItems = tables.sublist(start, end);
+            return GridView.builder(
+              // The PageView owns horizontal paging; the grid never scrolls.
+              physics: const NeverScrollableScrollPhysics(),
+              padding: const EdgeInsets.all(_pad),
+              gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                crossAxisCount: columns,
+                childAspectRatio: 1,
+                crossAxisSpacing: _spacing,
+                mainAxisSpacing: _spacing,
+              ),
+              itemCount: pageItems.length,
+              itemBuilder: (context, i) {
+                final table = pageItems[i];
+                return _TableCell(
+                  table: table,
+                  status: statusFor(table),
+                  showName: showName,
+                  onTap: () => onTapTable(table),
+                );
+              },
+            );
+          },
+        );
+      },
+    );
   }
 }
 
