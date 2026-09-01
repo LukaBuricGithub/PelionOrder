@@ -22,7 +22,7 @@ class SettingsScreen extends ConsumerWidget {
     final theme = Theme.of(context);
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Postavke')),
+      appBar: AppBar(title: const Text('Postavke uređaja')),
       body: ListView(
         padding: EdgeInsets.fromLTRB(
             16, 12, 16, screenContentBottomPadding(context, extra: 24)),

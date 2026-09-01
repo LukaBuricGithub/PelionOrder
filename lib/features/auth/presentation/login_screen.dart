@@ -99,7 +99,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     final login = ref.watch(loginControllerProvider);
     final profiles = ref.watch(profilesProvider);
 
-    // When the profile changes (added / edited / deleted in Postavke),
+    // When the profile changes (added / edited / deleted in Postavke uređaja),
     // re-check cached data so the Prijava gate stays correct.
     ref.listen(profilesProvider, (prev, next) {
       if (prev?.current?.id != next.current?.id ||
@@ -164,7 +164,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                         if (!hasProfile) ...[
                           const SizedBox(height: 14),
                           Text(
-                            'Dodajte profil poslužitelja u Postavkama',
+                            'Dodajte profil poslužitelja u Postavkama uređaja',
                             textAlign: TextAlign.center,
                             style:
                                 TextStyle(color: palette.label, fontSize: 13),
@@ -190,7 +190,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                               child: _ActionTile(
                                 palette: palette,
                                 icon: Icons.settings,
-                                label: 'Postavke',
+                                label: 'Postavke uređaja',
                                 enabled: true,
                                 onTap: () => context.push('/settings'),
                               ),
