@@ -6,6 +6,13 @@ import '../models/order.dart';
 import 'order_request.dart';
 import 'ordering_api.dart';
 
+/// Interim development flag. While there is no backend to receive orders, keep
+/// order sending **local-only**: [OrderRepository.sendOrder] still persists the
+/// order to the offline queue (so it appears in "Narudžbe na čekanju") but does
+/// NOT POST it, and [OrderRepository.sendPendingOrders] does nothing. Flip to
+/// `false` to restore real sending + auto-resend once the backend is ready.
+const bool kLocalOnlyOrders = true;
+
 /// Coordinates orders between the local drift queue and the venue server.
 ///
 /// Order lifecycle (two booleans):
@@ -91,6 +98,9 @@ class OrderRepository {
     final id = await _db.upsertOrder(_toCompanion(o));
     o = o.copyWith(id: id);
 
+    // Dev: no backend yet — keep the order in the local queue, skip the POST.
+    if (kLocalOnlyOrders) return false;
+
     final api = _api;
     if (api == null || !await _connectivity.hasConnection()) {
       return false; // queued
@@ -113,6 +123,7 @@ class OrderRepository {
   /// Attempts to resend every queued order. Returns how many were acknowledged.
   /// Called by the heartbeat whenever the connection is up.
   Future<int> sendPendingOrders() async {
+    if (kLocalOnlyOrders) return 0; // dev: no backend to resend to
     if (_api == null || !await _connectivity.hasConnection()) return 0;
     final pending = await pendingOrders();
     var sent = 0;

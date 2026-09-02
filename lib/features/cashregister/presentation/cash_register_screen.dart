@@ -76,64 +76,14 @@ class _CashRegisterScreenState extends ConsumerState<CashRegisterScreen> {
       ..showSnackBar(SnackBar(content: Text(result)));
   }
 
-  Future<void> _logout() async {
-    final scheme = Theme.of(context).colorScheme;
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        // Icon-forward M3 dialog with stacked full-width buttons; red accent to
-        // match the logout action.
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-        icon: Container(
-          padding: const EdgeInsets.all(12),
-          decoration: BoxDecoration(
-            color: scheme.errorContainer,
-            shape: BoxShape.circle,
-          ),
-          child: Icon(Icons.logout_rounded,
-              color: scheme.onErrorContainer, size: 26),
-        ),
-        title: const Text('Odjava'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Text(
-              'Jeste li sigurni da se želite odjaviti?',
-              textAlign: TextAlign.center,
-            ),
-            const SizedBox(height: 20),
-            SizedBox(
-              width: double.infinity,
-              child: FilledButton(
-                style: FilledButton.styleFrom(
-                  backgroundColor: scheme.error,
-                  foregroundColor: scheme.onError,
-                  padding: const EdgeInsets.symmetric(vertical: 12),
-                ),
-                onPressed: () => Navigator.pop(ctx, true),
-                child: const Text('Odjava'),
-              ),
-            ),
-            const SizedBox(height: 8),
-            SizedBox(
-              width: double.infinity,
-              child: TextButton(
-                style: TextButton.styleFrom(
-                  foregroundColor: scheme.onSurface,
-                ),
-                onPressed: () => Navigator.pop(ctx, false),
-                child: const Text('Odustani'),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-    if (ok != true) return;
-    // Signing out clears the session; the router's auth redirect
-    // (refreshListenable on currentUser) then moves us to /login automatically.
-    // Navigating here as well double-triggers the route change and crashes the
-    // shell route with an element-lifecycle assertion — so let the redirect do it.
+  /// Back on the hub forgets the current waiter: clears the session (and the
+  /// saved user code), which returns the user to the login screen rather than
+  /// closing the app. The router's auth redirect (refreshListenable on
+  /// currentUser) does the navigation — we must NOT navigate here as well, or
+  /// the route change double-triggers and crashes with an element-lifecycle
+  /// assertion. The saved server profile is left intact (only the waiter is
+  /// forgotten), so the login screen just needs the PIN again.
+  Future<void> _forgetSession() async {
     await ref.read(authControllerProvider).logout();
   }
 
@@ -149,9 +99,18 @@ class _CashRegisterScreenState extends ConsumerState<CashRegisterScreen> {
       if (prev != true && next == true) _resendPending();
     });
 
-    return Scaffold(
+    return PopScope(
+      // The hub is the top of the logged-in area. Back must NOT close the app —
+      // it forgets the current waiter and drops back to the login screen (the
+      // auth redirect handles the actual navigation once the session clears).
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) {
+        if (didPop) return;
+        _forgetSession();
+      },
+      child: Scaffold(
       key: _scaffoldKey,
-      endDrawer: _SettingsDrawer(onLogout: _logout),
+      endDrawer: const _SettingsDrawer(),
       appBar: AppBar(
         // Online status moved to the user card, so the venue name gets the full
         // title width and can wrap to up to 3 lines before ellipsizing.
@@ -249,6 +208,7 @@ class _CashRegisterScreenState extends ConsumerState<CashRegisterScreen> {
           ),
         ),
       ),
+      ),
     );
   }
 }
@@ -286,14 +246,11 @@ class _MenuButton extends StatelessWidget {
 /// Right-side settings drawer (opened from the app-bar cog), holding the
 /// light/dark theme switch — mirrors the ikasa app's settings drawer.
 class _SettingsDrawer extends ConsumerWidget {
-  const _SettingsDrawer({required this.onLogout});
-
-  final VoidCallback onLogout;
+  const _SettingsDrawer();
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final mode = ref.watch(themeModeProvider);
-    final scheme = Theme.of(context).colorScheme;
     return Drawer(
       child: SafeArea(
         child: Column(
@@ -311,16 +268,6 @@ class _SettingsDrawer extends ConsumerWidget {
               mode: mode,
               onChanged: (m) =>
                   ref.read(themeModeProvider.notifier).setThemeMode(m),
-            ),
-            const Spacer(),
-            const Divider(height: 1),
-            ListTile(
-              leading: Icon(Icons.logout, color: scheme.error),
-              title: Text('Odjava', style: TextStyle(color: scheme.error)),
-              onTap: () {
-                Navigator.of(context).pop(); // close the drawer
-                onLogout();
-              },
             ),
           ],
         ),

@@ -63,6 +63,7 @@ dependencies:
   flutter_svg: ^2.0.17 # floor-plan table/wall SVG assets (Odabir stola)
   mqtt_client: ^10.8.0 # MQTT v3.1.1 test connection (Pelion broker)
   flutter_native_splash: ^2.4.4 # OS splash (preserve/remove used at runtime)
+  mobile_scanner: ^5.2.3 # QR scanner (Postavke uređaja); 5.x keeps iOS 13 min
 
 dev_dependencies:
   flutter_test:

@@ -8,6 +8,7 @@ import '../../shared/presentation/app_bottom_sheet.dart';
 import '../../shared/presentation/bottom_sheet_safe_area.dart';
 import '../models/table_view_size.dart';
 import '../state/settings_provider.dart';
+import 'qr_scanner_screen.dart';
 
 /// Device + connection configuration, laid out as cards: the (single) server
 /// profile, the table-tile size, and the "group identical articles when
@@ -119,6 +120,24 @@ class SettingsScreen extends ConsumerWidget {
                       .setShouldGroupArticles(v),
                 ),
               ],
+            ),
+          ),
+          const SizedBox(height: 16),
+
+          // ── QR skener ────────────────────────────────────────────────────
+          _SettingsCard(
+            header: 'QR skener',
+            child: SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                onPressed: () => Navigator.of(context).push(
+                  MaterialPageRoute<void>(
+                    builder: (_) => const QrScannerScreen(),
+                  ),
+                ),
+                icon: const Icon(Icons.qr_code_scanner),
+                label: const Text('Skeniraj QR kod'),
+              ),
             ),
           ),
         ],

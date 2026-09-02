@@ -113,12 +113,20 @@ class AppDatabase extends _$AppDatabase {
 
   /// A non-pending draft for this table+user, if one exists (used to continue
   /// an open order rather than starting a new one).
+  ///
+  /// Returns the most recent match. We deliberately do NOT use
+  /// `getSingleOrNull()` here: if more than one open draft ever exists for the
+  /// same table+user (which the save/back flow can produce), that call throws
+  /// and wedges the New Order screen on an infinite spinner. Ordering by
+  /// `orderTime` desc + `limit(1)` continues the latest draft and can't throw.
   Future<DbOrder?> findOpenOrder(int tableCode, String userCode) {
     return (select(orders)
           ..where((o) =>
               o.tableCode.equals(tableCode) &
               o.userCode.equals(userCode) &
-              o.pending.equals(false)))
+              o.pending.equals(false))
+          ..orderBy([(o) => OrderingTerm.desc(o.orderTime)])
+          ..limit(1))
         .getSingleOrNull();
   }
 

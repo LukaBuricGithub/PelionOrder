@@ -6,6 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
 
+import '../data/order_repository.dart' show kLocalOnlyOrders;
 import '../state/new_order_controller.dart';
 
 /// Screen-size-driven UI scale: 1.0 ≈ a typical phone (~928 dp diagonal).
@@ -117,7 +118,10 @@ class _NewOrderScreenState extends ConsumerState<NewOrderScreen> {
       SnackBar(
         content: Text(ok
             ? 'Narudžba poslana.'
-            : 'Nema veze — narudžba je spremljena i bit će poslana automatski.'),
+            : kLocalOnlyOrders
+                ? 'Narudžba je spremljena.'
+                : 'Nema veze — narudžba je spremljena i bit će poslana '
+                    'automatski.'),
       ),
     );
     setState(() => _canPop = true);

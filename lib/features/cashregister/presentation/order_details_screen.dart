@@ -7,6 +7,7 @@ import 'package:intl/intl.dart';
 
 import '../../shared/presentation/app_bottom_sheet.dart';
 import '../../shared/presentation/bottom_sheet_safe_area.dart';
+import '../data/order_repository.dart' show kLocalOnlyOrders;
 import '../models/order_item.dart';
 import '../state/order_details_controller.dart';
 
@@ -129,8 +130,10 @@ class OrderDetailsScreen extends ConsumerWidget {
                             SnackBar(
                               content: Text(ok
                                   ? 'Narudžba poslana.'
-                                  : 'Nema veze — narudžba spremljena i bit će '
-                                      'poslana automatski.'),
+                                  : kLocalOnlyOrders
+                                      ? 'Narudžba je spremljena.'
+                                      : 'Nema veze — narudžba spremljena i bit '
+                                          'će poslana automatski.'),
                             ),
                           );
                           context.pop('sent');

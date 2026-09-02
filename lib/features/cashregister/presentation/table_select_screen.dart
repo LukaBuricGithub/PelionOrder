@@ -344,16 +344,20 @@ class _TableCell extends StatelessWidget {
                             ),
                           ),
                         ],
-                        SizedBox(height: w * 0.02),
-                        Text(
-                          _stavkeLabel(table.itemCount),
-                          maxLines: 1,
-                          style: TextStyle(
-                            color: fg.withValues(alpha: 0.85),
-                            fontSize: w * 0.072,
-                            height: 1,
+                        // Small tables (showName == false) are too cramped for
+                        // the stavke count — drop it there, keep it otherwise.
+                        if (showName) ...[
+                          SizedBox(height: w * 0.02),
+                          Text(
+                            _stavkeLabel(table.itemCount),
+                            maxLines: 1,
+                            style: TextStyle(
+                              color: fg.withValues(alpha: 0.85),
+                              fontSize: w * 0.072,
+                              height: 1,
+                            ),
                           ),
-                        ),
+                        ],
                       ],
                     ),
                   ),

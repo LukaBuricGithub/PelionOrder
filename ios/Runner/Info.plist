@@ -54,5 +54,7 @@
 		<true/>
 		<key>UIStatusBarHidden</key>
 		<false/>
+		<key>NSCameraUsageDescription</key>
+		<string>Kamera se koristi za skeniranje QR kodova.</string>
 	</dict>
 </plist>

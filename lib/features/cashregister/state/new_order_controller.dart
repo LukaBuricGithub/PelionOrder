@@ -81,29 +81,39 @@ class NewOrderController extends StateNotifier<NewOrderState> {
   final Map<int, Article> _byCode = {};
 
   Future<void> _init() async {
-    final master = _ref.read(masterDataRepositoryProvider);
-    final groups = await master.cachedGroups()
-      ..sort((a, b) => a.order.compareTo(b.order));
-    final articles = await master.cachedArticles();
-    _byCode
-      ..clear()
-      ..addEntries(articles.map((a) => MapEntry(a.code, a)));
+    try {
+      final master = _ref.read(masterDataRepositoryProvider);
+      final groups = await master.cachedGroups()
+        ..sort((a, b) => a.order.compareTo(b.order));
+      final articles = await master.cachedArticles();
+      _byCode
+        ..clear()
+        ..addEntries(articles.map((a) => MapEntry(a.code, a)));
 
-    final user = _ref.read(currentUserProvider);
-    final order = await _ref.read(orderRepositoryProvider).getOrCreateOpenOrder(
-          tableCode: tableCode,
-          userCode: user?.code ?? '',
-          nowMillis: DateTime.now().millisecondsSinceEpoch,
-        );
+      final user = _ref.read(currentUserProvider);
+      final order =
+          await _ref.read(orderRepositoryProvider).getOrCreateOpenOrder(
+                tableCode: tableCode,
+                userCode: user?.code ?? '',
+                nowMillis: DateTime.now().millisecondsSinceEpoch,
+              );
 
-    if (!mounted) return;
-    state = state.copyWith(
-      loading: false,
-      groups: groups,
-      articles: articles,
-      selectedGroupCode: groups.isNotEmpty ? groups.first.code : null,
-      order: order,
-    );
+      if (!mounted) return;
+      state = state.copyWith(
+        loading: false,
+        groups: groups,
+        articles: articles,
+        selectedGroupCode: groups.isNotEmpty ? groups.first.code : null,
+        order: order,
+      );
+    } catch (e, st) {
+      // Never leave the screen wedged on the spinner: if loading fails for any
+      // reason, drop out of the loading state with a fresh empty order so the
+      // user can still work / back out.
+      debugPrint('NewOrderController init failed: $e\n$st');
+      if (!mounted) return;
+      state = state.copyWith(loading: false);
+    }
   }
 
   Article? articleFor(int code) => _byCode[code];
