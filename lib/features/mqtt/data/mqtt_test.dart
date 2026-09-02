@@ -4,74 +4,128 @@ import 'package:flutter/foundation.dart';
 import 'package:mqtt_client/mqtt_client.dart';
 import 'package:mqtt_client/mqtt_server_client.dart';
 
-// ── Config (from the JSON) ──────────────────────────────────────────────────
-const _broker = 'mqtt.pelionpro.com';
-const _port = 8883;
-const _licenca = '7D5BE17A85AD3016DE3C914A'; // username
-const _lozinka = '0000'; // password
-const _uredaj = 'MOBILE-002-POS'; // device id
-const _naziv = 'MOBILE TEST kasa';
-const _keepAlive = 10;
-const _tls = true;
+import '../models/mqtt_connection_config.dart';
 
-// ── Protocol topics (mirrors MqttKasaService) — everything under kasa/{licenca}
-//    because the broker ACL is "readwrite kasa/%u/#" (%u = licenca). ────────────
-const _tStatus = 'kasa/$_licenca/status/$_uredaj'; // device → server (retained)
-const _tPoruka = 'kasa/$_licenca/poruka'; // server → device (subscribe)
-const _tAck = 'kasa/$_licenca/ack'; // device → server
-const _tDojava = 'kasa/$_licenca/dojava'; // device → server (visible in admin)
+/// Default config for the plain "MQTT test" button on the hub (the original
+/// Pelion test-broker values). The QR flow supplies its own config instead.
+const kMqttTestConfig =
+    MqttConnectionConfig(licenca: '7D5BE17A85AD3016DE3C914A');
 
-/// A long-lived MQTT test connection speaking the real Pelion "semafor"
-/// protocol. First tap connects and KEEPS the socket open (auto-reconnect),
-/// subscribes to `kasa/{licenca}/poruka`, publishes a retained "online" status
-/// and a "dojava" (visible in PelionAdmin), and acks any inbound message.
-/// Everything is logged to the console.
+/// A long-lived MQTT connection speaking the real Pelion "semafor" protocol,
+/// driven by a [MqttConnectionConfig] (from a scanned QR code, or the default
+/// test config). Connects and KEEPS the socket open (auto-reconnect), subscribes
+/// to `kasa/{licenca}/poruka`, publishes a retained "online" status and a
+/// "dojava" (visible in PelionAdmin), and acks any inbound message. Everything
+/// is logged to the console.
+///
+/// Topics all live under `kasa/{licenca}/` because the broker ACL is
+/// `readwrite kasa/%u/#` (`%u` = licenca / username).
+///
+/// Lifecycle: the app wires [onAppPaused] / [onAppResumed] to the widget
+/// lifecycle. On background we publish `offline` and drop the socket (the OS
+/// would suspend us and the broker would time us out anyway); on resume we
+/// reconnect — but only if a connection was actually established first
+/// ([_shouldBeConnected]), so the app never auto-connects on its own.
 class MqttTestService {
   MqttTestService._();
   static final MqttTestService instance = MqttTestService._();
 
   MqttServerClient? _client;
+  MqttConnectionConfig? _config;
+  bool _testSuffix = false;
+
+  /// Intent flag: true once the user has connected (via the QR "Spoji se" or the
+  /// test button), false after a manual [disconnect]. Only while this is true do
+  /// the lifecycle hooks drop/restore the connection.
+  bool _shouldBeConnected = false;
 
   bool get isConnected =>
       _client?.connectionStatus?.state == MqttConnectionState.connected;
 
-  Future<String> connectAndSend() async {
+  MqttConnectionConfig get _cfg => _config!;
+
+  // ── Protocol topics (mirror MqttKasaService), computed from the config ──────
+  String get _tStatus =>
+      'kasa/${_cfg.licenca}/status/${_cfg.uredaj}'; // device → server (retained)
+  String get _tPoruka => 'kasa/${_cfg.licenca}/poruka'; // server → device
+  String get _tAck => 'kasa/${_cfg.licenca}/ack'; // device → server
+  String get _tDojava => 'kasa/${_cfg.licenca}/dojava'; // visible in admin
+
+  /// Connects using [config]. The MQTT client-id is the device id
+  /// (`config.uredaj`) — for the QR flow that's the real provisioned id
+  /// (`<licenca>-ORDERMAN-<n>`). Set [testSuffix] to append a unique `-TEST-…`
+  /// suffix so the plain test button never kicks a real device off the broker.
+  Future<String> connectAndSend(
+    MqttConnectionConfig config, {
+    bool testSuffix = false,
+  }) async {
     if (isConnected) {
       _publishDojava('Ponovni test iz mobilne aplikacije');
       return 'MQTT: već spojeno — nova dojava poslana (prati CMD / PelionAdmin).';
     }
 
-    // Unique test client id so we don't kick the real device off the broker.
+    _config = config;
+    _testSuffix = testSuffix;
+    _shouldBeConnected = true; // remember we want to stay connected
+    return _openConnection();
+  }
+
+  /// The app went to background (or is closing): publish `offline` and drop the
+  /// socket. Keeps [_shouldBeConnected] so [onAppResumed] can restore it.
+  Future<void> onAppPaused() async {
+    if (!_shouldBeConnected) return;
+    debugPrint('MQTT ▸ app paused → going offline');
+    if (isConnected) _publishStatus('offline');
+    _client?.disconnect();
+    _client = null;
+  }
+
+  /// The app returned to foreground: reconnect if we were connected before and
+  /// aren't already. No-op when the user never connected.
+  Future<void> onAppResumed() async {
+    if (!_shouldBeConnected || isConnected || _config == null) return;
+    debugPrint('MQTT ▸ app resumed → reconnecting');
+    await _openConnection();
+  }
+
+  /// Opens the socket using the stored [_config] / [_testSuffix].
+  Future<String> _openConnection() async {
+    final config = _cfg;
+
+    // Client-id = the device id from the QR. The test button adds a unique
+    // suffix so it can't collide with a real device's connection.
     final suffix =
         DateTime.now().millisecondsSinceEpoch.toRadixString(36).toUpperCase();
-    final clientId = '$_uredaj-TEST-$suffix';
+    final clientId =
+        _testSuffix ? '${config.uredaj}-TEST-$suffix' : config.uredaj;
 
-    final client = MqttServerClient.withPort(_broker, clientId, _port)
-      ..secure = _tls
-      ..keepAlivePeriod = _keepAlive
-      ..connectTimeoutPeriod = 8000
-      ..autoReconnect = true
-      ..resubscribeOnAutoReconnect = true
-      ..logging(on: true)
-      ..setProtocolV311()
-      // TEST ONLY: the broker cert is signed by a private CA ("Pelion Orderman
-      // CA"). Accept it here instead of bundling the truststore.
-      ..onBadCertificate = ((Object? cert) => true)
-      ..onConnected = (() {
-        debugPrint('MQTT ▸ connected as $clientId');
-      })
-      ..onDisconnected = (() {
-        debugPrint('MQTT ▸ disconnected');
-      })
-      ..onSubscribed = ((String t) {
-        debugPrint('MQTT ▸ subscribed: $t');
-      })
-      ..onSubscribeFail = ((String t) {
-        debugPrint('MQTT ✗ subscribe DENIED (ACL): $t');
-      })
-      ..pongCallback = (() {
-        debugPrint('MQTT ▸ pong (keepalive)');
-      });
+    final client =
+        MqttServerClient.withPort(config.broker, clientId, config.port)
+          ..secure = config.tls
+          ..keepAlivePeriod = config.keepalive
+          ..connectTimeoutPeriod = 8000
+          ..autoReconnect = true
+          ..resubscribeOnAutoReconnect = true
+          ..logging(on: true)
+          ..setProtocolV311()
+          // TEST ONLY: the broker cert is signed by a private CA ("Pelion
+          // Orderman CA"). Accept it here instead of bundling the truststore.
+          ..onBadCertificate = ((Object? cert) => true)
+          ..onConnected = (() {
+            debugPrint('MQTT ▸ connected as $clientId');
+          })
+          ..onDisconnected = (() {
+            debugPrint('MQTT ▸ disconnected');
+          })
+          ..onSubscribed = ((String t) {
+            debugPrint('MQTT ▸ subscribed: $t');
+          })
+          ..onSubscribeFail = ((String t) {
+            debugPrint('MQTT ✗ subscribe DENIED (ACL): $t');
+          })
+          ..pongCallback = (() {
+            debugPrint('MQTT ▸ pong (keepalive)');
+          });
 
     // Last-Will: broker publishes "offline" (retained) if we drop unexpectedly.
     client.connectionMessage = MqttConnectMessage()
@@ -99,9 +153,9 @@ class MqttTestService {
     });
 
     try {
-      debugPrint('MQTT ▸ connecting to ssl://$_broker:$_port as $clientId '
-          '(user=$_licenca)…');
-      await client.connect(_licenca, _lozinka);
+      debugPrint('MQTT ▸ connecting to ssl://${config.broker}:${config.port} '
+          'as $clientId (user=${config.licenca})…');
+      await client.connect(config.licenca, config.lozinka);
 
       if (!isConnected) {
         final rc = client.connectionStatus?.returnCode;
@@ -115,8 +169,8 @@ class MqttTestService {
       _publishStatus('online');
       _publishDojava('Test veze iz mobilne aplikacije');
 
-      return 'MQTT: spojeno; status "online" + dojava poslani '
-          '(prati CMD / PelionAdmin).';
+      return 'MQTT: spojeno kao ${config.uredaj}; status "online" + dojava '
+          'poslani (prati CMD / PelionAdmin).';
     } catch (e) {
       debugPrint('MQTT ✗ error: $e');
       _client?.disconnect();
@@ -154,23 +208,27 @@ class MqttTestService {
     debugPrint('MQTT ▸ publish → "$topic" (id=$id) $payload');
   }
 
+  /// Manual, user-initiated disconnect: clears the intent flag so the lifecycle
+  /// hooks won't silently reconnect afterwards.
   void disconnect() {
     debugPrint('MQTT ▸ manual disconnect');
-    _publishStatus('offline');
+    _shouldBeConnected = false;
+    if (_config != null && isConnected) _publishStatus('offline');
     _client?.disconnect();
     _client = null;
   }
 
-  // ── JSON payloads (mirrors the Java service) ──────────────────────────────
-  static String _statusJson(String status) =>
-      '{"status":"$status","naziv":"$_naziv","tip":"MOBILE","uloga":"kasa",'
-      '"verzija":"1.0.0","uredaj":"$_uredaj","ts":${_now()}}';
+  // ── JSON payloads (mirror the Java service), built from the active config ───
+  String _statusJson(String status) =>
+      '{"status":"$status","naziv":"${_cfg.naziv}","tip":"PELION-ORDER",'
+      '"uloga":"kasa","verzija":"1.0.0","uredaj":"${_cfg.uredaj}","ts":${_now()}}';
 
-  static String _dojavaJson(String tekst) =>
-      '{"tekst":"$tekst","naziv":"$_naziv","uredaj":"$_uredaj","ts":${_now()}}';
+  String _dojavaJson(String tekst) =>
+      '{"tekst":"$tekst","naziv":"${_cfg.naziv}","uredaj":"${_cfg.uredaj}",'
+      '"ts":${_now()}}';
 
-  static String _ackJson(String msgId) =>
-      '{"msg_id":"$msgId","uredaj":"$_uredaj","ts":${_now()}}';
+  String _ackJson(String msgId) =>
+      '{"msg_id":"$msgId","uredaj":"${_cfg.uredaj}","ts":${_now()}}';
 
   static int _now() => DateTime.now().millisecondsSinceEpoch;
 }

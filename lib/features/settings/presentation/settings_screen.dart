@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../master_data/state/master_data_providers.dart';
+import '../../mqtt/data/mqtt_test.dart';
+import '../../mqtt/models/mqtt_connection_config.dart';
 import '../../profiles/models/api_entry.dart';
 import '../../profiles/state/profiles_provider.dart';
 import '../../shared/presentation/app_bottom_sheet.dart';
@@ -125,21 +127,7 @@ class SettingsScreen extends ConsumerWidget {
           const SizedBox(height: 16),
 
           // ── QR skener ────────────────────────────────────────────────────
-          _SettingsCard(
-            header: 'QR skener',
-            child: SizedBox(
-              width: double.infinity,
-              child: OutlinedButton.icon(
-                onPressed: () => Navigator.of(context).push(
-                  MaterialPageRoute<void>(
-                    builder: (_) => const QrScannerScreen(),
-                  ),
-                ),
-                icon: const Icon(Icons.qr_code_scanner),
-                label: const Text('Skeniraj QR kod'),
-              ),
-            ),
-          ),
+          const _QrSkenerCard(),
         ],
       ),
     );
@@ -236,6 +224,120 @@ class _SettingsCard extends StatelessWidget {
           ),
           const SizedBox(height: 12),
           child,
+        ],
+      ),
+    );
+  }
+}
+
+/// QR skener section: scan a code (`<licenca>-ORDERMAN-<n>`), parse the licenca
+/// out of it, and show the MQTT connection payload that would be used to
+/// connect. Display-only for now — nothing is stored or sent yet.
+class _QrSkenerCard extends StatefulWidget {
+  const _QrSkenerCard();
+
+  @override
+  State<_QrSkenerCard> createState() => _QrSkenerCardState();
+}
+
+class _QrSkenerCardState extends State<_QrSkenerCard> {
+  String? _rawCode;
+  MqttConnectionConfig? _config;
+  bool _connecting = false;
+
+  Future<void> _scan() async {
+    final code = await Navigator.of(context).push<String>(
+      MaterialPageRoute(builder: (_) => const QrScannerScreen()),
+    );
+    if (!mounted || code == null || code.isEmpty) return;
+    setState(() {
+      _rawCode = code;
+      _config = MqttConnectionConfig.fromScannedCode(code);
+    });
+  }
+
+  Future<void> _connect() async {
+    final config = _config;
+    if (config == null) return;
+    final messenger = ScaffoldMessenger.of(context);
+    setState(() => _connecting = true);
+    messenger.showSnackBar(const SnackBar(content: Text('MQTT: spajanje…')));
+    final result = await MqttTestService.instance.connectAndSend(config);
+    if (!mounted) return;
+    setState(() => _connecting = false);
+    messenger
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(result)));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final tt = Theme.of(context).textTheme;
+    final config = _config;
+
+    return _SettingsCard(
+      header: 'QR skener',
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: double.infinity,
+            child: OutlinedButton.icon(
+              onPressed: _scan,
+              icon: const Icon(Icons.qr_code_scanner),
+              label: Text(
+                config == null ? 'Skeniraj QR kod' : 'Skeniraj ponovno',
+              ),
+            ),
+          ),
+          if (config != null) ...[
+            const SizedBox(height: 14),
+            Text('Skenirano',
+                style: tt.labelSmall?.copyWith(color: scheme.onSurfaceVariant)),
+            const SizedBox(height: 2),
+            SelectableText(_rawCode ?? '', style: tt.bodySmall),
+            const SizedBox(height: 8),
+            Text('Licenca: ${config.licenca}',
+                style: tt.bodyMedium?.copyWith(fontWeight: FontWeight.w600)),
+            const SizedBox(height: 14),
+            Text('Podaci za MQTT vezu',
+                style: tt.labelSmall?.copyWith(color: scheme.onSurfaceVariant)),
+            const SizedBox(height: 6),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: scheme.surfaceContainerHighest,
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(
+                    color: scheme.outlineVariant.withValues(alpha: 0.5)),
+              ),
+              child: SelectableText(
+                config.toPrettyJson(),
+                style: const TextStyle(
+                  fontFamily: 'monospace',
+                  fontSize: 12.5,
+                  height: 1.4,
+                ),
+              ),
+            ),
+            const SizedBox(height: 12),
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton.icon(
+                onPressed: _connecting ? null : _connect,
+                icon: _connecting
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.wifi_tethering),
+                label: Text(_connecting ? 'Spajanje…' : 'Spoji se na MQTT'),
+              ),
+            ),
+          ],
         ],
       ),
     );

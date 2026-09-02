@@ -128,6 +128,9 @@ class TableSelectController extends StateNotifier<TableSelectState> {
     final pending = <int>{};
     for (final o in orders) {
       if (o.userCode != user.code) continue;
+      // An order with no items doesn't occupy the table — a leftover empty
+      // draft / emptied order must not keep the table marked as "yours".
+      if (o.items.isEmpty) continue;
       mine.add(o.tableCode);
       if (o.pending && !o.sent) pending.add(o.tableCode);
     }

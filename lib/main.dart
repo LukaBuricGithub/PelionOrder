@@ -9,6 +9,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'app/app_theme.dart';
 import 'app/router.dart';
 import 'features/auth/state/auth_controller.dart';
+import 'features/mqtt/data/mqtt_test.dart';
 import 'features/shared/state/shared_preferences_provider.dart';
 import 'features/theme/state/theme_mode_provider.dart';
 
@@ -44,11 +45,15 @@ class OrdermanApp extends ConsumerStatefulWidget {
   ConsumerState<OrdermanApp> createState() => _OrdermanAppState();
 }
 
-class _OrdermanAppState extends ConsumerState<OrdermanApp> {
+class _OrdermanAppState extends ConsumerState<OrdermanApp>
+    with WidgetsBindingObserver {
   @override
   void initState() {
     super.initState();
     Intl.defaultLocale = 'hr_HR';
+    // Observe app lifecycle so the MQTT connection drops on background and
+    // reconnects on resume (a no-op until the user has connected once).
+    WidgetsBinding.instance.addObserver(this);
     // Restore the persisted session (looks up the saved user in the cache),
     // then clear the bootstrapping flag so the router leaves the splash.
     Future.microtask(() async {
@@ -60,6 +65,26 @@ class _OrdermanAppState extends ConsumerState<OrdermanApp> {
       WidgetsBinding.instance
           .addPostFrameCallback((_) => FlutterNativeSplash.remove());
     });
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    switch (state) {
+      case AppLifecycleState.resumed:
+        MqttTestService.instance.onAppResumed();
+      case AppLifecycleState.paused:
+      case AppLifecycleState.detached:
+        MqttTestService.instance.onAppPaused();
+      case AppLifecycleState.inactive:
+      case AppLifecycleState.hidden:
+        break;
+    }
   }
 
   @override

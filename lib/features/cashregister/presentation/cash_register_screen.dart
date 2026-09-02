@@ -69,7 +69,8 @@ class _CashRegisterScreenState extends ConsumerState<CashRegisterScreen> {
     messenger.showSnackBar(
       const SnackBar(content: Text('MQTT: spajanje…')),
     );
-    final result = await MqttTestService.instance.connectAndSend();
+    final result = await MqttTestService.instance
+        .connectAndSend(kMqttTestConfig, testSuffix: true);
     if (!mounted) return;
     messenger
       ..hideCurrentSnackBar()
