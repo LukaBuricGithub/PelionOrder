@@ -2,11 +2,9 @@ import 'dart:convert';
 
 /// The parameters used to open the MQTT connection to the Pelion broker.
 ///
-/// For now this is only **displayed** on the settings screen (built from a
-/// scanned QR code) so we can see the exact connection payload. Later the MQTT
-/// service will use it to actually connect. The non-licenca defaults mirror the
-/// Pelion test-broker values currently hard-coded in `mqtt_test.dart`; the
-/// `licenca` is the part scanned from the QR code.
+/// Built from the scanned QR code: the `licenca` (and `uredaj`) come from the
+/// code, the remaining fields are the fixed Pelion broker defaults. Shown on the
+/// settings screen and passed to `MqttService` (`mqtt_service.dart`) to connect.
 class MqttConnectionConfig {
   const MqttConnectionConfig({
     required this.licenca,

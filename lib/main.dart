@@ -9,7 +9,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'app/app_theme.dart';
 import 'app/router.dart';
 import 'features/auth/state/auth_controller.dart';
-import 'features/mqtt/data/mqtt_test.dart';
+import 'features/mqtt/data/mqtt_service.dart';
 import 'features/shared/state/shared_preferences_provider.dart';
 import 'features/theme/state/theme_mode_provider.dart';
 
@@ -77,10 +77,10 @@ class _OrdermanAppState extends ConsumerState<OrdermanApp>
   void didChangeAppLifecycleState(AppLifecycleState state) {
     switch (state) {
       case AppLifecycleState.resumed:
-        MqttTestService.instance.onAppResumed();
+        MqttService.instance.onAppResumed();
       case AppLifecycleState.paused:
       case AppLifecycleState.detached:
-        MqttTestService.instance.onAppPaused();
+        MqttService.instance.onAppPaused();
       case AppLifecycleState.inactive:
       case AppLifecycleState.hidden:
         break;

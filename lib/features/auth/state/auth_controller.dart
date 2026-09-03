@@ -1,31 +1,51 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../master_data/models/user.dart';
-import '../../master_data/state/master_data_providers.dart';
+import '../../mqtt/models/mqtt_user.dart';
+import '../../mqtt/state/mqtt_users_provider.dart';
 import '../../settings/state/settings_provider.dart';
 import 'session_provider.dart';
 
-/// Orchestrates sign-in / sign-out and startup session restore. Modelled on
-/// ikasa's `AuthController`: a plain class holding [Ref] that mutates the
-/// session providers.
+/// Orchestrates sign-in / sign-out and startup session restore. A plain class
+/// holding [Ref] that mutates the session providers.
 ///
-/// Login is by personal PIN, validated against the cached users — so it works
-/// fully offline once master data has been downloaded at least once.
+/// Login is by personal PIN, validated against the **MQTT** staff list
+/// (`podaci/korisnici`, see [mqttUsersProvider]) — which is persisted locally,
+/// so login works on a cold start once the list has been received at least
+/// once. The matched [MqttUser] is mapped onto the app's [User] model so the
+/// rest of the app (hub, table ownership, orders) is unchanged.
 class AuthController {
   AuthController(this._ref);
 
   final Ref _ref;
 
+  /// Maps an MQTT user onto the app's [User]. The MQTT payload doesn't carry
+  /// per-right flags, so we grant the working rights and treat the
+  /// "Administracija" role as superuser.
+  User _toUser(MqttUser u) => User(
+        code: u.code,
+        username: u.displayName,
+        pin: u.pinValue ?? 0,
+        changeQuantityRight: true,
+        allTablesOpenRight: true,
+        deleteRight: true,
+        superuser: u.isAdmin,
+      );
+
   /// Restores the persisted session at startup: looks up the saved user code in
-  /// the cached users and sets [currentUserProvider]. Always clears the
+  /// the MQTT staff list and sets [currentUserProvider]. Always clears the
   /// bootstrapping flag when done so the router can leave the splash screen.
   Future<void> bootstrap() async {
     try {
       final code = _ref.read(settingsStorageProvider).loadCurrentUserCode();
       if (code != null && code.isNotEmpty) {
-        final user =
-            await _ref.read(masterDataRepositoryProvider).userByCode(code);
-        _ref.read(currentUserProvider.notifier).state = user;
+        final target = code.trim();
+        for (final u in _ref.read(mqttUsersProvider)) {
+          if (u.code == target) {
+            _ref.read(currentUserProvider.notifier).state = _toUser(u);
+            break;
+          }
+        }
       }
     } catch (_) {
       // A corrupt cache shouldn't wedge startup — fall through to logged-out.
@@ -34,19 +54,24 @@ class AuthController {
     }
   }
 
-  /// Validates [pin] against the cached users. On a match, persists the user
+  /// Validates [pin] against the MQTT staff list. On a match, persists the user
   /// code and sets the session; returns the matched [User] (or null on miss).
   Future<User?> loginWithPin(int pin) async {
-    final user =
-        await _ref.read(masterDataRepositoryProvider).findUserByPin(pin);
-    if (user != null) {
-      await _ref.read(settingsStorageProvider).saveCurrentUserCode(user.code);
-      _ref.read(currentUserProvider.notifier).state = user;
+    MqttUser? match;
+    for (final u in _ref.read(mqttUsersProvider)) {
+      if (u.pinValue != null && u.pinValue == pin) {
+        match = u;
+        break;
+      }
     }
+    if (match == null) return null;
+    final user = _toUser(match);
+    await _ref.read(settingsStorageProvider).saveCurrentUserCode(user.code);
+    _ref.read(currentUserProvider.notifier).state = user;
     return user;
   }
 
-  /// Signs the current waiter out (does not touch cached master data).
+  /// Signs the current waiter out.
   Future<void> logout() async {
     await _ref.read(settingsStorageProvider).saveCurrentUserCode(null);
     _ref.read(currentUserProvider.notifier).state = null;

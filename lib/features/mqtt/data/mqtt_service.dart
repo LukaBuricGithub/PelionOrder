@@ -6,17 +6,12 @@ import 'package:mqtt_client/mqtt_server_client.dart';
 
 import '../models/mqtt_connection_config.dart';
 
-/// Default config for the plain "MQTT test" button on the hub (the original
-/// Pelion test-broker values). The QR flow supplies its own config instead.
-const kMqttTestConfig =
-    MqttConnectionConfig(licenca: '7D5BE17A85AD3016DE3C914A');
-
 /// A long-lived MQTT connection speaking the real Pelion "semafor" protocol,
-/// driven by a [MqttConnectionConfig] (from a scanned QR code, or the default
-/// test config). Connects and KEEPS the socket open (auto-reconnect), subscribes
-/// to `kasa/{licenca}/poruka`, publishes a retained "online" status and a
-/// "dojava" (visible in PelionAdmin), and acks any inbound message. Everything
-/// is logged to the console.
+/// driven by a [MqttConnectionConfig] built from the scanned QR code. Connects
+/// and KEEPS the socket open (auto-reconnect), subscribes to
+/// `kasa/{licenca}/poruka`, publishes a retained "online" status and a "dojava"
+/// (visible in PelionAdmin), and acks any inbound message. Everything is logged
+/// to the console.
 ///
 /// Topics all live under `kasa/{licenca}/` because the broker ACL is
 /// `readwrite kasa/%u/#` (`%u` = licenca / username).
@@ -26,21 +21,41 @@ const kMqttTestConfig =
 /// would suspend us and the broker would time us out anyway); on resume we
 /// reconnect — but only if a connection was actually established first
 /// ([_shouldBeConnected]), so the app never auto-connects on its own.
-class MqttTestService {
-  MqttTestService._();
-  static final MqttTestService instance = MqttTestService._();
+class MqttService {
+  MqttService._();
+  static final MqttService instance = MqttService._();
 
   MqttServerClient? _client;
   MqttConnectionConfig? _config;
-  bool _testSuffix = false;
 
-  /// Intent flag: true once the user has connected (via the QR "Spoji se" or the
-  /// test button), false after a manual [disconnect]. Only while this is true do
-  /// the lifecycle hooks drop/restore the connection.
+  /// Intent flag: true once the user has connected (via the QR "Spoji se" in
+  /// "Postavke uređaja"), false after a manual [disconnect]. Only while this is
+  /// true do the lifecycle hooks drop/restore the connection.
   bool _shouldBeConnected = false;
+
+  /// The raw `podaci/artikli` payload (the menu: groups + articles), updated
+  /// whenever the broker delivers it (it's retained, so it arrives on connect).
+  /// The menu provider listens to this, parses + persists it.
+  final ValueNotifier<String?> artikliRawJson = ValueNotifier<String?>(null);
+
+  /// The raw `podaci/korisnici` payload (staff/users used for PIN login),
+  /// updated whenever the broker delivers it (retained → arrives on connect).
+  final ValueNotifier<String?> korisniciRawJson = ValueNotifier<String?>(null);
+
+  /// The raw `podaci/stolovi` payload (tables grouped by zone/terrace).
+  final ValueNotifier<String?> stoloviRawJson = ValueNotifier<String?>(null);
+
+  /// The raw `podaci/stolovi_stanje` payload (which tables are occupied).
+  final ValueNotifier<String?> stanjeRawJson = ValueNotifier<String?>(null);
 
   bool get isConnected =>
       _client?.connectionStatus?.state == MqttConnectionState.connected;
+
+  /// The licenca of the active connection (null until connected once).
+  String? get licenca => _config?.licenca;
+
+  /// The exact topic we subscribe to for the menu (null until connected once).
+  String? get subscribedArtikliTopic => _config == null ? null : _tArtikli;
 
   MqttConnectionConfig get _cfg => _config!;
 
@@ -50,22 +65,25 @@ class MqttTestService {
   String get _tPoruka => 'kasa/${_cfg.licenca}/poruka'; // server → device
   String get _tAck => 'kasa/${_cfg.licenca}/ack'; // device → server
   String get _tDojava => 'kasa/${_cfg.licenca}/dojava'; // visible in admin
+  String get _tArtikli =>
+      'kasa/${_cfg.licenca}/podaci/artikli'; // menu (retained)
+  String get _tKorisnici =>
+      'kasa/${_cfg.licenca}/podaci/korisnici'; // staff/users (retained)
+  String get _tStolovi =>
+      'kasa/${_cfg.licenca}/podaci/stolovi'; // tables + zones (retained)
+  String get _tStanje =>
+      'kasa/${_cfg.licenca}/podaci/stolovi_stanje'; // occupancy (retained)
 
-  /// Connects using [config]. The MQTT client-id is the device id
-  /// (`config.uredaj`) — for the QR flow that's the real provisioned id
-  /// (`<licenca>-ORDERMAN-<n>`). Set [testSuffix] to append a unique `-TEST-…`
-  /// suffix so the plain test button never kicks a real device off the broker.
-  Future<String> connectAndSend(
-    MqttConnectionConfig config, {
-    bool testSuffix = false,
-  }) async {
+  /// Connects using [config] (built from the scanned QR code). The MQTT
+  /// client-id is the device id `config.uredaj` — the real provisioned id
+  /// `<licenca>-ORDERMAN-<n>`.
+  Future<String> connectAndSend(MqttConnectionConfig config) async {
     if (isConnected) {
       _publishDojava('Ponovni test iz mobilne aplikacije');
       return 'MQTT: već spojeno — nova dojava poslana (prati CMD / PelionAdmin).';
     }
 
     _config = config;
-    _testSuffix = testSuffix;
     _shouldBeConnected = true; // remember we want to stay connected
     return _openConnection();
   }
@@ -88,16 +106,12 @@ class MqttTestService {
     await _openConnection();
   }
 
-  /// Opens the socket using the stored [_config] / [_testSuffix].
+  /// Opens the socket using the stored [_config].
   Future<String> _openConnection() async {
     final config = _cfg;
 
-    // Client-id = the device id from the QR. The test button adds a unique
-    // suffix so it can't collide with a real device's connection.
-    final suffix =
-        DateTime.now().millisecondsSinceEpoch.toRadixString(36).toUpperCase();
-    final clientId =
-        _testSuffix ? '${config.uredaj}-TEST-$suffix' : config.uredaj;
+    // Client-id = the device id from the QR (`<licenca>-ORDERMAN-<n>`).
+    final clientId = config.uredaj;
 
     final client =
         MqttServerClient.withPort(config.broker, clientId, config.port)
@@ -137,21 +151,6 @@ class MqttTestService {
         .startClean();
     _client = client;
 
-    // Inbound messages (kasa/{licenca}/poruka) → log + ack.
-    client.updates?.listen((events) {
-      for (final e in events) {
-        final m = e.payload as MqttPublishMessage;
-        final payload =
-            MqttPublishPayload.bytesToStringAsString(m.payload.message);
-        debugPrint('MQTT ◂ ${e.topic}: $payload');
-        if (e.topic == _tPoruka) _ack(payload);
-      }
-    });
-    client.published?.listen((m) {
-      debugPrint('MQTT ▸ published ACK id=${m.variableHeader?.messageIdentifier}'
-          ' topic=${m.variableHeader?.topicName}');
-    });
-
     try {
       debugPrint('MQTT ▸ connecting to ssl://${config.broker}:${config.port} '
           'as $clientId (user=${config.licenca})…');
@@ -164,8 +163,35 @@ class MqttTestService {
         return 'MQTT: nije spojeno (${rc ?? 'nepoznato'}).';
       }
 
-      // Receive centrala messages, announce online, and send a visible dojava.
+      // Attach listeners AFTER connect: `client.updates` is null until the
+      // client has connected, so listening earlier silently no-ops and every
+      // inbound message (including the retained menu) is dropped.
+      // (poruka → log + ack; podaci/artikli → the menu payload.)
+      client.updates?.listen((events) {
+        for (final e in events) {
+          final m = e.payload as MqttPublishMessage;
+          final payload =
+              MqttPublishPayload.bytesToStringAsString(m.payload.message);
+          debugPrint('MQTT ◂ ${e.topic}: $payload');
+          if (e.topic == _tPoruka) _ack(payload);
+          if (e.topic == _tArtikli) artikliRawJson.value = payload;
+          if (e.topic == _tKorisnici) korisniciRawJson.value = payload;
+          if (e.topic == _tStolovi) stoloviRawJson.value = payload;
+          if (e.topic == _tStanje) stanjeRawJson.value = payload;
+        }
+      });
+      client.published?.listen((m) {
+        debugPrint(
+            'MQTT ▸ published ACK id=${m.variableHeader?.messageIdentifier}'
+            ' topic=${m.variableHeader?.topicName}');
+      });
+
+      // Now subscribe — the retained menu + users flow to the listener above.
       client.subscribe(_tPoruka, MqttQos.atLeastOnce);
+      client.subscribe(_tArtikli, MqttQos.atLeastOnce);
+      client.subscribe(_tKorisnici, MqttQos.atLeastOnce);
+      client.subscribe(_tStolovi, MqttQos.atLeastOnce);
+      client.subscribe(_tStanje, MqttQos.atLeastOnce);
       _publishStatus('online');
       _publishDojava('Test veze iz mobilne aplikacije');
 

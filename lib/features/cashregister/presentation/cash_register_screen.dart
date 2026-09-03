@@ -6,7 +6,6 @@ import '../../auth/state/auth_controller.dart';
 import '../../auth/state/session_provider.dart';
 import '../../master_data/state/heartbeat_provider.dart';
 import '../../master_data/state/master_data_providers.dart';
-import '../../mqtt/data/mqtt_test.dart';
 import '../../settings/state/settings_provider.dart';
 import '../../shared/presentation/online_status_badge.dart';
 import '../../theme/state/theme_mode_provider.dart';
@@ -63,20 +62,6 @@ class _CashRegisterScreenState extends ConsumerState<CashRegisterScreen> {
     if (mounted) ref.invalidate(pendingOrdersCountProvider);
   }
 
-  /// One-shot MQTT connectivity probe against the Pelion broker.
-  Future<void> _runMqttTest() async {
-    final messenger = ScaffoldMessenger.of(context);
-    messenger.showSnackBar(
-      const SnackBar(content: Text('MQTT: spajanje…')),
-    );
-    final result = await MqttTestService.instance
-        .connectAndSend(kMqttTestConfig, testSuffix: true);
-    if (!mounted) return;
-    messenger
-      ..hideCurrentSnackBar()
-      ..showSnackBar(SnackBar(content: Text(result)));
-  }
-
   /// Back on the hub forgets the current waiter: clears the session (and the
   /// saved user code), which returns the user to the login screen rather than
   /// closing the app. The router's auth redirect (refreshListenable on
@@ -91,9 +76,7 @@ class _CashRegisterScreenState extends ConsumerState<CashRegisterScreen> {
   @override
   Widget build(BuildContext context) {
     final user = ref.watch(currentUserProvider);
-    final pending = ref.watch(pendingOrdersCountProvider).valueOrNull ?? 0;
     final businessName = ref.watch(settingsProvider).businessName;
-    final theme = Theme.of(context);
 
     // Auto-resend the queue whenever the connection comes back up.
     ref.listen(heartbeatProvider, (prev, next) {
@@ -157,23 +140,7 @@ class _CashRegisterScreenState extends ConsumerState<CashRegisterScreen> {
                     subtitle: Text(user?.superuser == true
                         ? 'Voditelj (superuser)'
                         : 'Konobar'),
-                    trailing: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      crossAxisAlignment: CrossAxisAlignment.end,
-                      children: [
-                        const OnlineStatusBadge(),
-                        if (pending > 0) ...[
-                          const SizedBox(height: 6),
-                          Chip(
-                            label: Text('$pending na čekanju'),
-                            backgroundColor:
-                                theme.colorScheme.tertiaryContainer,
-                            visualDensity: VisualDensity.compact,
-                          ),
-                        ],
-                      ],
-                    ),
+                    trailing: const OnlineStatusBadge(),
                   ),
                 ),
                 const SizedBox(height: 8),
@@ -199,9 +166,9 @@ class _CashRegisterScreenState extends ConsumerState<CashRegisterScreen> {
                   },
                 ),
                 _MenuButton(
-                  icon: Icons.wifi_tethering,
-                  label: 'MQTT test',
-                  onTap: _runMqttTest,
+                  icon: Icons.fastfood,
+                  label: 'Artikli (MQTT)',
+                  onTap: () => context.push('/mqtt-tables'),
                 ),
               ],
             ),

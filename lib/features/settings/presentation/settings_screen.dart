@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../master_data/state/master_data_providers.dart';
-import '../../mqtt/data/mqtt_test.dart';
+import '../../mqtt/data/mqtt_service.dart';
 import '../../mqtt/models/mqtt_connection_config.dart';
 import '../../profiles/models/api_entry.dart';
 import '../../profiles/state/profiles_provider.dart';
@@ -18,6 +18,11 @@ import 'qr_scanner_screen.dart';
 class SettingsScreen extends ConsumerWidget {
   const SettingsScreen({super.key});
 
+  /// The server-profile "Podatci za prijavu" flow is disabled — login now uses
+  /// the MQTT staff list. Kept intact; flip to true to bring the card (and its
+  /// editor/delete) back.
+  bool get _showProfileCard => false;
+
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final profiles = ref.watch(profilesProvider);
@@ -30,20 +35,22 @@ class SettingsScreen extends ConsumerWidget {
         padding: EdgeInsets.fromLTRB(
             16, 12, 16, screenContentBottomPadding(context, extra: 24)),
         children: [
-          // ── Podatci za prijavu ───────────────────────────────────────────
-          _SettingsCard(
-            header: 'Podatci za prijavu',
-            child: profiles.entries.isEmpty
-                ? _NoProfile(onAdd: () => _openEditor(context, ref))
-                : _ProfileRow(
-                    entry: profiles.entries.first,
-                    onEdit: () => _openEditor(context, ref,
-                        entry: profiles.entries.first),
-                    onDelete: () =>
-                        _confirmDelete(context, ref, profiles.entries.first),
-                  ),
-          ),
-          const SizedBox(height: 16),
+          // ── Podatci za prijavu (disabled: login now uses MQTT users) ──────
+          if (_showProfileCard) ...[
+            _SettingsCard(
+              header: 'Podatci za prijavu',
+              child: profiles.entries.isEmpty
+                  ? _NoProfile(onAdd: () => _openEditor(context, ref))
+                  : _ProfileRow(
+                      entry: profiles.entries.first,
+                      onEdit: () => _openEditor(context, ref,
+                          entry: profiles.entries.first),
+                      onDelete: () =>
+                          _confirmDelete(context, ref, profiles.entries.first),
+                    ),
+            ),
+            const SizedBox(height: 16),
+          ],
 
           // ── Prikaz ───────────────────────────────────────────────────────
           _SettingsCard(
@@ -240,9 +247,16 @@ class _QrSkenerCard extends StatefulWidget {
   State<_QrSkenerCard> createState() => _QrSkenerCardState();
 }
 
+// TEMP (testing): pre-seed a config from the real venue's QR string so we can
+// connect with one tap ("Spoji se") without scanning. licenca = the part before
+// the first '-' = 53B5079F96A188F16127D962 (matches the KASA that publishes the
+// menu). Remove this and let the scan set the config once testing is done.
+const _kTempTestQrCode = '53B5079F96A188F16127D962-ORDERMAN-1';
+
 class _QrSkenerCardState extends State<_QrSkenerCard> {
-  String? _rawCode;
-  MqttConnectionConfig? _config;
+  String? _rawCode = _kTempTestQrCode;
+  MqttConnectionConfig? _config =
+      MqttConnectionConfig.fromScannedCode(_kTempTestQrCode);
   bool _connecting = false;
 
   Future<void> _scan() async {
@@ -262,7 +276,7 @@ class _QrSkenerCardState extends State<_QrSkenerCard> {
     final messenger = ScaffoldMessenger.of(context);
     setState(() => _connecting = true);
     messenger.showSnackBar(const SnackBar(content: Text('MQTT: spajanje…')));
-    final result = await MqttTestService.instance.connectAndSend(config);
+    final result = await MqttService.instance.connectAndSend(config);
     if (!mounted) return;
     setState(() => _connecting = false);
     messenger

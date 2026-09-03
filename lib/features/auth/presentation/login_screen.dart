@@ -3,7 +3,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../master_data/state/heartbeat_provider.dart';
-import '../../profiles/state/profiles_provider.dart';
+import '../../mqtt/state/mqtt_users_provider.dart';
+// import '../../profiles/state/profiles_provider.dart'; // profile flow disabled
 import '../../shared/presentation/hero_background.dart';
 import '../../theme/state/theme_mode_provider.dart';
 import '../state/login_controller.dart';
@@ -72,15 +73,22 @@ class LoginScreen extends ConsumerStatefulWidget {
 }
 
 class _LoginScreenState extends ConsumerState<LoginScreen> {
+  // Captured in initState so dispose() can stop the heartbeat WITHOUT touching
+  // `ref` — during widget-tree teardown `ref` is already invalid and throws
+  // "Cannot use ref after the widget was disposed". The provider isn't
+  // autoDispose, so this notifier safely outlives the widget.
+  HeartbeatController? _heartbeat;
+
   @override
   void initState() {
     super.initState();
-    Future.microtask(() => ref.read(heartbeatProvider.notifier).start());
+    _heartbeat = ref.read(heartbeatProvider.notifier);
+    Future.microtask(() => _heartbeat?.start());
   }
 
   @override
   void dispose() {
-    ref.read(heartbeatProvider.notifier).stop();
+    _heartbeat?.stop();
     super.dispose();
   }
 
@@ -97,8 +105,13 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     final palette = _LoginPalette.of(Theme.of(context).brightness);
     final online = ref.watch(heartbeatProvider);
     final login = ref.watch(loginControllerProvider);
-    final profiles = ref.watch(profilesProvider);
+    // Login now authenticates against the MQTT staff list (podaci/korisnici),
+    // not a server profile. Prijava is enabled once that list has arrived.
+    final mqttUsers = ref.watch(mqttUsersProvider);
+    final prijavaEnabled = mqttUsers.isNotEmpty;
 
+    /* --- Server-profile based flow (replaced by MQTT users) -----------------
+    final profiles = ref.watch(profilesProvider);
     // When the profile changes (added / edited / deleted in Postavke uređaja),
     // re-check cached data so the Prijava gate stays correct.
     ref.listen(profilesProvider, (prev, next) {
@@ -107,12 +120,10 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
         ref.read(loginControllerProvider.notifier).onProfilesChanged();
       }
     });
-
     final hasProfile = profiles.current != null;
-    // A profile is required to sign in — the PIN is validated against users
-    // downloaded for that profile. Without one there is no venue to belong to.
     final prijavaEnabled = hasProfile && login.hasUsers && !login.syncing;
     final updateEnabled = online && hasProfile && !login.syncing;
+    ------------------------------------------------------------------------- */
 
     return Scaffold(
       body: Stack(
@@ -145,11 +156,12 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                         const SizedBox(height: 20),
                         _OnlineBadge(online: online, palette: palette),
                         const SizedBox(height: 28),
-                        _ProfileCard(
+                        // Server-profile card — disabled; login uses MQTT users.
+                        /* _ProfileCard(
                           palette: palette,
                           name: profiles.current?.name,
                           onTap: () => context.push('/settings'),
-                        ),
+                        ), */
                         if (login.error != null) ...[
                           const SizedBox(height: 14),
                           _ErrorBanner(message: login.error!),
@@ -161,10 +173,11 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                           enabled: prijavaEnabled,
                           onTap: () => context.push('/pin'),
                         ),
-                        if (!hasProfile) ...[
+                        if (mqttUsers.isEmpty) ...[
                           const SizedBox(height: 14),
                           Text(
-                            'Dodajte profil poslužitelja u Postavkama uređaja',
+                            'Spojite se na MQTT (Postavke uređaja) za popis '
+                            'korisnika',
                             textAlign: TextAlign.center,
                             style:
                                 TextStyle(color: palette.label, fontSize: 13),
@@ -173,7 +186,9 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                         const SizedBox(height: 22),
                         Row(
                           children: [
-                            Expanded(
+                            // "Ažuriraj podatke" — disabled; data now arrives over
+                            // MQTT, not a REST profile sync.
+                            /* Expanded(
                               child: _ActionTile(
                                 palette: palette,
                                 icon: Icons.sync,
@@ -185,7 +200,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                                     .updateData(),
                               ),
                             ),
-                            const SizedBox(width: 14),
+                            const SizedBox(width: 14), */
                             Expanded(
                               child: _ActionTile(
                                 palette: palette,
@@ -285,6 +300,8 @@ class _OnlineBadge extends StatelessWidget {
   }
 }
 
+// Kept for the disabled server-profile flow (login now uses MQTT users).
+// ignore: unused_element
 class _ProfileCard extends StatelessWidget {
   const _ProfileCard({
     required this.palette,
@@ -419,6 +436,8 @@ class _ActionTile extends StatelessWidget {
     required this.label,
     required this.enabled,
     required this.onTap,
+    // Only used by the disabled "Ažuriraj podatke" tile; kept for re-enabling.
+    // ignore: unused_element_parameter
     this.loading = false,
   });
 

@@ -13,6 +13,8 @@ import '../features/cashregister/presentation/orders_overview_screen.dart';
 import '../features/cashregister/presentation/table_details_screen.dart';
 import '../features/cashregister/presentation/table_select_screen.dart';
 import '../features/cashregister/presentation/tables_overview_screen.dart';
+import '../features/mqtt/presentation/mqtt_order_screen.dart';
+import '../features/mqtt/presentation/mqtt_table_select_screen.dart';
 import '../features/settings/presentation/settings_screen.dart';
 
 /// App router with a redirect-based auth gate, mirroring ikasa's approach.
@@ -127,6 +129,20 @@ final routerProvider = Provider<GoRouter>((ref) {
       GoRoute(
         path: '/orders-overview',
         builder: (context, state) => const OrdersOverviewScreen(),
+      ),
+      GoRoute(
+        path: '/mqtt-tables',
+        builder: (context, state) => const MqttTableSelectScreen(),
+      ),
+      GoRoute(
+        path: '/mqtt-menu/:broj',
+        builder: (context, state) {
+          final broj = int.tryParse(state.pathParameters['broj'] ?? '');
+          return MqttOrderScreen(
+            tableBroj: broj,
+            tableNaziv: state.uri.queryParameters['naziv'],
+          );
+        },
       ),
     ],
   );
