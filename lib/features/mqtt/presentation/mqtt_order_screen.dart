@@ -8,6 +8,8 @@ import 'package:intl/intl.dart';
 import '../models/mqtt_menu.dart';
 import '../state/mqtt_cart.dart';
 import '../state/mqtt_menu_provider.dart';
+import '../state/mqtt_orders_provider.dart';
+import 'mqtt_napomene.dart';
 import 'mqtt_order_details_screen.dart';
 
 /// Screen-size-driven UI scale (identical to the New Order screen): 1.0 ≈ a
@@ -46,10 +48,25 @@ class _MqttOrderScreenState extends ConsumerState<MqttOrderScreen> {
 
   // Rebuilt each build from the current menu — maps article code → article.
   final _byCode = <int, MqttArticle>{};
+  MqttMenu _menu = MqttMenu.empty;
+
+  /// Predefined remark names available for the article (global "sve" remarks +
+  /// the ones the article lists by id).
+  List<String> _predefinedFor(int code) {
+    final a = _byCode[code];
+    return a == null ? const [] : _menu.predefinedFor(a);
+  }
 
   @override
   void initState() {
     super.initState();
+    // Restore any in-progress order for this table (kept for the session), then
+    // start listening so subsequent edits are saved back.
+    final broj = widget.tableBroj;
+    if (broj != null) {
+      final stored = ref.read(mqttOrdersProvider.notifier).linesFor(broj);
+      if (stored.isNotEmpty) _cart.loadFrom(stored);
+    }
     _cart.addListener(_onCart);
     // Match the New Order screen: hide the Android nav bar (keep the status
     // bar) and lock to portrait while ordering.
@@ -74,6 +91,12 @@ class _MqttOrderScreenState extends ConsumerState<MqttOrderScreen> {
   }
 
   void _onCart() {
+    // Persist the order for this table so it survives leaving the screen and
+    // colours the table in the floor plan.
+    final broj = widget.tableBroj;
+    if (broj != null) {
+      ref.read(mqttOrdersProvider.notifier).save(broj, _cart.lines);
+    }
     if (mounted) setState(() {});
   }
 
@@ -166,7 +189,8 @@ class _MqttOrderScreenState extends ConsumerState<MqttOrderScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final groups = ref.watch(mqttMenuProvider).groups;
+    _menu = ref.watch(mqttMenuProvider);
+    final groups = _menu.groups;
     _byCode
       ..clear()
       ..addEntries([
@@ -208,12 +232,10 @@ class _MqttOrderScreenState extends ConsumerState<MqttOrderScreen> {
                           children: [
                             Expanded(
                               child: _CartCard(
-                                lines: _cart.lines,
+                                cart: _cart,
                                 byCode: _byCode,
                                 money: _money,
-                                onRemove: _cart.removeLine,
-                                onMinus: _cart.decrementLine,
-                                onPlus: _cart.incrementLine,
+                                predefinedFor: _predefinedFor,
                               ),
                             ),
                             const SizedBox(width: 10),
@@ -253,7 +275,6 @@ class _MqttOrderScreenState extends ConsumerState<MqttOrderScreen> {
                           Expanded(
                             child: _ArticleGrid(
                               articles: articles,
-                              qtyFor: _cart.qtyFor,
                               onAdd: _cart.addLine,
                             ),
                           ),
@@ -269,23 +290,20 @@ class _MqttOrderScreenState extends ConsumerState<MqttOrderScreen> {
 }
 
 /// The running order as a card of compact lines (name, quantity, line total,
-/// remove ✕). Auto-scrolls to the newest line when one is added.
+/// remove ✕). Each line is expandable — tapping the name / non-button area
+/// reveals its napomene editor. Auto-scrolls to the newest line when added.
 class _CartCard extends StatefulWidget {
   const _CartCard({
-    required this.lines,
+    required this.cart,
     required this.byCode,
     required this.money,
-    required this.onRemove,
-    required this.onMinus,
-    required this.onPlus,
+    required this.predefinedFor,
   });
 
-  final List<MqttCartLine> lines;
+  final MqttCart cart;
   final Map<int, MqttArticle> byCode;
   final NumberFormat money;
-  final ValueChanged<int> onRemove;
-  final ValueChanged<int> onMinus;
-  final ValueChanged<int> onPlus;
+  final List<String> Function(int code) predefinedFor;
 
   @override
   State<_CartCard> createState() => _CartCardState();
@@ -304,8 +322,7 @@ class _CartCardState extends State<_CartCard> {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    final lines = widget.lines;
-    final money = widget.money;
+    final lines = widget.cart.lines;
     final s = _screenScale(context);
 
     // The cart list is mutated in place (same reference), so compare against the
@@ -344,63 +361,165 @@ class _CartCardState extends State<_CartCard> {
               itemBuilder: (context, i) {
                 final line = lines[i];
                 final article = widget.byCode[line.code];
-                final name = article?.name ?? 'Artikl ${line.code}';
-                final unit = article?.unit ?? '';
-                final lineTotal = (article?.price ?? 0) * line.qty;
-                return Padding(
-                  padding: EdgeInsets.fromLTRB(12 * s, 3 * s, 6 * s, 4 * s),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Row(
-                        children: [
-                          Expanded(
-                            child: Text(
-                              name,
-                              style: TextStyle(
-                                fontSize: 14 * s,
-                                fontWeight: FontWeight.w700,
-                              ),
-                            ),
-                          ),
-                          InkResponse(
-                            onTap: () => widget.onRemove(i),
-                            radius: 18 * s,
-                            child: Padding(
-                              padding: EdgeInsets.all(4 * s),
-                              child: Icon(Icons.close,
-                                  size: 18 * s, color: scheme.error),
-                            ),
-                          ),
-                        ],
+                return _CartLineTile(
+                  key: ValueKey('cartline_${line.code}_$i'),
+                  index: i,
+                  line: line,
+                  cart: widget.cart,
+                  name: article?.name ?? 'Artikl ${line.code}',
+                  unit: article?.unit ?? '',
+                  lineTotal:
+                      widget.money.format((article?.price ?? 0) * line.qty),
+                  predefined: widget.predefinedFor(line.code),
+                );
+              },
+            ),
+    );
+  }
+}
+
+/// One expandable cart line. Tapping the name / non-button area toggles the
+/// napomene editor (closed by default); the +/−/✕ buttons keep their own taps.
+class _CartLineTile extends StatefulWidget {
+  const _CartLineTile({
+    super.key,
+    required this.index,
+    required this.line,
+    required this.cart,
+    required this.name,
+    required this.unit,
+    required this.lineTotal,
+    required this.predefined,
+  });
+
+  final int index;
+  final MqttCartLine line;
+  final MqttCart cart;
+  final String name;
+  final String unit;
+  final String lineTotal;
+  final List<String> predefined;
+
+  @override
+  State<_CartLineTile> createState() => _CartLineTileState();
+}
+
+class _CartLineTileState extends State<_CartLineTile> {
+  bool _expanded = false;
+
+  void _toggle() {
+    setState(() => _expanded = !_expanded);
+    // Let the expand/collapse animation settle, then scroll the cart list so
+    // the content is in view: reveal the dropdown on open, settle back on close
+    // (keepVisibleAtEnd nudges just enough to show the line's bottom edge).
+    Future.delayed(const Duration(milliseconds: 200), () {
+      if (!mounted) return;
+      Scrollable.ensureVisible(
+        context,
+        duration: const Duration(milliseconds: 220),
+        curve: Curves.easeOut,
+        alignmentPolicy: ScrollPositionAlignmentPolicy.keepVisibleAtEnd,
+      );
+    });
+  }
+
+  void _editRemarks() {
+    showMqttRemarksSheet(
+      context: context,
+      predefined: widget.predefined,
+      selected: widget.line.remarks,
+      onToggle: (r) => widget.cart.toggleRemark(widget.index, r),
+      onCustom: (r) => widget.cart.addCustomRemark(widget.index, r),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final line = widget.line;
+    final s = _screenScale(context);
+
+    return Padding(
+      padding: EdgeInsets.fromLTRB(12 * s, 3 * s, 6 * s, 4 * s),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          // Tapping anywhere here (except the ✕ / − / + buttons) toggles the
+          // napomene editor.
+          GestureDetector(
+            onTap: _toggle,
+            behavior: HitTestBehavior.opaque,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        widget.name,
+                        style: TextStyle(
+                          fontSize: 14 * s,
+                          fontWeight: FontWeight.w700,
+                        ),
                       ),
-                      Padding(
-                        padding: EdgeInsets.only(right: 2 * s, top: 2 * s),
-                        child: Row(
-                          children: [
-                            _QtyStepper(
-                              qty: line.qty,
-                              unit: unit,
-                              onMinus: () => widget.onMinus(i),
-                              onPlus: () => widget.onPlus(i),
-                            ),
-                            const Spacer(),
-                            Text(
-                              money.format(lineTotal),
-                              style: TextStyle(
-                                fontSize: 13 * s,
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                          ],
+                    ),
+                    // Big invisible hit area on the top-right so removing is
+                    // easy — the ✕ icon itself stays the same size.
+                    GestureDetector(
+                      onTap: () => widget.cart.removeLine(widget.index),
+                      behavior: HitTestBehavior.opaque,
+                      child: Padding(
+                        padding: EdgeInsets.fromLTRB(24 * s, 6 * s, 8 * s, 14 * s),
+                        child: Icon(Icons.close,
+                            size: 18 * s, color: scheme.error),
+                      ),
+                    ),
+                  ],
+                ),
+                Padding(
+                  padding: EdgeInsets.only(right: 2 * s, top: 2 * s),
+                  child: Row(
+                    children: [
+                      _QtyStepper(
+                        qty: line.qty,
+                        unit: widget.unit,
+                        onMinus: () => widget.cart.decrementLine(widget.index),
+                        onPlus: () => widget.cart.incrementLine(widget.index),
+                      ),
+                      const Spacer(),
+                      Text(
+                        widget.lineTotal,
+                        style: TextStyle(
+                          fontSize: 13 * s,
+                          fontWeight: FontWeight.w600,
                         ),
                       ),
                     ],
                   ),
-                );
-              },
+                ),
+              ],
             ),
+          ),
+          // Napomene editor — revealed when expanded.
+          AnimatedSize(
+            duration: const Duration(milliseconds: 180),
+            curve: Curves.easeOut,
+            alignment: Alignment.topCenter,
+            child: _expanded
+                ? Padding(
+                    padding: EdgeInsets.only(top: 6 * s, right: 4 * s),
+                    child: MqttNoteRow(
+                      remarks: line.remarks,
+                      onOpen: _editRemarks,
+                      onRemove: (r) =>
+                          widget.cart.toggleRemark(widget.index, r),
+                    ),
+                  )
+                : const SizedBox(width: double.infinity),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -664,12 +783,15 @@ class _PickerBar extends StatelessWidget {
     final rowHeight = 44.0 * s;
     final vPad = 4.0 * s;
     const perPage = 8; // 4 columns × 2 rows
+    // Only reserve a second row when there are more than 4 groups — otherwise a
+    // single row of groups leaves an empty row (the gap above the articles).
+    final rows = groups.length > 4 ? 2 : 1;
     final pageCount = (groups.length + perPage - 1) ~/ perPage;
 
     return Padding(
       padding: EdgeInsets.only(bottom: 2 * s),
       child: SizedBox(
-        height: rowHeight * 2 + spacing + vPad * 2,
+        height: rowHeight * rows + spacing * (rows - 1) + vPad * 2,
         child: PageView.builder(
           itemCount: pageCount,
           itemBuilder: (context, page) {
@@ -726,12 +848,10 @@ class _PickerBar extends StatelessWidget {
 class _ArticleGrid extends StatelessWidget {
   const _ArticleGrid({
     required this.articles,
-    required this.qtyFor,
     required this.onAdd,
   });
 
   final List<MqttArticle> articles;
-  final double Function(int code) qtyFor;
   final ValueChanged<int> onAdd;
 
   static const _perPage = 16; // 4 columns × 4 rows
@@ -769,7 +889,6 @@ class _ArticleGrid extends StatelessWidget {
             final a = pageItems[i];
             return _ArticleTile(
               name: a.name,
-              qty: qtyFor(a.code),
               onTap: () => onAdd(a.code),
             );
           },
@@ -782,24 +901,20 @@ class _ArticleGrid extends StatelessWidget {
 class _ArticleTile extends StatelessWidget {
   const _ArticleTile({
     required this.name,
-    required this.qty,
     required this.onTap,
   });
 
   final String name;
-  final double qty;
   final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
     final dark = Theme.of(context).brightness == Brightness.dark;
-    final inOrder = qty > 0;
-    final fill = inOrder
-        ? (dark ? const Color(0xFF3E6CA6) : const Color(0xFF4A78B4))
-        : (dark ? const Color(0xFF25303C) : const Color(0xFFE4EBF3));
-    final textColor = inOrder
-        ? Colors.white
-        : (dark ? const Color(0xFFC5D2DF) : const Color(0xFF2C3E52));
+    // Items already in the order are NOT coloured — every tile is neutral. The
+    // only colour is a brief blue tint while the tile is pressed (feedback).
+    final fill = dark ? const Color(0xFF25303C) : const Color(0xFFE4EBF3);
+    final textColor = dark ? const Color(0xFFC5D2DF) : const Color(0xFF2C3E52);
+    final press = dark ? const Color(0xFF3E6CA6) : const Color(0xFF4A78B4);
     final s = _screenScale(context);
     return Material(
       color: fill,
@@ -807,6 +922,8 @@ class _ArticleTile extends StatelessWidget {
       clipBehavior: Clip.antiAlias,
       child: InkWell(
         onTap: onTap,
+        splashColor: press.withValues(alpha: 0.35),
+        highlightColor: press.withValues(alpha: 0.22),
         child: Padding(
           padding: EdgeInsets.all(3 * s),
           child: Center(

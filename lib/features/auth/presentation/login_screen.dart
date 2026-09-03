@@ -103,7 +103,6 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
   @override
   Widget build(BuildContext context) {
     final palette = _LoginPalette.of(Theme.of(context).brightness);
-    final online = ref.watch(heartbeatProvider);
     final login = ref.watch(loginControllerProvider);
     // Login now authenticates against the MQTT staff list (podaci/korisnici),
     // not a server profile. Prijava is enabled once that list has arrived.
@@ -153,8 +152,6 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                             letterSpacing: 0.5,
                           ),
                         ),
-                        const SizedBox(height: 20),
-                        _OnlineBadge(online: online, palette: palette),
                         const SizedBox(height: 28),
                         // Server-profile card — disabled; login uses MQTT users.
                         /* _ProfileCard(
@@ -262,6 +259,8 @@ class _ThemeToggleButton extends ConsumerWidget {
   }
 }
 
+// Kept for the disabled venue-server ping indicator (login uses MQTT now).
+// ignore: unused_element
 class _OnlineBadge extends StatelessWidget {
   const _OnlineBadge({required this.online, required this.palette});
   final bool online;

@@ -7,6 +7,7 @@ import '../data/mqtt_service.dart';
 import '../models/mqtt_menu.dart';
 
 const _kMqttArtikliKey = 'mqtt_artikli_raw_v1';
+const _kMqttArtikliVerKey = 'mqtt_artikli_ver_v1';
 
 /// Holds the MQTT-delivered menu — article groups + predefined remark
 /// definitions ([MqttMenu]). Loads the last-saved payload from local storage on
@@ -15,27 +16,30 @@ const _kMqttArtikliKey = 'mqtt_artikli_raw_v1';
 /// next connection re-delivers the retained message).
 class MqttMenuNotifier extends StateNotifier<MqttMenu> {
   MqttMenuNotifier(this._prefs) : super(MqttMenu.empty) {
-    // 1) Restore the previously saved menu (if any).
+    // Restore the previously saved menu (if any) so it shows before connect.
     final saved = _prefs.getString(_kMqttArtikliKey);
     if (saved != null && saved.isNotEmpty) state = _parse(saved) ?? state;
 
-    // 2) If a payload already arrived before this provider existed, use it.
-    _applyIfPresent();
-
-    // 3) Live updates from the broker.
-    MqttService.instance.artikliRawJson.addListener(_onArtikli);
+    // Re-evaluate on either the data or the version arriving (order-agnostic).
+    _reevaluate();
+    MqttService.instance.artikliRawJson.addListener(_reevaluate);
+    MqttService.instance.verzijaRawJson.addListener(_reevaluate);
   }
 
   final SharedPreferences _prefs;
 
-  void _onArtikli() => _applyIfPresent();
-
-  void _applyIfPresent() {
+  /// Applies the artikli payload only when its version hash differs from the
+  /// saved one — skips re-parsing/re-storing an unchanged menu.
+  void _reevaluate() {
     final raw = MqttService.instance.artikliRawJson.value;
     if (raw == null || raw.isEmpty) return;
+    final hash = MqttService.instance.versionFor('artikli');
+    if (hash == null) return; // wait until the version is known
+    if (hash == _prefs.getString(_kMqttArtikliVerKey)) return; // unchanged
     final parsed = _parse(raw);
     if (parsed == null) return;
-    _prefs.setString(_kMqttArtikliKey, raw); // save locally
+    _prefs.setString(_kMqttArtikliKey, raw);
+    _prefs.setString(_kMqttArtikliVerKey, hash);
     state = parsed;
   }
 
@@ -50,7 +54,8 @@ class MqttMenuNotifier extends StateNotifier<MqttMenu> {
 
   @override
   void dispose() {
-    MqttService.instance.artikliRawJson.removeListener(_onArtikli);
+    MqttService.instance.artikliRawJson.removeListener(_reevaluate);
+    MqttService.instance.verzijaRawJson.removeListener(_reevaluate);
     super.dispose();
   }
 }

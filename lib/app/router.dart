@@ -88,7 +88,21 @@ final routerProvider = Provider<GoRouter>((ref) {
       ),
       GoRoute(
         path: '/settings',
-        builder: (context, state) => const SettingsScreen(),
+        // A cross-fade instead of the default slide/zoom: the settings screen
+        // fades in over the (static) login and fades back out on return. Opacity
+        // only — no sliding page to reveal both screens at once, so no flicker
+        // of the other screen on a fast back.
+        pageBuilder: (context, state) => CustomTransitionPage<void>(
+          key: state.pageKey,
+          transitionDuration: const Duration(milliseconds: 220),
+          reverseTransitionDuration: const Duration(milliseconds: 220),
+          transitionsBuilder: (context, animation, secondaryAnimation, child) =>
+              FadeTransition(
+            opacity: CurvedAnimation(parent: animation, curve: Curves.easeInOut),
+            child: child,
+          ),
+          child: const SettingsScreen(),
+        ),
       ),
       GoRoute(
         path: '/cash-register',

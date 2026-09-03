@@ -7,6 +7,7 @@ import '../data/mqtt_service.dart';
 import '../models/mqtt_user.dart';
 
 const _kMqttKorisniciKey = 'mqtt_korisnici_raw_v1';
+const _kMqttKorisniciVerKey = 'mqtt_korisnici_ver_v1';
 
 /// Holds the MQTT-delivered staff list (`podaci/korisnici`) used for PIN login.
 /// Loads the last-saved list from local storage on startup, then updates live
@@ -16,20 +17,25 @@ class MqttUsersNotifier extends StateNotifier<List<MqttUser>> {
   MqttUsersNotifier(this._prefs) : super(const []) {
     final saved = _prefs.getString(_kMqttKorisniciKey);
     if (saved != null && saved.isNotEmpty) state = _parse(saved) ?? state;
-    _applyIfPresent();
-    MqttService.instance.korisniciRawJson.addListener(_onKorisnici);
+    _reevaluate();
+    MqttService.instance.korisniciRawJson.addListener(_reevaluate);
+    MqttService.instance.verzijaRawJson.addListener(_reevaluate);
   }
 
   final SharedPreferences _prefs;
 
-  void _onKorisnici() => _applyIfPresent();
-
-  void _applyIfPresent() {
+  /// Applies the korisnici payload only when its version hash differs from the
+  /// saved one — skips re-parsing/re-storing an unchanged staff list.
+  void _reevaluate() {
     final raw = MqttService.instance.korisniciRawJson.value;
     if (raw == null || raw.isEmpty) return;
+    final hash = MqttService.instance.versionFor('korisnici');
+    if (hash == null) return; // wait until the version is known
+    if (hash == _prefs.getString(_kMqttKorisniciVerKey)) return; // unchanged
     final parsed = _parse(raw);
     if (parsed == null) return;
-    _prefs.setString(_kMqttKorisniciKey, raw); // save locally
+    _prefs.setString(_kMqttKorisniciKey, raw);
+    _prefs.setString(_kMqttKorisniciVerKey, hash);
     state = parsed;
   }
 
@@ -44,7 +50,8 @@ class MqttUsersNotifier extends StateNotifier<List<MqttUser>> {
 
   @override
   void dispose() {
-    MqttService.instance.korisniciRawJson.removeListener(_onKorisnici);
+    MqttService.instance.korisniciRawJson.removeListener(_reevaluate);
+    MqttService.instance.verzijaRawJson.removeListener(_reevaluate);
     super.dispose();
   }
 }

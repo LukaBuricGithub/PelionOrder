@@ -8,6 +8,14 @@ class MqttCartLine {
   final int code;
   double qty = 1;
   final List<String> remarks = [];
+
+  /// A detached copy (so the session store and the live cart don't share
+  /// mutable state).
+  MqttCartLine copy() {
+    final l = MqttCartLine(code)..qty = qty;
+    l.remarks.addAll(remarks);
+    return l;
+  }
 }
 
 /// A local, in-memory order cart shared between the MQTT order screen and its
@@ -76,4 +84,13 @@ class MqttCart extends ChangeNotifier {
 
   double qtyFor(int code) =>
       lines.where((l) => l.code == code).fold(0.0, (s, l) => s + l.qty);
+
+  /// Replaces the cart contents with copies of [src] (used to restore a saved
+  /// order when reopening a table).
+  void loadFrom(List<MqttCartLine> src) {
+    lines
+      ..clear()
+      ..addAll([for (final l in src) l.copy()]);
+    notifyListeners();
+  }
 }

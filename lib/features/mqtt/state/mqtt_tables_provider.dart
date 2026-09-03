@@ -7,6 +7,7 @@ import '../data/mqtt_service.dart';
 import '../models/mqtt_tables.dart';
 
 const _kMqttStoloviKey = 'mqtt_stolovi_raw_v1';
+const _kMqttStoloviVerKey = 'mqtt_stolovi_ver_v1';
 const _kMqttStanjeKey = 'mqtt_stolovi_stanje_raw_v1';
 
 /// Holds the MQTT-delivered tables grouped by zone (`podaci/stolovi`). Loads the
@@ -15,20 +16,25 @@ class MqttTablesNotifier extends StateNotifier<List<MqttTerrace>> {
   MqttTablesNotifier(this._prefs) : super(const []) {
     final saved = _prefs.getString(_kMqttStoloviKey);
     if (saved != null && saved.isNotEmpty) state = _parse(saved) ?? state;
-    _applyIfPresent();
-    MqttService.instance.stoloviRawJson.addListener(_onStolovi);
+    _reevaluate();
+    MqttService.instance.stoloviRawJson.addListener(_reevaluate);
+    MqttService.instance.verzijaRawJson.addListener(_reevaluate);
   }
 
   final SharedPreferences _prefs;
 
-  void _onStolovi() => _applyIfPresent();
-
-  void _applyIfPresent() {
+  /// Applies the stolovi payload only when its version hash differs from the
+  /// saved one — skips re-parsing/re-storing an unchanged table layout.
+  void _reevaluate() {
     final raw = MqttService.instance.stoloviRawJson.value;
     if (raw == null || raw.isEmpty) return;
+    final hash = MqttService.instance.versionFor('stolovi');
+    if (hash == null) return; // wait until the version is known
+    if (hash == _prefs.getString(_kMqttStoloviVerKey)) return; // unchanged
     final parsed = _parse(raw);
     if (parsed == null) return;
     _prefs.setString(_kMqttStoloviKey, raw);
+    _prefs.setString(_kMqttStoloviVerKey, hash);
     state = parsed;
   }
 
@@ -43,7 +49,8 @@ class MqttTablesNotifier extends StateNotifier<List<MqttTerrace>> {
 
   @override
   void dispose() {
-    MqttService.instance.stoloviRawJson.removeListener(_onStolovi);
+    MqttService.instance.stoloviRawJson.removeListener(_reevaluate);
+    MqttService.instance.verzijaRawJson.removeListener(_reevaluate);
     super.dispose();
   }
 }
@@ -53,9 +60,10 @@ final mqttTablesProvider =
   return MqttTablesNotifier(ref.watch(sharedPreferencesProvider));
 });
 
-/// Holds the set of occupied ("zauzet") table numbers (`podaci/stolovi_stanje`).
+/// Holds occupied ("zauzet") tables keyed by number (`podaci/stolovi_stanje`),
+/// each with its server-side summary (cuser, waiter, amount, item count).
 /// Updates live + persists so the last-known occupancy shows before reconnect.
-class MqttOccupiedNotifier extends StateNotifier<Set<int>> {
+class MqttOccupiedNotifier extends StateNotifier<Map<int, MqttTableState>> {
   MqttOccupiedNotifier(this._prefs) : super(const {}) {
     final saved = _prefs.getString(_kMqttStanjeKey);
     if (saved != null && saved.isNotEmpty) state = _parse(saved) ?? state;
@@ -76,9 +84,9 @@ class MqttOccupiedNotifier extends StateNotifier<Set<int>> {
     state = parsed;
   }
 
-  Set<int>? _parse(String raw) {
+  Map<int, MqttTableState>? _parse(String raw) {
     try {
-      return occupiedStoloviFromStanje(raw);
+      return tableStatesFromStanje(raw);
     } catch (e) {
       debugPrint('MQTT stolovi_stanje parse failed: $e');
       return null;
@@ -93,6 +101,6 @@ class MqttOccupiedNotifier extends StateNotifier<Set<int>> {
 }
 
 final mqttOccupiedProvider =
-    StateNotifierProvider<MqttOccupiedNotifier, Set<int>>((ref) {
+    StateNotifierProvider<MqttOccupiedNotifier, Map<int, MqttTableState>>((ref) {
   return MqttOccupiedNotifier(ref.watch(sharedPreferencesProvider));
 });

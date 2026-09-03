@@ -4,12 +4,15 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../auth/state/session_provider.dart';
 import '../../cashregister/presentation/table_select_screen.dart'
     show precacheTableSelectSvgs;
 import '../../settings/models/table_view_size.dart';
 import '../../settings/state/settings_provider.dart';
 import '../models/mqtt_tables.dart';
+import '../state/mqtt_orders_provider.dart';
 import '../state/mqtt_tables_provider.dart';
+import 'mqtt_table_view_screen.dart';
 
 // SVG assets (shared with the Odabir stola screen).
 const _kSprite = 'assets/table_select/table_sprite.svg';
@@ -17,6 +20,14 @@ const _kSpriteDark = 'assets/table_select/table_sprite_dark.svg';
 const _kWalls = 'assets/table_select/walls';
 const _kDarkAssetTint =
     ColorFilter.mode(Color(0xFF434A53), BlendMode.modulate);
+
+/// How a table tile is presented / behaves.
+enum _TileStatus {
+  free, // openable → new order
+  order, // your in-progress local order → openable, editable
+  occupiedMine, // occupied by you → openable, read-only summary
+  occupiedOther, // occupied by someone else → blocked
+}
 
 /// MQTT floor plan: pick a zone (terasa), then a free table to open its menu.
 /// Same visuals as "Odabir stola", but tables/zones come from `podaci/stolovi`
@@ -49,6 +60,9 @@ class _MqttTableSelectScreenState extends ConsumerState<MqttTableSelectScreen> {
   Widget build(BuildContext context) {
     final zones = ref.watch(mqttTablesProvider);
     final occupied = ref.watch(mqttOccupiedProvider);
+    // Tables with a local (in-progress) order — coloured "yours" and reopenable.
+    final withOrders = ref.watch(mqttOrdersProvider).keys.toSet();
+    final myCuser = ref.watch(currentUserProvider)?.code;
     final columns = _columns(ref.watch(settingsProvider).tableViewSize);
 
     return Scaffold(
@@ -56,14 +70,16 @@ class _MqttTableSelectScreenState extends ConsumerState<MqttTableSelectScreen> {
       body: SafeArea(
         child: zones.isEmpty
             ? const _EmptyTables()
-            : _buildBody(zones, occupied, columns),
+            : _buildBody(zones, occupied, withOrders, myCuser, columns),
       ),
     );
   }
 
   Widget _buildBody(
     List<MqttTerrace> zones,
-    Set<int> occupied,
+    Map<int, MqttTableState> occupied,
+    Set<int> withOrders,
+    String? myCuser,
     int columns,
   ) {
     final selected = _selectedZone.clamp(0, zones.length - 1);
@@ -86,6 +102,8 @@ class _MqttTableSelectScreenState extends ConsumerState<MqttTableSelectScreen> {
                   : _PagedTableGrid(
                       tables: tables,
                       occupied: occupied,
+                      withOrders: withOrders,
+                      myCuser: myCuser,
                       columns: columns,
                       showName: columns < 4, // drop naziv at "small"
                       onTapTable: _onTap,
@@ -102,17 +120,28 @@ class _MqttTableSelectScreenState extends ConsumerState<MqttTableSelectScreen> {
           ? const Color(0xFF10151C)
           : const Color(0xFFF4F6F8);
 
-  void _onTap(MqttTable table, bool isOccupied) {
-    if (isOccupied) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Stol je zauzet.')),
-      );
-      return;
+  void _onTap(MqttTable table, _TileStatus status, MqttTableState? occ) {
+    switch (status) {
+      case _TileStatus.occupiedOther:
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Stol je zauzet od drugog konobara.')),
+        );
+      case _TileStatus.occupiedMine:
+        // Read-only summary of the table (occupied by the current user).
+        Navigator.of(context).push(MaterialPageRoute<void>(
+          builder: (_) => MqttTableViewScreen(
+            state: occ!,
+            tableBroj: table.broj,
+            tableNaziv: table.naziv.isEmpty ? null : table.naziv,
+          ),
+        ));
+      case _TileStatus.free:
+      case _TileStatus.order:
+        final q = table.naziv.isEmpty
+            ? ''
+            : '?naziv=${Uri.encodeComponent(table.naziv)}';
+        context.push('/mqtt-menu/${table.broj}$q');
     }
-    final q = table.naziv.isEmpty
-        ? ''
-        : '?naziv=${Uri.encodeComponent(table.naziv)}';
-    context.push('/mqtt-menu/${table.broj}$q');
   }
 }
 
@@ -121,16 +150,33 @@ class _PagedTableGrid extends StatelessWidget {
   const _PagedTableGrid({
     required this.tables,
     required this.occupied,
+    required this.withOrders,
+    required this.myCuser,
     required this.columns,
     required this.showName,
     required this.onTapTable,
   });
 
   final List<MqttTable> tables;
-  final Set<int> occupied;
+  final Map<int, MqttTableState> occupied;
+  final Set<int> withOrders;
+  final String? myCuser;
   final int columns;
   final bool showName;
-  final void Function(MqttTable table, bool isOccupied) onTapTable;
+  final void Function(MqttTable table, _TileStatus status, MqttTableState? occ)
+      onTapTable;
+
+  _TileStatus _statusFor(MqttTable table) {
+    final occ = occupied[table.broj];
+    if (occ != null) {
+      return occ.cuser == myCuser
+          ? _TileStatus.occupiedMine
+          : _TileStatus.occupiedOther;
+    }
+    return withOrders.contains(table.broj)
+        ? _TileStatus.order
+        : _TileStatus.free;
+  }
 
   static const double _pad = 6;
   static const double _spacing = 6;
@@ -165,12 +211,13 @@ class _PagedTableGrid extends StatelessWidget {
               itemCount: pageItems.length,
               itemBuilder: (context, i) {
                 final table = pageItems[i];
-                final isOccupied = occupied.contains(table.broj);
+                final status = _statusFor(table);
                 return _TableCell(
                   table: table,
-                  occupied: isOccupied,
+                  status: status,
                   showName: showName,
-                  onTap: () => onTapTable(table, isOccupied),
+                  onTap: () =>
+                      onTapTable(table, status, occupied[table.broj]),
                 );
               },
             );
@@ -186,25 +233,31 @@ class _PagedTableGrid extends StatelessWidget {
 class _TableCell extends StatelessWidget {
   const _TableCell({
     required this.table,
-    required this.occupied,
+    required this.status,
     required this.showName,
     required this.onTap,
   });
 
   final MqttTable table;
-  final bool occupied;
+  final _TileStatus status;
   final bool showName;
   final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
     final dark = Theme.of(context).brightness == Brightness.dark;
-    // Occupied → red (blocked). Free → neutral (openable).
-    final (fill, fg) = occupied
-        ? (const Color(0xFFD46A5A), Colors.white)
-        : (dark
-            ? (const Color(0xFF3A4756), const Color(0xFFC9D3DE))
-            : (const Color(0xFFD8DEE4), const Color(0xFF37424E)));
+    // Colour + corner icon per status: occupied → red (lock = blocked,
+    // eye = yours/viewable), your order → blue, free → neutral.
+    final (Color fill, Color fg, IconData? corner) = switch (status) {
+      _TileStatus.occupiedOther =>
+        (const Color(0xFFD46A5A), Colors.white, Icons.lock),
+      _TileStatus.occupiedMine =>
+        (const Color(0xFFD46A5A), Colors.white, Icons.visibility),
+      _TileStatus.order => (const Color(0xFF4A78B4), Colors.white, null),
+      _TileStatus.free => dark
+          ? (const Color(0xFF3A4756), const Color(0xFFC9D3DE), null)
+          : (const Color(0xFFD8DEE4), const Color(0xFF37424E), null),
+    };
     final hasName = showName && table.naziv.isNotEmpty;
 
     return GestureDetector(
@@ -266,11 +319,11 @@ class _TableCell extends StatelessWidget {
                   ),
                 ),
               ),
-              if (occupied)
+              if (corner != null)
                 Positioned(
                   top: w * 0.22,
                   right: w * 0.22,
-                  child: Icon(Icons.lock, size: w * 0.11, color: fg),
+                  child: Icon(corner, size: w * 0.11, color: fg),
                 ),
             ],
           );
@@ -365,6 +418,7 @@ class _ZoneChips extends StatelessWidget {
         separatorBuilder: (_, _) => const SizedBox(width: 8),
         itemBuilder: (context, i) => ChoiceChip(
           label: Text(zones[i].label),
+          showCheckmark: false,
           selected: i == selected,
           onSelected: (_) => onSelect(i),
         ),

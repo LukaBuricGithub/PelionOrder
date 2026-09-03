@@ -7,7 +7,6 @@ import 'package:go_router/go_router.dart';
 import '../../master_data/models/venue_table.dart';
 import '../../settings/models/table_view_size.dart';
 import '../../settings/state/settings_provider.dart';
-import '../../shared/presentation/online_status_badge.dart';
 import '../state/table_select_controller.dart';
 
 // ── SVG assets (see assets/table_select) ───────────────────────────────────
@@ -88,10 +87,6 @@ class _TableSelectScreenState extends ConsumerState<TableSelectScreen> {
             tooltip: 'Osvježi',
             icon: const Icon(Icons.refresh),
             onPressed: controller.reload,
-          ),
-          const Padding(
-            padding: EdgeInsets.only(right: 12),
-            child: Center(child: OnlineStatusBadge()),
           ),
         ],
       ),

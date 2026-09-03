@@ -3,10 +3,10 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
-import '../../shared/presentation/app_bottom_sheet.dart';
 import '../../shared/presentation/bottom_sheet_safe_area.dart';
 import '../models/mqtt_menu.dart';
 import '../state/mqtt_cart.dart';
+import 'mqtt_napomene.dart';
 
 double _screenScale(BuildContext context) {
   final size = MediaQuery.sizeOf(context);
@@ -244,8 +244,9 @@ class _LineTileState extends State<_LineTile> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Expanded(
-                        child: InkWell(
+                        child: GestureDetector(
                           onTap: _toggle,
+                          behavior: HitTestBehavior.opaque,
                           child: Text(
                             widget.name,
                             maxLines: 2,
@@ -307,7 +308,7 @@ class _LineTileState extends State<_LineTile> {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          _NoteRow(
+                          MqttNoteRow(
                             remarks: line.remarks,
                             onOpen: () => _editRemarks(context),
                             onRemove: (r) =>
@@ -346,25 +347,12 @@ class _LineTileState extends State<_LineTile> {
   }
 
   Future<void> _editRemarks(BuildContext context) async {
-    await showAppBottomSheet<void>(
+    await showMqttRemarksSheet(
       context: context,
-      sheetBuilder: (ctx) => AppBottomSheetScaffold(
-        title: 'Napomene',
-        footerDivider: false,
-        body: _RemarksBody(
-          predefined: widget.predefined,
-          selected: widget.line.remarks,
-          onToggle: (r) => widget.cart.toggleRemark(widget.index, r),
-          onCustom: (r) => widget.cart.addCustomRemark(widget.index, r),
-        ),
-        footer: SizedBox(
-          width: double.infinity,
-          child: FilledButton(
-            onPressed: () => Navigator.of(ctx).pop(),
-            child: const Text('Gotovo'),
-          ),
-        ),
-      ),
+      predefined: widget.predefined,
+      selected: widget.line.remarks,
+      onToggle: (r) => widget.cart.toggleRemark(widget.index, r),
+      onCustom: (r) => widget.cart.addCustomRemark(widget.index, r),
     );
   }
 }
@@ -419,147 +407,6 @@ class _QtyStepper extends StatelessWidget {
         ),
         btn(Icons.add, onPlus),
       ],
-    );
-  }
-}
-
-/// The napomene row — a slim add affordance when empty, or removable chips + an
-/// add button when there are notes.
-class _NoteRow extends StatelessWidget {
-  const _NoteRow({
-    required this.remarks,
-    required this.onOpen,
-    required this.onRemove,
-  });
-
-  final List<String> remarks;
-  final VoidCallback onOpen;
-  final void Function(String) onRemove;
-
-  @override
-  Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-
-    if (remarks.isEmpty) {
-      return InkWell(
-        onTap: onOpen,
-        borderRadius: BorderRadius.circular(8),
-        child: Container(
-          width: double.infinity,
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(8),
-            border: Border.all(
-                color: scheme.outlineVariant.withValues(alpha: 0.7)),
-          ),
-          child: Row(
-            children: [
-              Icon(Icons.chat_bubble_outline,
-                  size: 15, color: scheme.onSurfaceVariant),
-              const SizedBox(width: 7),
-              Text('Dodaj napomenu',
-                  style: TextStyle(
-                      fontSize: 12.5, color: scheme.onSurfaceVariant)),
-            ],
-          ),
-        ),
-      );
-    }
-
-    return LayoutBuilder(
-      builder: (context, c) {
-        final maxW = c.maxWidth;
-        return Wrap(
-          spacing: 6,
-          runSpacing: 6,
-          children: [
-            for (final r in remarks)
-              _RemarkChip(text: r, maxWidth: maxW, onRemove: () => onRemove(r)),
-            _AddNoteChip(onTap: onOpen),
-          ],
-        );
-      },
-    );
-  }
-}
-
-class _RemarkChip extends StatelessWidget {
-  const _RemarkChip({
-    required this.text,
-    required this.maxWidth,
-    required this.onRemove,
-  });
-
-  final String text;
-  final double maxWidth;
-  final VoidCallback onRemove;
-
-  @override
-  Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    return ConstrainedBox(
-      constraints: BoxConstraints(maxWidth: maxWidth),
-      child: Container(
-        padding: const EdgeInsets.fromLTRB(11, 6, 6, 6),
-        decoration: BoxDecoration(
-          color: scheme.surfaceContainerHighest,
-          borderRadius: BorderRadius.circular(18),
-          border:
-              Border.all(color: scheme.outlineVariant.withValues(alpha: 0.6)),
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.center,
-          children: [
-            Flexible(
-              child: Text(
-                text,
-                softWrap: true,
-                style: TextStyle(fontSize: 13, color: scheme.onSurface),
-              ),
-            ),
-            const SizedBox(width: 4),
-            InkResponse(
-              onTap: onRemove,
-              radius: 16,
-              child:
-                  Icon(Icons.cancel, size: 17, color: scheme.onSurfaceVariant),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _AddNoteChip extends StatelessWidget {
-  const _AddNoteChip({required this.onTap});
-
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(18),
-      child: Container(
-        padding: const EdgeInsets.fromLTRB(9, 6, 12, 6),
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(18),
-          border:
-              Border.all(color: scheme.outlineVariant.withValues(alpha: 0.7)),
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(Icons.add, size: 16, color: scheme.primary),
-            const SizedBox(width: 4),
-            Text('Napomena',
-                style: TextStyle(fontSize: 13, color: scheme.primary)),
-          ],
-        ),
-      ),
     );
   }
 }
@@ -631,103 +478,6 @@ class _QtyDialogState extends State<_QtyDialog> {
         ),
       ],
     );
-  }
-}
-
-/// The remarks editor content, shown inside the shared branded bottom-sheet.
-class _RemarksBody extends StatefulWidget {
-  const _RemarksBody({
-    required this.predefined,
-    required this.selected,
-    required this.onToggle,
-    required this.onCustom,
-  });
-
-  final List<String> predefined;
-  final List<String> selected;
-  final void Function(String) onToggle;
-  final void Function(String) onCustom;
-
-  @override
-  State<_RemarksBody> createState() => _RemarksBodyState();
-}
-
-class _RemarksBodyState extends State<_RemarksBody> {
-  final _custom = TextEditingController();
-  late final Set<String> _selected = {...widget.selected};
-
-  @override
-  void dispose() {
-    _custom.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        if (widget.predefined.isEmpty)
-          Padding(
-            padding: const EdgeInsets.only(bottom: 4),
-            child: Text(
-              'Nema predefiniranih napomena za ovaj artikl.',
-              style: TextStyle(
-                  color: Theme.of(context).colorScheme.onSurfaceVariant),
-            ),
-          ),
-        if (widget.predefined.isNotEmpty)
-          Wrap(
-            spacing: 8,
-            runSpacing: 4,
-            children: [
-              for (final r in widget.predefined)
-                FilterChip(
-                  label: Text(r),
-                  selected: _selected.contains(r),
-                  onSelected: (_) {
-                    setState(() {
-                      _selected.contains(r)
-                          ? _selected.remove(r)
-                          : _selected.add(r);
-                    });
-                    widget.onToggle(r);
-                  },
-                ),
-            ],
-          ),
-        const SizedBox(height: 12),
-        Row(
-          children: [
-            Expanded(
-              child: TextField(
-                controller: _custom,
-                decoration: const InputDecoration(
-                  labelText: 'Vlastita napomena',
-                  border: OutlineInputBorder(),
-                  isDense: true,
-                ),
-                onSubmitted: _addCustom,
-              ),
-            ),
-            const SizedBox(width: 8),
-            FilledButton(
-              onPressed: () => _addCustom(_custom.text),
-              child: const Text('Dodaj'),
-            ),
-          ],
-        ),
-      ],
-    );
-  }
-
-  void _addCustom(String value) {
-    final t = value.trim();
-    if (t.isEmpty) return;
-    widget.onCustom(t);
-    _custom.clear();
-    setState(() => _selected.add(t));
   }
 }
 

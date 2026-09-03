@@ -48,6 +48,25 @@ class MqttService {
   /// The raw `podaci/stolovi_stanje` payload (which tables are occupied).
   final ValueNotifier<String?> stanjeRawJson = ValueNotifier<String?>(null);
 
+  /// The raw `podaci/verzija` payload — a version hash per data section
+  /// (stolovi / artikli / korisnici). Providers compare these against their
+  /// saved hash to skip re-parsing/re-storing unchanged sections.
+  final ValueNotifier<String?> verzijaRawJson = ValueNotifier<String?>(null);
+
+  /// The current version hash for [section] (from the last `podaci/verzija`),
+  /// or null if not received / not present.
+  String? versionFor(String section) {
+    final raw = verzijaRawJson.value;
+    if (raw == null || raw.isEmpty) return null;
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is Map && decoded[section] != null) {
+        return decoded[section].toString();
+      }
+    } catch (_) {}
+    return null;
+  }
+
   bool get isConnected =>
       _client?.connectionStatus?.state == MqttConnectionState.connected;
 
@@ -73,6 +92,8 @@ class MqttService {
       'kasa/${_cfg.licenca}/podaci/stolovi'; // tables + zones (retained)
   String get _tStanje =>
       'kasa/${_cfg.licenca}/podaci/stolovi_stanje'; // occupancy (retained)
+  String get _tVerzija =>
+      'kasa/${_cfg.licenca}/podaci/verzija'; // per-section version hashes
 
   /// Connects using [config] (built from the scanned QR code). The MQTT
   /// client-id is the device id `config.uredaj` — the real provisioned id
@@ -178,6 +199,9 @@ class MqttService {
           if (e.topic == _tKorisnici) korisniciRawJson.value = payload;
           if (e.topic == _tStolovi) stoloviRawJson.value = payload;
           if (e.topic == _tStanje) stanjeRawJson.value = payload;
+          // Set the version LAST so, if it arrives in the same batch as the
+          // data, the providers see the fresh data when they re-evaluate.
+          if (e.topic == _tVerzija) verzijaRawJson.value = payload;
         }
       });
       client.published?.listen((m) {
@@ -192,6 +216,7 @@ class MqttService {
       client.subscribe(_tKorisnici, MqttQos.atLeastOnce);
       client.subscribe(_tStolovi, MqttQos.atLeastOnce);
       client.subscribe(_tStanje, MqttQos.atLeastOnce);
+      client.subscribe(_tVerzija, MqttQos.atLeastOnce);
       _publishStatus('online');
       _publishDojava('Test veze iz mobilne aplikacije');
 

@@ -7,7 +7,6 @@ import '../../auth/state/session_provider.dart';
 import '../../master_data/state/heartbeat_provider.dart';
 import '../../master_data/state/master_data_providers.dart';
 import '../../settings/state/settings_provider.dart';
-import '../../shared/presentation/online_status_badge.dart';
 import '../../theme/state/theme_mode_provider.dart';
 import '../state/orders_providers.dart';
 import 'table_select_screen.dart' show precacheTableSelectSvgs;
@@ -140,7 +139,6 @@ class _CashRegisterScreenState extends ConsumerState<CashRegisterScreen> {
                     subtitle: Text(user?.superuser == true
                         ? 'Voditelj (superuser)'
                         : 'Konobar'),
-                    trailing: const OnlineStatusBadge(),
                   ),
                 ),
                 const SizedBox(height: 8),
