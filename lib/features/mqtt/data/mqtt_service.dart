@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
@@ -5,6 +6,7 @@ import 'package:mqtt_client/mqtt_client.dart';
 import 'package:mqtt_client/mqtt_server_client.dart';
 
 import '../models/mqtt_connection_config.dart';
+import '../models/mqtt_order_reply.dart';
 
 /// A long-lived MQTT connection speaking the real Pelion "semafor" protocol,
 /// driven by a [MqttConnectionConfig] built from the scanned QR code. Connects
@@ -19,8 +21,12 @@ import '../models/mqtt_connection_config.dart';
 /// Lifecycle: the app wires [onAppPaused] / [onAppResumed] to the widget
 /// lifecycle. On background we publish `offline` and drop the socket (the OS
 /// would suspend us and the broker would time us out anyway); on resume we
-/// reconnect — but only if a connection was actually established first
-/// ([_shouldBeConnected]), so the app never auto-connects on its own.
+/// reconnect.
+///
+/// Once the device is provisioned (QR scanned — the code is persisted by
+/// `mqttConfigProvider`), the app connects on its own: `main.dart` calls
+/// [ensureConnected] at launch, so every cold start and every return from
+/// background comes back online without anyone touching the settings screen.
 class MqttService {
   MqttService._();
   static final MqttService instance = MqttService._();
@@ -28,10 +34,15 @@ class MqttService {
   MqttServerClient? _client;
   MqttConnectionConfig? _config;
 
-  /// Intent flag: true once the user has connected (via the QR "Spoji se" in
-  /// "Postavke uređaja"), false after a manual [disconnect]. Only while this is
-  /// true do the lifecycle hooks drop/restore the connection.
+  /// Intent flag: true once a connection has been asked for (auto-connect at
+  /// launch with the stored QR provisioning, or the button in "Postavke
+  /// uređaja"), false after a manual [disconnect]. Only while this is true do
+  /// the lifecycle hooks drop/restore the connection.
   bool _shouldBeConnected = false;
+
+  /// Guards [ensureConnected] so the launch and resume paths can't run two
+  /// retry loops against each other.
+  bool _connectLoopRunning = false;
 
   /// The raw `podaci/artikli` payload (the menu: groups + articles), updated
   /// whenever the broker delivers it (it's retained, so it arrives on connect).
@@ -52,6 +63,14 @@ class MqttService {
   /// (stolovi / artikli / korisnici). Providers compare these against their
   /// saved hash to skip re-parsing/re-storing unchanged sections.
   final ValueNotifier<String?> verzijaRawJson = ValueNotifier<String?>(null);
+
+  /// Replies from the kasa to our orders (`kasa/{LICENCA}/mob/{od}`). Broadcast
+  /// so the send logic can await the one matching its `msg_id`.
+  final _orderReplies = StreamController<MqttOrderReply>.broadcast();
+  Stream<MqttOrderReply> get orderReplies => _orderReplies.stream;
+
+  /// The most recent reply (handy for diagnostics).
+  MqttOrderReply? lastOrderReply;
 
   /// The current version hash for [section] (from the last `podaci/verzija`),
   /// or null if not received / not present.
@@ -95,6 +114,42 @@ class MqttService {
   String get _tVerzija =>
       'kasa/${_cfg.licenca}/podaci/verzija'; // per-section version hashes
 
+  /// Where orders are published. Shared by every mobile under the licenca;
+  /// only the kasa holding the DB processes them.
+  String get _tNarudzbe => 'kasa/${_cfg.licenca}/narudzbe';
+
+  /// Our MQTT client-id — this is the `od` field of an order, and the last
+  /// segment of the reply topic.
+  String? get clientId => _config?.uredaj;
+
+  /// Publishes an order payload to `kasa/{LICENCA}/narudzbe`.
+  ///
+  /// QoS 1 and **retain: false** — a retained order would be re-executed by
+  /// every kasa that later subscribes (protocol doc, 3.1). Returns false when
+  /// we're not connected.
+  bool publishOrder(String payload) {
+    if (_client == null || !isConnected || _config == null) return false;
+    _publish(_tNarudzbe, payload);
+    return true;
+  }
+
+  /// Our PRIVATE reply topic: the kasa answers an order on
+  /// `kasa/{LICENCA}/mob/{od}`, where `od` is our MQTT client-id
+  /// (`_cfg.uredaj`). We stay subscribed for the whole session, so a reply is
+  /// never missed — including one sent while we were away.
+  String get _tMob => 'kasa/${_cfg.licenca}/mob/${_cfg.uredaj}';
+
+  /// The reply topic we're subscribed to (null until connected once).
+  String? get replyTopic => _config == null ? null : _tMob;
+
+  /// Whether our `od` (client-id) is usable in an order. The kasa SILENTLY
+  /// drops an order whose `od` is empty, longer than 64 chars, or contains
+  /// `/ + #` — no reply at all — so this must hold before sending.
+  bool get isReplyIdValid {
+    final id = _config?.uredaj ?? '';
+    return id.isNotEmpty && id.length <= 64 && !RegExp(r'[/+#]').hasMatch(id);
+  }
+
   /// Connects using [config] (built from the scanned QR code). The MQTT
   /// client-id is the device id `config.uredaj` — the real provisioned id
   /// `<licenca>-ORDERMAN-<n>`.
@@ -120,11 +175,47 @@ class MqttService {
   }
 
   /// The app returned to foreground: reconnect if we were connected before and
-  /// aren't already. No-op when the user never connected.
+  /// aren't already. No-op when the device was never provisioned.
   Future<void> onAppResumed() async {
-    if (!_shouldBeConnected || isConnected || _config == null) return;
+    final config = _config;
+    if (!_shouldBeConnected || isConnected || config == null) return;
     debugPrint('MQTT ▸ app resumed → reconnecting');
-    await _openConnection();
+    await ensureConnected(config);
+  }
+
+  /// Connects with the device's stored provisioning, retrying a few times with a
+  /// growing delay.
+  ///
+  /// Used at launch and on resume. A single attempt isn't enough there: a cold
+  /// start regularly beats the phone's WiFi/mobile data to it, and
+  /// [autoReconnect] only covers drops AFTER a connection was established — so
+  /// one failed attempt would strand the app offline until someone opened
+  /// "Postavke uređaja" and reconnected by hand.
+  Future<void> ensureConnected(
+    MqttConnectionConfig config, {
+    int attempts = 4,
+  }) async {
+    if (isConnected || _connectLoopRunning) return;
+    _connectLoopRunning = true;
+    _config = config;
+    _shouldBeConnected = true;
+    try {
+      for (var i = 1; i <= attempts; i++) {
+        await _openConnection();
+        if (isConnected) return;
+        if (i < attempts) {
+          final wait = Duration(seconds: 2 * i); // 2s, 4s, 6s
+          debugPrint('MQTT ▸ connect failed (attempt $i/$attempts) — '
+              'retry in ${wait.inSeconds}s');
+          await Future<void>.delayed(wait);
+          // The waiter may have connected manually in the meantime.
+          if (isConnected) return;
+        }
+      }
+      debugPrint('MQTT ✗ could not connect after $attempts attempts');
+    } finally {
+      _connectLoopRunning = false;
+    }
   }
 
   /// Opens the socket using the stored [_config].
@@ -163,13 +254,19 @@ class MqttService {
           });
 
     // Last-Will: broker publishes "offline" (retained) if we drop unexpectedly.
+    //
+    // Deliberately NO .startClean(): we want a PERSISTENT session
+    // (cleanSession = false) so the broker queues the kasa's reply to an order
+    // while we're offline and delivers it when we reconnect — even if the app
+    // was closed in the meantime (protocol doc, 4.2). This depends on the
+    // client-id staying stable across runs, which it is: it's the provisioned
+    // `uredaj` from the QR code.
     client.connectionMessage = MqttConnectMessage()
         .withClientIdentifier(clientId)
         .withWillTopic(_tStatus)
         .withWillMessage(_statusJson('offline'))
         .withWillQos(MqttQos.atLeastOnce)
-        .withWillRetain()
-        .startClean();
+        .withWillRetain();
     _client = client;
 
     try {
@@ -199,6 +296,16 @@ class MqttService {
           if (e.topic == _tKorisnici) korisniciRawJson.value = payload;
           if (e.topic == _tStolovi) stoloviRawJson.value = payload;
           if (e.topic == _tStanje) stanjeRawJson.value = payload;
+          // A reply to one of our orders — pair it by msg_id downstream.
+          if (e.topic == _tMob) {
+            final reply = MqttOrderReply.tryParse(payload);
+            if (reply == null) {
+              debugPrint('MQTT ✗ unusable order reply (no msg_id?): $payload');
+            } else {
+              lastOrderReply = reply;
+              _orderReplies.add(reply);
+            }
+          }
           // Set the version LAST so, if it arrives in the same batch as the
           // data, the providers see the fresh data when they re-evaluate.
           if (e.topic == _tVerzija) verzijaRawJson.value = payload;
@@ -217,6 +324,15 @@ class MqttService {
       client.subscribe(_tStolovi, MqttQos.atLeastOnce);
       client.subscribe(_tStanje, MqttQos.atLeastOnce);
       client.subscribe(_tVerzija, MqttQos.atLeastOnce);
+      // Our private reply topic — MUST be subscribed before any order is sent,
+      // and kept for the whole session (see the protocol doc, 4.1).
+      client.subscribe(_tMob, MqttQos.atLeastOnce);
+      debugPrint('MQTT ▸ replies on: $_tMob');
+      if (!isReplyIdValid) {
+        debugPrint('MQTT ✗ WARNING: "od" (${config.uredaj}) is invalid — the '
+            'kasa will silently drop orders (no reply). It must be 1-64 chars '
+            'and must not contain / + #');
+      }
       _publishStatus('online');
       _publishDojava('Test veze iz mobilne aplikacije');
 

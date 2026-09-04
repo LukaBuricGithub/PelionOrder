@@ -3,8 +3,12 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
 
+import '../../auth/state/session_provider.dart';
+import '../../settings/state/settings_provider.dart';
+import '../data/mqtt_order_sender.dart';
 import '../models/mqtt_menu.dart';
 import '../state/mqtt_cart.dart';
 import '../state/mqtt_menu_provider.dart';
@@ -26,7 +30,8 @@ String _fmtQty(double q) =>
 
 /// Order-entry screen for the MQTT menu — a visual clone of the New Order
 /// ("Stol X") screen, backed by a local in-memory [MqttCart] built from the MQTT
-/// groups/articles. NOTE: the Send button is intentionally a no-op here.
+/// groups/articles. Send publishes the order to the kasa over MQTT and applies
+/// the reply (see `MqttOrderSender`).
 class MqttOrderScreen extends ConsumerStatefulWidget {
   const MqttOrderScreen({super.key, this.tableBroj, this.tableNaziv});
 
@@ -46,15 +51,18 @@ class _MqttOrderScreenState extends ConsumerState<MqttOrderScreen> {
   String _query = '';
   bool _searching = false;
 
+  /// True while an order is in flight (publish + up to 5 reply waits).
+  bool _sending = false;
+
   // Rebuilt each build from the current menu — maps article code → article.
   final _byCode = <int, MqttArticle>{};
   MqttMenu _menu = MqttMenu.empty;
 
-  /// Predefined remark names available for the article (global "sve" remarks +
-  /// the ones the article lists by id).
-  List<String> _predefinedFor(int code) {
+  /// Predefined remarks available for the article (global "sve" remarks + the
+  /// ones the article lists by id). Codes (`cnap`) are what gets ordered.
+  List<MqttRemark> _remarksFor(int code) {
     final a = _byCode[code];
-    return a == null ? const [] : _menu.predefinedFor(a);
+    return a == null ? const [] : _menu.remarksFor(a);
   }
 
   @override
@@ -64,8 +72,12 @@ class _MqttOrderScreenState extends ConsumerState<MqttOrderScreen> {
     // start listening so subsequent edits are saved back.
     final broj = widget.tableBroj;
     if (broj != null) {
-      final stored = ref.read(mqttOrdersProvider.notifier).linesFor(broj);
+      final orders = ref.read(mqttOrdersProvider.notifier);
+      final stored = orders.linesFor(broj);
       if (stored.isNotEmpty) _cart.loadFrom(stored);
+      // Restore the pending msg_id AFTER loadFrom (which clears it), so a retry
+      // of an already-sent order reuses the same id instead of duplicating it.
+      _cart.pendingMsgId = orders.msgIdFor(broj);
     }
     _cart.addListener(_onCart);
     // Match the New Order screen: hide the Android nav bar (keep the status
@@ -95,7 +107,9 @@ class _MqttOrderScreenState extends ConsumerState<MqttOrderScreen> {
     // colours the table in the floor plan.
     final broj = widget.tableBroj;
     if (broj != null) {
-      ref.read(mqttOrdersProvider.notifier).save(broj, _cart.lines);
+      ref
+          .read(mqttOrdersProvider.notifier)
+          .save(broj, _cart.lines, _cart.pendingMsgId);
     }
     if (mounted) setState(() {});
   }
@@ -115,8 +129,64 @@ class _MqttOrderScreenState extends ConsumerState<MqttOrderScreen> {
     });
   }
 
-  /// Send is intentionally inert on this screen.
-  void _send() {}
+  /// Sends the order to the kasa and applies the outcome. Returns true when the
+  /// kasa accepted it. Shared by the Send button and the details screen.
+  Future<bool> _sendOrder() async {
+    if (_sending) return false;
+    final broj = widget.tableBroj;
+    final user = ref.read(currentUserProvider);
+    final messenger = ScaffoldMessenger.of(context);
+
+    if (broj == null || user == null) {
+      messenger.showSnackBar(
+        const SnackBar(content: Text('Nije poznat stol ili konobar.')),
+      );
+      return false;
+    }
+
+    // Generate the msg_id once and persist it immediately, so a retry — even
+    // after leaving the screen — reuses it instead of booking a duplicate.
+    final msgId = _cart.pendingMsgId ?? newMsgId();
+    _cart.pendingMsgId = msgId;
+    final orders = ref.read(mqttOrdersProvider.notifier);
+    orders.save(broj, _cart.lines, msgId);
+
+    setState(() => _sending = true);
+    final result = await MqttOrderSender.instance.send(
+      stol: broj,
+      cuser: user.code,
+      lines: _cart.lines,
+      msgId: msgId,
+      groupArticles: ref.read(settingsProvider).shouldGroupArticles,
+    );
+    if (!mounted) return result.isOk;
+    setState(() => _sending = false);
+
+    if (result.isOk) {
+      // Accepted — drop the local order for this table.
+      orders.clear(broj);
+      _cart.clear();
+    } else if (result.needsNewMsgId) {
+      // Expired / never sent: the next attempt must be a NEW order.
+      _cart.pendingMsgId = null;
+      orders.save(broj, _cart.lines, null);
+    } else {
+      // Rejected or unreachable — keep the id so an unchanged retry stays
+      // idempotent (editing the cart clears it automatically).
+      orders.save(broj, _cart.lines, msgId);
+    }
+
+    messenger
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(result.message)));
+    return result.isOk;
+  }
+
+  Future<void> _send() async {
+    final ok = await _sendOrder();
+    if (!mounted || !ok) return;
+    if (context.canPop()) context.pop();
+  }
 
   /// Opens the details screen on the same cart (edit quantities/remarks/delete).
   void _openDetails() {
@@ -124,7 +194,7 @@ class _MqttOrderScreenState extends ConsumerState<MqttOrderScreen> {
     // it on return (this screen hides it).
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     Navigator.of(context)
-        .push(MaterialPageRoute<void>(
+        .push(MaterialPageRoute<String>(
       builder: (_) => MqttOrderDetailsScreen(
         cart: _cart,
         byCode: _byCode,
@@ -132,10 +202,16 @@ class _MqttOrderScreenState extends ConsumerState<MqttOrderScreen> {
         money: _money,
         tableBroj: widget.tableBroj,
         tableNaziv: widget.tableNaziv,
+        onSend: _sendOrder,
       ),
     ))
-        .then((_) {
+        .then((result) {
       if (!mounted) return;
+      // The order was sent from the details screen — leave the table entirely.
+      if (result == 'sent') {
+        if (context.canPop()) context.pop();
+        return;
+      }
       SystemChrome.setEnabledSystemUIMode(
         SystemUiMode.manual,
         overlays: [SystemUiOverlay.top],
@@ -235,14 +311,17 @@ class _MqttOrderScreenState extends ConsumerState<MqttOrderScreen> {
                                 cart: _cart,
                                 byCode: _byCode,
                                 money: _money,
-                                predefinedFor: _predefinedFor,
+                                remarksFor: _remarksFor,
                               ),
                             ),
                             const SizedBox(width: 10),
                             _ActionColumn(
-                              onClear: hasItems ? _confirmClear : null,
-                              onDetails: hasItems ? _openDetails : null,
-                              onSend: hasItems ? _send : null,
+                              sending: _sending,
+                              onClear:
+                                  hasItems && !_sending ? _confirmClear : null,
+                              onDetails:
+                                  hasItems && !_sending ? _openDetails : null,
+                              onSend: hasItems && !_sending ? _send : null,
                             ),
                           ],
                         ),
@@ -297,13 +376,13 @@ class _CartCard extends StatefulWidget {
     required this.cart,
     required this.byCode,
     required this.money,
-    required this.predefinedFor,
+    required this.remarksFor,
   });
 
   final MqttCart cart;
   final Map<int, MqttArticle> byCode;
   final NumberFormat money;
-  final List<String> Function(int code) predefinedFor;
+  final List<MqttRemark> Function(int code) remarksFor;
 
   @override
   State<_CartCard> createState() => _CartCardState();
@@ -370,7 +449,7 @@ class _CartCardState extends State<_CartCard> {
                   unit: article?.unit ?? '',
                   lineTotal:
                       widget.money.format((article?.price ?? 0) * line.qty),
-                  predefined: widget.predefinedFor(line.code),
+                  available: widget.remarksFor(line.code),
                 );
               },
             ),
@@ -389,7 +468,7 @@ class _CartLineTile extends StatefulWidget {
     required this.name,
     required this.unit,
     required this.lineTotal,
-    required this.predefined,
+    required this.available,
   });
 
   final int index;
@@ -398,7 +477,7 @@ class _CartLineTile extends StatefulWidget {
   final String name;
   final String unit;
   final String lineTotal;
-  final List<String> predefined;
+  final List<MqttRemark> available;
 
   @override
   State<_CartLineTile> createState() => _CartLineTileState();
@@ -423,13 +502,24 @@ class _CartLineTileState extends State<_CartLineTile> {
     });
   }
 
+  /// Display name for a selected remark code, resolved from this article's
+  /// available remarks (falls back to the code itself).
+  String _nameFor(String cnap) {
+    for (final r in widget.available) {
+      if (r.cnap == cnap) return r.naziv;
+    }
+    return cnap;
+  }
+
   void _editRemarks() {
     showMqttRemarksSheet(
       context: context,
-      predefined: widget.predefined,
-      selected: widget.line.remarks,
-      onToggle: (r) => widget.cart.toggleRemark(widget.index, r),
-      onCustom: (r) => widget.cart.addCustomRemark(widget.index, r),
+      available: widget.available,
+      selectedCodes: widget.line.remarkCodes,
+      customNotes: widget.line.customNotes,
+      onToggleCode: (c) => widget.cart.toggleRemarkCode(widget.index, c),
+      onAddNote: (n) => widget.cart.addCustomNote(widget.index, n),
+      onRemoveNote: (n) => widget.cart.removeCustomNote(widget.index, n),
     );
   }
 
@@ -510,10 +600,21 @@ class _CartLineTileState extends State<_CartLineTile> {
                 ? Padding(
                     padding: EdgeInsets.only(top: 6 * s, right: 4 * s),
                     child: MqttNoteRow(
-                      remarks: line.remarks,
+                      chips: [
+                        for (final c in line.remarkCodes)
+                          MqttNoteChip(
+                            label: _nameFor(c),
+                            onRemove: () =>
+                                widget.cart.toggleRemarkCode(widget.index, c),
+                          ),
+                        for (final n in line.customNotes)
+                          MqttNoteChip(
+                            label: n,
+                            onRemove: () =>
+                                widget.cart.removeCustomNote(widget.index, n),
+                          ),
+                      ],
                       onOpen: _editRemarks,
-                      onRemove: (r) =>
-                          widget.cart.toggleRemark(widget.index, r),
                     ),
                   )
                 : const SizedBox(width: double.infinity),
@@ -578,11 +679,13 @@ class _QtyStepper extends StatelessWidget {
 /// The stacked action buttons to the right of the cart (Clear / Details / Send).
 class _ActionColumn extends StatelessWidget {
   const _ActionColumn({
+    required this.sending,
     required this.onClear,
     required this.onDetails,
     required this.onSend,
   });
 
+  final bool sending;
   final VoidCallback? onClear;
   final VoidCallback? onDetails;
   final VoidCallback? onSend;
@@ -623,6 +726,7 @@ class _ActionColumn extends StatelessWidget {
               _ActionButton(
                 icon: Icons.send,
                 tone: _Tone.primary,
+                busy: sending,
                 onTap: onSend,
                 width: width,
                 height: btn,
@@ -644,6 +748,7 @@ class _ActionButton extends StatelessWidget {
     required this.onTap,
     required this.width,
     required this.height,
+    this.busy = false,
   });
 
   final IconData icon;
@@ -651,6 +756,7 @@ class _ActionButton extends StatelessWidget {
   final VoidCallback? onTap;
   final double width;
   final double height;
+  final bool busy;
 
   @override
   Widget build(BuildContext context) {
@@ -680,7 +786,16 @@ class _ActionButton extends StatelessWidget {
           child: SizedBox(
             width: width,
             height: height,
-            child: Icon(icon, color: fg, size: iconSize),
+            child: busy
+                ? Center(
+                    child: SizedBox(
+                      width: iconSize * 0.85,
+                      height: iconSize * 0.85,
+                      child: CircularProgressIndicator(
+                          strokeWidth: 2.5, color: fg),
+                    ),
+                  )
+                : Icon(icon, color: fg, size: iconSize),
           ),
         ),
       ),

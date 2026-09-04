@@ -1,27 +1,35 @@
 import 'package:flutter/material.dart';
 
 import '../../shared/presentation/app_bottom_sheet.dart';
+import '../models/mqtt_menu.dart';
 
-/// The napomene row for an order line: the current remarks as removable chips
-/// plus an "add" affordance (or a slim "Dodaj napomenu" when empty). Tapping
-/// opens the remarks sheet via [onOpen]; the ✕ on a chip calls [onRemove].
+/// One chip in the note row: a label plus how to remove it. The caller resolves
+/// predefined remark codes to their names before building these.
+class MqttNoteChip {
+  const MqttNoteChip({required this.label, required this.onRemove});
+
+  final String label;
+  final VoidCallback onRemove;
+}
+
+/// The napomene row for an order line: the line's notes as removable chips plus
+/// an "add" affordance (or a slim "Dodaj napomenu" when empty). Tapping opens
+/// the remarks sheet via [onOpen].
 class MqttNoteRow extends StatelessWidget {
   const MqttNoteRow({
     super.key,
-    required this.remarks,
+    required this.chips,
     required this.onOpen,
-    required this.onRemove,
   });
 
-  final List<String> remarks;
+  final List<MqttNoteChip> chips;
   final VoidCallback onOpen;
-  final void Function(String) onRemove;
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
 
-    if (remarks.isEmpty) {
+    if (chips.isEmpty) {
       return InkWell(
         onTap: onOpen,
         borderRadius: BorderRadius.circular(8),
@@ -54,8 +62,9 @@ class MqttNoteRow extends StatelessWidget {
           spacing: 6,
           runSpacing: 6,
           children: [
-            for (final r in remarks)
-              _RemarkChip(text: r, maxWidth: maxW, onRemove: () => onRemove(r)),
+            for (final chip in chips)
+              _RemarkChip(
+                  text: chip.label, maxWidth: maxW, onRemove: chip.onRemove),
             _AddNoteChip(onTap: onOpen),
           ],
         );
@@ -145,15 +154,20 @@ class _AddNoteChip extends StatelessWidget {
   }
 }
 
-/// Opens the branded bottom-sheet remarks editor: predefined chips (in a
-/// capped, internally-scrolling area) + a custom-note field. Toggling a chip
-/// calls [onToggle]; adding a custom note calls [onCustom].
+/// Opens the branded bottom-sheet remarks editor: the article's predefined
+/// remarks as chips (selected by **code**) plus the line's free-text notes, in a
+/// capped, internally-scrolling area, with a field to add a new note.
+///
+/// Toggling a predefined chip calls [onToggleCode] with its `cnap`; tapping a
+/// note chip removes it via [onRemoveNote]; the field adds via [onAddNote].
 Future<void> showMqttRemarksSheet({
   required BuildContext context,
-  required List<String> predefined,
-  required List<String> selected,
-  required void Function(String) onToggle,
-  required void Function(String) onCustom,
+  required List<MqttRemark> available,
+  required List<String> selectedCodes,
+  required List<String> customNotes,
+  required void Function(String cnap) onToggleCode,
+  required void Function(String note) onAddNote,
+  required void Function(String note) onRemoveNote,
 }) {
   return showAppBottomSheet<void>(
     context: context,
@@ -161,10 +175,12 @@ Future<void> showMqttRemarksSheet({
       title: 'Napomene',
       footerDivider: false,
       body: _MqttRemarksBody(
-        predefined: predefined,
-        selected: selected,
-        onToggle: onToggle,
-        onCustom: onCustom,
+        available: available,
+        selectedCodes: selectedCodes,
+        customNotes: customNotes,
+        onToggleCode: onToggleCode,
+        onAddNote: onAddNote,
+        onRemoveNote: onRemoveNote,
       ),
       footer: SizedBox(
         width: double.infinity,
@@ -179,16 +195,20 @@ Future<void> showMqttRemarksSheet({
 
 class _MqttRemarksBody extends StatefulWidget {
   const _MqttRemarksBody({
-    required this.predefined,
-    required this.selected,
-    required this.onToggle,
-    required this.onCustom,
+    required this.available,
+    required this.selectedCodes,
+    required this.customNotes,
+    required this.onToggleCode,
+    required this.onAddNote,
+    required this.onRemoveNote,
   });
 
-  final List<String> predefined;
-  final List<String> selected;
-  final void Function(String) onToggle;
-  final void Function(String) onCustom;
+  final List<MqttRemark> available;
+  final List<String> selectedCodes;
+  final List<String> customNotes;
+  final void Function(String cnap) onToggleCode;
+  final void Function(String note) onAddNote;
+  final void Function(String note) onRemoveNote;
 
   @override
   State<_MqttRemarksBody> createState() => _MqttRemarksBodyState();
@@ -196,7 +216,8 @@ class _MqttRemarksBody extends StatefulWidget {
 
 class _MqttRemarksBodyState extends State<_MqttRemarksBody> {
   final _custom = TextEditingController();
-  late final Set<String> _selected = {...widget.selected};
+  late final Set<String> _codes = {...widget.selectedCodes};
+  late final List<String> _notes = [...widget.customNotes];
 
   @override
   void dispose() {
@@ -206,19 +227,13 @@ class _MqttRemarksBodyState extends State<_MqttRemarksBody> {
 
   @override
   Widget build(BuildContext context) {
-    // Show the predefined chips plus any custom napomene the user has added
-    // (selected but not in the predefined list), so customs appear here too.
-    // Tapping a chip toggles it; a custom one toggled off is removed entirely
-    // (it disappears, since it only exists while selected).
-    final customs =
-        _selected.where((r) => !widget.predefined.contains(r)).toList();
-    final chips = [...widget.predefined, ...customs];
+    final hasAny = widget.available.isNotEmpty || _notes.isNotEmpty;
 
     return Column(
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        if (chips.isEmpty)
+        if (!hasAny)
           Padding(
             padding: const EdgeInsets.only(bottom: 4),
             child: Text(
@@ -227,7 +242,7 @@ class _MqttRemarksBodyState extends State<_MqttRemarksBody> {
                   color: Theme.of(context).colorScheme.onSurfaceVariant),
             ),
           ),
-        if (chips.isNotEmpty)
+        if (hasAny)
           // Cap the chips area at ~35% of the screen and scroll it internally,
           // so a long list doesn't push the custom-note field and "Gotovo"
           // off-screen. Fewer chips stay at natural size.
@@ -240,18 +255,30 @@ class _MqttRemarksBodyState extends State<_MqttRemarksBody> {
                 spacing: 8,
                 runSpacing: 4,
                 children: [
-                  for (final r in chips)
+                  // Predefined remarks — selected by code.
+                  for (final r in widget.available)
                     FilterChip(
-                      label: Text(r),
+                      label: Text(r.naziv),
                       showCheckmark: false,
-                      selected: _selected.contains(r),
+                      selected: _codes.contains(r.cnap),
                       onSelected: (_) {
                         setState(() {
-                          _selected.contains(r)
-                              ? _selected.remove(r)
-                              : _selected.add(r);
+                          _codes.contains(r.cnap)
+                              ? _codes.remove(r.cnap)
+                              : _codes.add(r.cnap);
                         });
-                        widget.onToggle(r);
+                        widget.onToggleCode(r.cnap);
+                      },
+                    ),
+                  // Free-text notes — always selected; tapping deletes them.
+                  for (final n in List<String>.from(_notes))
+                    FilterChip(
+                      label: Text(n),
+                      showCheckmark: false,
+                      selected: true,
+                      onSelected: (_) {
+                        setState(() => _notes.remove(n));
+                        widget.onRemoveNote(n);
                       },
                     ),
                 ],
@@ -285,9 +312,9 @@ class _MqttRemarksBodyState extends State<_MqttRemarksBody> {
 
   void _addCustom(String value) {
     final t = value.trim();
-    if (t.isEmpty) return;
-    widget.onCustom(t);
+    if (t.isEmpty || _notes.contains(t)) return;
+    widget.onAddNote(t);
     _custom.clear();
-    setState(() => _selected.add(t));
+    setState(() => _notes.add(t));
   }
 }

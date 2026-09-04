@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../master_data/state/master_data_providers.dart';
 import '../../mqtt/data/mqtt_service.dart';
 import '../../mqtt/models/mqtt_connection_config.dart';
+import '../../mqtt/state/mqtt_config_provider.dart';
 import '../../profiles/models/api_entry.dart';
 import '../../profiles/state/profiles_provider.dart';
 import '../../shared/presentation/app_bottom_sheet.dart';
@@ -238,25 +239,20 @@ class _SettingsCard extends StatelessWidget {
 }
 
 /// QR skener section: scan a code (`<licenca>-ORDERMAN-<n>`), parse the licenca
-/// out of it, and show the MQTT connection payload that would be used to
-/// connect. Display-only for now — nothing is stored or sent yet.
-class _QrSkenerCard extends StatefulWidget {
+/// out of it, and show the MQTT connection payload.
+///
+/// Scanning **provisions the device**: the code is persisted (see
+/// [mqttConfigProvider]) and the broker connection is established right away.
+/// From then on the app reconnects on its own at every launch and on resume, so
+/// the button below is only ever needed as a manual retry.
+class _QrSkenerCard extends ConsumerStatefulWidget {
   const _QrSkenerCard();
 
   @override
-  State<_QrSkenerCard> createState() => _QrSkenerCardState();
+  ConsumerState<_QrSkenerCard> createState() => _QrSkenerCardState();
 }
 
-// TEMP (testing): pre-seed a config from the real venue's QR string so we can
-// connect with one tap ("Spoji se") without scanning. licenca = the part before
-// the first '-' = 53B5079F96A188F16127D962 (matches the KASA that publishes the
-// menu). Remove this and let the scan set the config once testing is done.
-const _kTempTestQrCode = '53B5079F96A188F16127D962-ORDERMAN-1';
-
-class _QrSkenerCardState extends State<_QrSkenerCard> {
-  String? _rawCode = _kTempTestQrCode;
-  MqttConnectionConfig? _config =
-      MqttConnectionConfig.fromScannedCode(_kTempTestQrCode);
+class _QrSkenerCardState extends ConsumerState<_QrSkenerCard> {
   bool _connecting = false;
 
   Future<void> _scan() async {
@@ -264,18 +260,25 @@ class _QrSkenerCardState extends State<_QrSkenerCard> {
       MaterialPageRoute(builder: (_) => const QrScannerScreen()),
     );
     if (!mounted || code == null || code.isEmpty) return;
-    setState(() {
-      _rawCode = code;
-      _config = MqttConnectionConfig.fromScannedCode(code);
-    });
+    // Remember the provisioning, then connect with it immediately.
+    await ref.read(mqttConfigProvider.notifier).saveScanned(code);
+    if (!mounted) return;
+    final config = ref.read(mqttConfigProvider);
+    if (config != null) await _connect(config, replacing: true);
   }
 
-  Future<void> _connect() async {
-    final config = _config;
-    if (config == null) return;
+  Future<void> _connect(
+    MqttConnectionConfig config, {
+    bool replacing = false,
+  }) async {
     final messenger = ScaffoldMessenger.of(context);
     setState(() => _connecting = true);
     messenger.showSnackBar(const SnackBar(content: Text('MQTT: spajanje…')));
+    // A new QR replaces the old provisioning — drop the live session first, or
+    // connectAndSend would keep the previous licenca ("already connected").
+    if (replacing && MqttService.instance.isConnected) {
+      MqttService.instance.disconnect();
+    }
     final result = await MqttService.instance.connectAndSend(config);
     if (!mounted) return;
     setState(() => _connecting = false);
@@ -286,9 +289,7 @@ class _QrSkenerCardState extends State<_QrSkenerCard> {
 
   @override
   Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    final tt = Theme.of(context).textTheme;
-    final config = _config;
+    final config = ref.watch(mqttConfigProvider);
 
     return _SettingsCard(
       header: 'QR skener',
@@ -306,41 +307,16 @@ class _QrSkenerCardState extends State<_QrSkenerCard> {
             ),
           ),
           if (config != null) ...[
-            const SizedBox(height: 14),
-            Text('Skenirano',
-                style: tt.labelSmall?.copyWith(color: scheme.onSurfaceVariant)),
-            const SizedBox(height: 2),
-            SelectableText(_rawCode ?? '', style: tt.bodySmall),
-            const SizedBox(height: 8),
-            Text('Licenca: ${config.licenca}',
-                style: tt.bodyMedium?.copyWith(fontWeight: FontWeight.w600)),
-            const SizedBox(height: 14),
-            Text('Podaci za MQTT vezu',
-                style: tt.labelSmall?.copyWith(color: scheme.onSurfaceVariant)),
-            const SizedBox(height: 6),
-            Container(
-              width: double.infinity,
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: scheme.surfaceContainerHighest,
-                borderRadius: BorderRadius.circular(10),
-                border: Border.all(
-                    color: scheme.outlineVariant.withValues(alpha: 0.5)),
-              ),
-              child: SelectableText(
-                config.toPrettyJson(),
-                style: const TextStyle(
-                  fontFamily: 'monospace',
-                  fontSize: 12.5,
-                  height: 1.4,
-                ),
-              ),
-            ),
+            // Nothing about the provisioning is shown: not the scanned code,
+            // not the licenca, and not the connection payload (broker, port,
+            // password…). All of it was a development aid; the waiter only
+            // needs the two buttons. `config.toPrettyJson()` still builds the
+            // payload if it's ever wanted for diagnostics.
             const SizedBox(height: 12),
             SizedBox(
               width: double.infinity,
               child: FilledButton.icon(
-                onPressed: _connecting ? null : _connect,
+                onPressed: _connecting ? null : () => _connect(config),
                 icon: _connecting
                     ? const SizedBox(
                         width: 18,

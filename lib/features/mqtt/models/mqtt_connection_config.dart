@@ -2,18 +2,22 @@ import 'dart:convert';
 
 /// The parameters used to open the MQTT connection to the Pelion broker.
 ///
-/// Built from the scanned QR code: the `licenca` (and `uredaj`) come from the
-/// code, the remaining fields are the fixed Pelion broker defaults. Shown on the
-/// settings screen and passed to `MqttService` (`mqtt_service.dart`) to connect.
+/// Everything identifying THIS device — `licenca`, `uredaj`, `naziv` — comes
+/// from the scanned QR code and nothing else; there are no fallbacks, so an
+/// unprovisioned device cannot connect anywhere. The remaining fields are the
+/// fixed Pelion broker endpoint (see [fromScannedCode]).
+///
+/// Shown on the settings screen and passed to `MqttService`
+/// (`mqtt_service.dart`) to connect.
 class MqttConnectionConfig {
   const MqttConnectionConfig({
     required this.licenca,
+    required this.uredaj,
+    required this.naziv,
     this.broker = 'mqtt.pelionpro.com',
     this.port = 8883,
     this.lozinka = '0000',
     this.zvuk = true,
-    this.uredaj = 'MOBILE-002-POS',
-    this.naziv = 'MOBILE TEST kasa',
     this.keepalive = 10,
     this.tls = true,
   });
@@ -30,13 +34,25 @@ class MqttConnectionConfig {
 
   /// Builds a config from a scanned QR string of the form
   /// `<licenca>-ORDERMAN-<n>` (e.g. `ffdfedfafgsdghsg-ORDERMAN-01`):
-  ///   * `licenca` = the text before the first `-` (the MQTT username), and
+  ///   * `licenca` = the text before the first `-` (the MQTT username),
   ///   * `uredaj`  = the whole scanned string — the device id used in the MQTT
-  ///     topics/payloads and as the MQTT client identifier.
+  ///     topics/payloads and as the MQTT client identifier, and
+  ///   * `naziv`   = the part after the licenca (e.g. `ORDERMAN-1`), the
+  ///     readable device name we publish in `status`/`dojava`.
+  ///
+  /// The broker endpoint itself (host, port, TLS, password, keepalive) is NOT
+  /// in the QR — it's the same for every Pelion install, so it stays as the
+  /// constructor defaults above.
   factory MqttConnectionConfig.fromScannedCode(String code) {
     final trimmed = code.trim();
-    final licenca = trimmed.split('-').first.trim();
-    return MqttConnectionConfig(licenca: licenca, uredaj: trimmed);
+    final parts = trimmed.split('-');
+    final licenca = parts.first.trim();
+    final naziv = parts.length > 1 ? parts.sublist(1).join('-') : trimmed;
+    return MqttConnectionConfig(
+      licenca: licenca,
+      uredaj: trimmed,
+      naziv: naziv,
+    );
   }
 
   Map<String, dynamic> toJson() => {

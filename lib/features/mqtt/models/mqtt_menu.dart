@@ -110,12 +110,21 @@ class MqttMenu {
 
   static const empty = MqttMenu(groups: [], remarks: []);
 
-  /// Predefined remark names available for [article]: every "sve" (global)
-  /// remark plus the ones the article lists by id, in the broker's order.
-  List<String> predefinedFor(MqttArticle article) => [
+  /// Predefined remarks available for [article]: every "sve" (global) remark
+  /// plus the ones the article lists by id, in the broker's order. Returns the
+  /// full remark (code + name) — orders are sent with the code (`cnap`).
+  List<MqttRemark> remarksFor(MqttArticle article) => [
         for (final r in remarks)
-          if (r.sve || article.napomene.contains(r.cnap)) r.naziv,
+          if (r.sve || article.napomene.contains(r.cnap)) r,
       ];
+
+  /// Display name for a remark code (`cnap`), falling back to the code itself.
+  String remarkName(String cnap) {
+    for (final r in remarks) {
+      if (r.cnap == cnap) return r.naziv;
+    }
+    return cnap;
+  }
 
   /// Parses the full `podaci/artikli` payload into groups (sorted by `rbr`) plus
   /// the predefined remark definitions. Returns [empty] on a shape mismatch.

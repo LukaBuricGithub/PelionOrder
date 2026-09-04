@@ -246,13 +246,15 @@ class _TableCell extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final dark = Theme.of(context).brightness == Brightness.dark;
-    // Colour + corner icon per status: occupied → red (lock = blocked,
-    // eye = yours/viewable), your order → blue, free → neutral.
+    // Colour + corner icon per status. Each state gets its own hue so it reads
+    // at a glance: someone else's table → red + lock (blocked), your own
+    // occupied table → teal + eye (open, read-only), your unsent order → blue,
+    // free → neutral. Red is reserved for "you cannot go in here".
     final (Color fill, Color fg, IconData? corner) = switch (status) {
       _TileStatus.occupiedOther =>
         (const Color(0xFFD46A5A), Colors.white, Icons.lock),
       _TileStatus.occupiedMine =>
-        (const Color(0xFFD46A5A), Colors.white, Icons.visibility),
+        (const Color(0xFF3E8E7E), Colors.white, Icons.visibility),
       _TileStatus.order => (const Color(0xFF4A78B4), Colors.white, null),
       _TileStatus.free => dark
           ? (const Color(0xFF3A4756), const Color(0xFFC9D3DE), null)

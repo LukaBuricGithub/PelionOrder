@@ -23,9 +23,10 @@ String _fmtQty(double q) =>
     q == q.roundToDouble() ? q.toInt().toString() : q.toString();
 
 /// Details view for the MQTT order — a visual + behavioural clone of the API
-/// `OrderDetailsScreen`, operating on the shared [MqttCart]. NOTE: "Pošalji
-/// narudžbu" is intentionally a no-op in this flow.
-class MqttOrderDetailsScreen extends StatelessWidget {
+/// `OrderDetailsScreen`, operating on the shared [MqttCart]. "Pošalji narudžbu"
+/// delegates to [onSend] (owned by the order screen); on success this screen
+/// pops with `'sent'`.
+class MqttOrderDetailsScreen extends StatefulWidget {
   const MqttOrderDetailsScreen({
     super.key,
     required this.cart,
@@ -34,6 +35,7 @@ class MqttOrderDetailsScreen extends StatelessWidget {
     required this.money,
     this.tableBroj,
     this.tableNaziv,
+    this.onSend,
   });
 
   final MqttCart cart;
@@ -43,17 +45,46 @@ class MqttOrderDetailsScreen extends StatelessWidget {
   final int? tableBroj;
   final String? tableNaziv;
 
+  /// Sends the order (owned by the order screen). Returns true when the kasa
+  /// accepted it — this screen then pops with `'sent'`.
+  final Future<bool> Function()? onSend;
+
+  @override
+  State<MqttOrderDetailsScreen> createState() =>
+      _MqttOrderDetailsScreenState();
+}
+
+class _MqttOrderDetailsScreenState extends State<MqttOrderDetailsScreen> {
+  bool _sending = false;
+
+  MqttCart get cart => widget.cart;
+  Map<int, MqttArticle> get byCode => widget.byCode;
+  List<MqttRemark> get remarks => widget.remarks;
+  NumberFormat get money => widget.money;
+  int? get tableBroj => widget.tableBroj;
+  String? get tableNaziv => widget.tableNaziv;
+
+  Future<void> _send() async {
+    final send = widget.onSend;
+    if (send == null || _sending) return;
+    setState(() => _sending = true);
+    final ok = await send();
+    if (!mounted) return;
+    setState(() => _sending = false);
+    if (ok) Navigator.of(context).pop('sent');
+  }
+
   String _name(int code) => byCode[code]?.name ?? 'Artikl $code';
   double _price(int code) => byCode[code]?.price ?? 0;
 
-  /// Predefined remark names available for the article: every global ("sve")
-  /// remark plus the ones the article lists by id.
-  List<String> _predefinedFor(int code) {
+  /// Predefined remarks available for the article: every global ("sve") remark
+  /// plus the ones the article lists by id. Codes (`cnap`) are what gets sent.
+  List<MqttRemark> _remarksFor(int code) {
     final a = byCode[code];
     if (a == null) return const [];
     return [
       for (final r in remarks)
-        if (r.sve || a.napomene.contains(r.cnap)) r.naziv,
+        if (r.sve || a.napomene.contains(r.cnap)) r,
     ];
   }
 
@@ -129,16 +160,18 @@ class MqttOrderDetailsScreen extends StatelessWidget {
                         cart: cart,
                         name: _name(line.code),
                         lineTotal: money.format(_price(line.code) * line.qty),
-                        predefined: _predefinedFor(line.code),
+                        available: _remarksFor(line.code),
                       );
                     },
                   ),
                 ),
                 _BottomBar(
                   total: money.format(_total),
-                  canSend: lines.isNotEmpty,
-                  // Send is intentionally inert in the MQTT flow.
-                  onSend: () {},
+                  sending: _sending,
+                  canSend: lines.isNotEmpty &&
+                      !_sending &&
+                      widget.onSend != null,
+                  onSend: _send,
                 ),
               ],
             ),
@@ -188,7 +221,7 @@ class _LineTile extends StatefulWidget {
     required this.cart,
     required this.name,
     required this.lineTotal,
-    required this.predefined,
+    required this.available,
   });
 
   final int index;
@@ -196,7 +229,7 @@ class _LineTile extends StatefulWidget {
   final MqttCart cart;
   final String name;
   final String lineTotal;
-  final List<String> predefined;
+  final List<MqttRemark> available;
 
   @override
   State<_LineTile> createState() => _LineTileState();
@@ -309,10 +342,21 @@ class _LineTileState extends State<_LineTile> {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           MqttNoteRow(
-                            remarks: line.remarks,
+                            chips: [
+                              for (final c in line.remarkCodes)
+                                MqttNoteChip(
+                                  label: _nameFor(c),
+                                  onRemove: () => widget.cart
+                                      .toggleRemarkCode(widget.index, c),
+                                ),
+                              for (final n in line.customNotes)
+                                MqttNoteChip(
+                                  label: n,
+                                  onRemove: () => widget.cart
+                                      .removeCustomNote(widget.index, n),
+                                ),
+                            ],
                             onOpen: () => _editRemarks(context),
-                            onRemove: (r) =>
-                                widget.cart.toggleRemark(widget.index, r),
                           ),
                           Align(
                             alignment: Alignment.centerRight,
@@ -346,13 +390,24 @@ class _LineTileState extends State<_LineTile> {
     if (result != null) widget.cart.setQuantity(widget.index, result);
   }
 
+  /// Display name for a selected remark code, resolved from this article's
+  /// available remarks (falls back to the code itself).
+  String _nameFor(String cnap) {
+    for (final r in widget.available) {
+      if (r.cnap == cnap) return r.naziv;
+    }
+    return cnap;
+  }
+
   Future<void> _editRemarks(BuildContext context) async {
     await showMqttRemarksSheet(
       context: context,
-      predefined: widget.predefined,
-      selected: widget.line.remarks,
-      onToggle: (r) => widget.cart.toggleRemark(widget.index, r),
-      onCustom: (r) => widget.cart.addCustomRemark(widget.index, r),
+      available: widget.available,
+      selectedCodes: widget.line.remarkCodes,
+      customNotes: widget.line.customNotes,
+      onToggleCode: (c) => widget.cart.toggleRemarkCode(widget.index, c),
+      onAddNote: (n) => widget.cart.addCustomNote(widget.index, n),
+      onRemoveNote: (n) => widget.cart.removeCustomNote(widget.index, n),
     );
   }
 }
@@ -484,11 +539,13 @@ class _QtyDialogState extends State<_QtyDialog> {
 class _BottomBar extends StatelessWidget {
   const _BottomBar({
     required this.total,
+    required this.sending,
     required this.canSend,
     required this.onSend,
   });
 
   final String total;
+  final bool sending;
   final bool canSend;
   final VoidCallback onSend;
 
@@ -530,7 +587,14 @@ class _BottomBar extends StatelessWidget {
                 backgroundColor: sendBg,
                 foregroundColor: sendFg,
               ),
-              icon: const Icon(Icons.send),
+              icon: sending
+                  ? SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(
+                          strokeWidth: 2, color: sendFg),
+                    )
+                  : const Icon(Icons.send),
               label: const Text('Pošalji narudžbu'),
             ),
           ],

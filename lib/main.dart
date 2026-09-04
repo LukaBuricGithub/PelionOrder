@@ -10,6 +10,7 @@ import 'app/app_theme.dart';
 import 'app/router.dart';
 import 'features/auth/state/auth_controller.dart';
 import 'features/mqtt/data/mqtt_service.dart';
+import 'features/mqtt/state/mqtt_config_provider.dart';
 import 'features/shared/state/shared_preferences_provider.dart';
 import 'features/theme/state/theme_mode_provider.dart';
 
@@ -52,8 +53,16 @@ class _OrdermanAppState extends ConsumerState<OrdermanApp>
     super.initState();
     Intl.defaultLocale = 'hr_HR';
     // Observe app lifecycle so the MQTT connection drops on background and
-    // reconnects on resume (a no-op until the user has connected once).
+    // reconnects on resume.
     WidgetsBinding.instance.addObserver(this);
+    // If this device has been provisioned (QR scanned at some point), connect to
+    // the broker straight away — every cold start comes up already live, and the
+    // resume handler above keeps it that way afterwards. Deliberately not
+    // awaited: startup must not wait on the network.
+    Future.microtask(() {
+      final config = ref.read(mqttConfigProvider);
+      if (config != null) MqttService.instance.ensureConnected(config);
+    });
     // Restore the persisted session (looks up the saved user in the cache),
     // then clear the bootstrapping flag so the router leaves the splash.
     Future.microtask(() async {
