@@ -28,10 +28,9 @@ double _screenScale(BuildContext context) {
 String _fmtQty(double q) =>
     q == q.roundToDouble() ? q.toInt().toString() : q.toString();
 
-/// Order-entry screen for the MQTT menu — a visual clone of the New Order
-/// ("Stol X") screen, backed by a local in-memory [MqttCart] built from the MQTT
-/// groups/articles. Send publishes the order to the kasa over MQTT and applies
-/// the reply (see `MqttOrderSender`).
+/// Order-entry screen ("Stol X") for the MQTT menu, backed by an in-memory
+/// [MqttCart] built from the MQTT groups/articles. Send publishes the order to
+/// the kasa over MQTT and applies the reply (see `MqttOrderSender`).
 class MqttOrderScreen extends ConsumerStatefulWidget {
   const MqttOrderScreen({super.key, this.tableBroj, this.tableNaziv});
 

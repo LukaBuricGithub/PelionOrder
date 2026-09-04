@@ -7,11 +7,7 @@ import '../features/auth/presentation/pin_screen.dart';
 import '../features/auth/presentation/splash_screen.dart';
 import '../features/auth/state/session_provider.dart';
 import '../features/cashregister/presentation/cash_register_screen.dart';
-import '../features/cashregister/presentation/new_order_screen.dart';
-import '../features/cashregister/presentation/order_details_screen.dart';
-import '../features/cashregister/presentation/orders_overview_screen.dart';
 import '../features/cashregister/presentation/table_details_screen.dart';
-import '../features/cashregister/presentation/table_select_screen.dart';
 import '../features/cashregister/presentation/tables_overview_screen.dart';
 import '../features/mqtt/presentation/mqtt_order_screen.dart';
 import '../features/mqtt/presentation/mqtt_table_select_screen.dart';
@@ -109,25 +105,6 @@ final routerProvider = Provider<GoRouter>((ref) {
         builder: (context, state) => const CashRegisterScreen(),
       ),
       GoRoute(
-        path: '/table-select',
-        builder: (context, state) => const TableSelectScreen(),
-      ),
-      GoRoute(
-        path: '/new-order/:tableCode',
-        builder: (context, state) {
-          final code =
-              int.tryParse(state.pathParameters['tableCode'] ?? '') ?? 0;
-          return NewOrderScreen(tableCode: code);
-        },
-      ),
-      GoRoute(
-        path: '/order-details/:orderId',
-        builder: (context, state) {
-          final id = int.tryParse(state.pathParameters['orderId'] ?? '') ?? 0;
-          return OrderDetailsScreen(orderId: id);
-        },
-      ),
-      GoRoute(
         path: '/tables-overview',
         builder: (context, state) => const TablesOverviewScreen(),
       ),
@@ -139,10 +116,6 @@ final routerProvider = Provider<GoRouter>((ref) {
           final userCode = state.pathParameters['userCode'] ?? '';
           return TableDetailsScreen(tableCode: code, userCode: userCode);
         },
-      ),
-      GoRoute(
-        path: '/orders-overview',
-        builder: (context, state) => const OrdersOverviewScreen(),
       ),
       GoRoute(
         path: '/mqtt-tables',

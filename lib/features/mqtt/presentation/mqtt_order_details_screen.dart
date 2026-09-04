@@ -22,10 +22,10 @@ const double _kAmountBaseWidth = 88;
 String _fmtQty(double q) =>
     q == q.roundToDouble() ? q.toInt().toString() : q.toString();
 
-/// Details view for the MQTT order — a visual + behavioural clone of the API
-/// `OrderDetailsScreen`, operating on the shared [MqttCart]. "Pošalji narudžbu"
-/// delegates to [onSend] (owned by the order screen); on success this screen
-/// pops with `'sent'`.
+/// Details view for the MQTT order ("Stol X — detalji narudžbe"): the cart's
+/// lines with per-line quantity and napomene, operating on the shared
+/// [MqttCart]. "Pošalji narudžbu" delegates to [onSend] (owned by the order
+/// screen); on success this screen pops with `'sent'`.
 class MqttOrderDetailsScreen extends StatefulWidget {
   const MqttOrderDetailsScreen({
     super.key,
@@ -56,6 +56,12 @@ class MqttOrderDetailsScreen extends StatefulWidget {
 
 class _MqttOrderDetailsScreenState extends State<MqttOrderDetailsScreen> {
   bool _sending = false;
+
+  /// Reorder mode: rows collapse to one compact line with a drag handle and
+  /// every editing control is hidden. Keeping it a separate mode is what makes
+  /// dragging safe here — the normal row's tap-to-expand and its small +/−/✕
+  /// targets would otherwise fight the drag gesture.
+  bool _reordering = false;
 
   MqttCart get cart => widget.cart;
   Map<int, MqttArticle> get byCode => widget.byCode;
@@ -122,7 +128,7 @@ class _MqttOrderDetailsScreenState extends State<MqttOrderDetailsScreen> {
                         Theme.of(context).textTheme.titleLarge,
                   ),
                   Text(
-                    'Detalji narudžbe',
+                    _reordering ? 'Presloži stavke' : 'Detalji narudžbe',
                     style: TextStyle(
                       fontSize: 13.5,
                       color: Theme.of(context).colorScheme.onSurfaceVariant,
@@ -131,48 +137,94 @@ class _MqttOrderDetailsScreenState extends State<MqttOrderDetailsScreen> {
                 ],
               ),
               actions: [
-                if (lines.isNotEmpty)
-                  IconButton(
-                    icon: Icon(Icons.delete_sweep_outlined,
-                        color: Theme.of(context).colorScheme.error),
-                    tooltip: 'Isprazni narudžbu',
-                    onPressed: () => _confirmClear(context),
-                  ),
+                if (_reordering)
+                  TextButton.icon(
+                    onPressed: () => setState(() => _reordering = false),
+                    icon: const Icon(Icons.check),
+                    label: const Text('Gotovo'),
+                  )
+                else ...[
+                  // Nothing to reorder with a single line.
+                  if (lines.length > 1)
+                    IconButton(
+                      icon: const Icon(Icons.swap_vert),
+                      tooltip: 'Presloži stavke',
+                      onPressed: () => setState(() => _reordering = true),
+                    ),
+                  if (lines.isNotEmpty)
+                    IconButton(
+                      icon: Icon(Icons.delete_sweep_outlined,
+                          color: Theme.of(context).colorScheme.error),
+                      tooltip: 'Isprazni narudžbu',
+                      onPressed: () => _confirmClear(context),
+                    ),
+                ],
               ],
             ),
             body: Column(
               children: [
                 Expanded(
-                  child: ListView.builder(
-                    padding: const EdgeInsets.fromLTRB(12, 12, 12, 8),
-                    itemCount: lines.length + 1,
-                    itemBuilder: (context, i) {
-                      if (i == lines.length) {
-                        return _AddItemButton(
-                          onTap: () => Navigator.of(context).pop(),
-                        );
-                      }
-                      final line = lines[i];
-                      return _LineTile(
-                        key: ValueKey('line_${line.code}_$i'),
-                        index: i,
-                        line: line,
-                        cart: cart,
-                        name: _name(line.code),
-                        lineTotal: money.format(_price(line.code) * line.qty),
-                        available: _remarksFor(line.code),
-                      );
-                    },
+                  child: _reordering
+                      ? ReorderableListView.builder(
+                          padding: const EdgeInsets.fromLTRB(12, 12, 12, 8),
+                          // Drag only from the handle, so a vertical swipe
+                          // anywhere else still scrolls a long order.
+                          buildDefaultDragHandles: false,
+                          itemCount: lines.length,
+                          onReorder: cart.moveLine,
+                          itemBuilder: (context, i) {
+                            final line = lines[i];
+                            return _ReorderTile(
+                              key: ObjectKey(line),
+                              index: i,
+                              name: _name(line.code),
+                              qty: line.qty,
+                              lineTotal:
+                                  money.format(_price(line.code) * line.qty),
+                            );
+                          },
+                        )
+                      : ListView.builder(
+                          padding: const EdgeInsets.fromLTRB(12, 12, 12, 8),
+                          itemCount: lines.length + 1,
+                          itemBuilder: (context, i) {
+                            if (i == lines.length) {
+                              return _AddItemButton(
+                                onTap: () => Navigator.of(context).pop(),
+                              );
+                            }
+                            final line = lines[i];
+                            return _LineTile(
+                              // Keyed on the line OBJECT, not the index: the
+                              // tile owns its expanded state, so an index key
+                              // would leave the wrong row open after a move or
+                              // a delete.
+                              key: ObjectKey(line),
+                              index: i,
+                              line: line,
+                              cart: cart,
+                              name: _name(line.code),
+                              lineTotal:
+                                  money.format(_price(line.code) * line.qty),
+                              available: _remarksFor(line.code),
+                            );
+                          },
+                        ),
+                ),
+                if (_reordering)
+                  _ReorderDoneBar(
+                    total: money.format(_total),
+                    onDone: () => setState(() => _reordering = false),
+                  )
+                else
+                  _BottomBar(
+                    total: money.format(_total),
+                    sending: _sending,
+                    canSend: lines.isNotEmpty &&
+                        !_sending &&
+                        widget.onSend != null,
+                    onSend: _send,
                   ),
-                ),
-                _BottomBar(
-                  total: money.format(_total),
-                  sending: _sending,
-                  canSend: lines.isNotEmpty &&
-                      !_sending &&
-                      widget.onSend != null,
-                  onSend: _send,
-                ),
               ],
             ),
           );
@@ -532,6 +584,134 @@ class _QtyDialogState extends State<_QtyDialog> {
           child: const Text('U redu'),
         ),
       ],
+    );
+  }
+}
+
+/// One row in reorder mode: drag handle · name · ×qty · line total.
+///
+/// Everything editable is deliberately absent — the handle is the only gesture
+/// on the row, so there is nothing for a drag to be confused with, and the rows
+/// stay short and uniform (more of the order on screen, predictable drop
+/// targets).
+class _ReorderTile extends StatelessWidget {
+  const _ReorderTile({
+    super.key,
+    required this.index,
+    required this.name,
+    required this.qty,
+    required this.lineTotal,
+  });
+
+  final int index;
+  final String name;
+  final double qty;
+  final String lineTotal;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final s = _screenScale(context);
+
+    return Padding(
+      padding: EdgeInsets.only(bottom: 8 * s),
+      child: Material(
+        color: scheme.surface,
+        clipBehavior: Clip.antiAlias,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(12 * s),
+          side:
+              BorderSide(color: scheme.outlineVariant.withValues(alpha: 0.5)),
+        ),
+        child: Padding(
+          padding: EdgeInsets.fromLTRB(4 * s, 10 * s, 12 * s, 10 * s),
+          child: Row(
+            children: [
+              ReorderableDragStartListener(
+                index: index,
+                child: Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 8 * s),
+                  child: Icon(Icons.drag_handle,
+                      size: 24 * s, color: scheme.onSurfaceVariant),
+                ),
+              ),
+              Expanded(
+                child: Text(
+                  name,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style:
+                      TextStyle(fontSize: 15 * s, fontWeight: FontWeight.w600),
+                ),
+              ),
+              SizedBox(width: 8 * s),
+              Text('×${_fmtQty(qty)}',
+                  style: TextStyle(
+                      fontSize: 14 * s, color: scheme.onSurfaceVariant)),
+              SizedBox(width: 10 * s),
+              SizedBox(
+                width: _kAmountBaseWidth * s,
+                child: Text(
+                  lineTotal,
+                  textAlign: TextAlign.right,
+                  maxLines: 1,
+                  style:
+                      TextStyle(fontSize: 14 * s, fontWeight: FontWeight.w700),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// The bottom bar while reordering: the total stays visible, and "Pošalji
+/// narudžbu" is replaced by Gotovo so the order can't be sent mid-rearrange.
+class _ReorderDoneBar extends StatelessWidget {
+  const _ReorderDoneBar({required this.total, required this.onDone});
+
+  final String total;
+  final VoidCallback onDone;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final s = _screenScale(context);
+    return Container(
+      decoration: BoxDecoration(
+        color: scheme.surfaceContainerHigh,
+        border: Border(
+          top: BorderSide(color: scheme.outlineVariant.withValues(alpha: 0.7)),
+        ),
+      ),
+      child: Padding(
+        padding: EdgeInsets.fromLTRB(16 * s, 12 * s, 16 * s,
+            screenContentBottomPadding(context, extra: 12 * s)),
+        child: Row(
+          children: [
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text('Ukupno',
+                    style: TextStyle(
+                        fontSize: 12 * s, color: scheme.onSurfaceVariant)),
+                Text(total,
+                    style: TextStyle(
+                        fontSize: 20 * s, fontWeight: FontWeight.w800)),
+              ],
+            ),
+            const Spacer(),
+            FilledButton.icon(
+              onPressed: onDone,
+              icon: const Icon(Icons.check),
+              label: const Text('Gotovo'),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }

@@ -140,8 +140,13 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                     constraints:
                         BoxConstraints(minHeight: constraints.maxHeight),
                     child: Column(
+                      // Centre the block in the viewport. This works because the
+                      // ConstrainedBox above forces the Column to at least the
+                      // viewport height; when the content is taller (error
+                      // banner on a short screen) the Column simply grows and
+                      // the view scrolls instead.
+                      mainAxisAlignment: MainAxisAlignment.center,
                       children: [
-                        SizedBox(height: constraints.maxHeight * 0.10),
                         Text(
                           'Pelion Order',
                           textAlign: TextAlign.center,

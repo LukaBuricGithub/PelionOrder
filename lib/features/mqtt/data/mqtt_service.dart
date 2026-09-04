@@ -386,9 +386,13 @@ class MqttService {
   }
 
   // ── JSON payloads (mirror the Java service), built from the active config ───
+  //
+  // `uloga` is "orderman": this device is a waiter's mobile, not a kasa. (It
+  // said "kasa" while the service was first mirrored from the Java one.)
   String _statusJson(String status) =>
       '{"status":"$status","naziv":"${_cfg.naziv}","tip":"PELION-ORDER",'
-      '"uloga":"kasa","verzija":"1.0.0","uredaj":"${_cfg.uredaj}","ts":${_now()}}';
+      '"uloga":"orderman","verzija":"1.0.0","uredaj":"${_cfg.uredaj}",'
+      '"ts":${_now()}}';
 
   String _dojavaJson(String tekst) =>
       '{"tekst":"$tekst","naziv":"${_cfg.naziv}","uredaj":"${_cfg.uredaj}",'

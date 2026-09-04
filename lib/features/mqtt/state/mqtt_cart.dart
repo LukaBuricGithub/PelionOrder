@@ -97,6 +97,25 @@ class MqttCart extends ChangeNotifier {
     _touch();
   }
 
+  /// Moves the line at [oldIndex] to [newIndex] (drag-to-reorder in the details
+  /// screen), using ReorderableListView's index convention.
+  ///
+  /// The kasa prints `stavke` in the order we send them, so this genuinely
+  /// changes the kitchen ticket — it therefore goes through [_touch] like any
+  /// other edit, which invalidates the pending msg_id. Without that, reordering
+  /// after a failed send would reuse the id and the kasa would just replay its
+  /// old answer, silently discarding the new order.
+  void moveLine(int oldIndex, int newIndex) {
+    if (oldIndex < 0 || oldIndex >= lines.length) return;
+    // ReorderableListView reports the target as an index in the ORIGINAL list,
+    // so dropping below the source needs a -1 once the item is lifted out.
+    var target = newIndex > oldIndex ? newIndex - 1 : newIndex;
+    target = target.clamp(0, lines.length - 1);
+    if (target == oldIndex) return;
+    lines.insert(target, lines.removeAt(oldIndex));
+    _touch();
+  }
+
   void clear() {
     lines.clear();
     _touch();

@@ -5,8 +5,6 @@ import 'package:flutter_svg/flutter_svg.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../auth/state/session_provider.dart';
-import '../../cashregister/presentation/table_select_screen.dart'
-    show precacheTableSelectSvgs;
 import '../../settings/models/table_view_size.dart';
 import '../../settings/state/settings_provider.dart';
 import '../models/mqtt_tables.dart';
@@ -14,12 +12,40 @@ import '../state/mqtt_orders_provider.dart';
 import '../state/mqtt_tables_provider.dart';
 import 'mqtt_table_view_screen.dart';
 
-// SVG assets (shared with the Odabir stola screen).
-const _kSprite = 'assets/table_select/table_sprite.svg';
-const _kSpriteDark = 'assets/table_select/table_sprite_dark.svg';
+// ── SVG assets (see assets/table_select) ───────────────────────────────────
+// Two theme-specific chair sprites, each with its own per-part colours
+// (body / seat / back / outline). Edit those SVGs to recolour the chair parts.
+const _kSprite = 'assets/table_select/table_sprite.svg'; // light theme
+const _kSpriteDark = 'assets/table_select/table_sprite_dark.svg'; // dark theme
 const _kWalls = 'assets/table_select/walls';
 const _kDarkAssetTint =
     ColorFilter.mode(Color(0xFF434A53), BlendMode.modulate);
+
+const _kTableSelectSvgs = <String>[
+  _kSprite,
+  _kSpriteDark,
+  '$_kWalls/corner_tl.svg',
+  '$_kWalls/corner_tr.svg',
+  '$_kWalls/corner_bl.svg',
+  '$_kWalls/corner_br.svg',
+  '$_kWalls/edge_top.svg',
+  '$_kWalls/edge_bottom.svg',
+  '$_kWalls/edge_left.svg',
+  '$_kWalls/edge_right.svg',
+];
+
+/// Warms the flutter_svg cache for the floor-plan assets so the first open of
+/// this screen doesn't hitch while compiling the SVGs. Safe to call repeatedly
+/// (a no-op once cached). Call it from the screen shown just before this one.
+Future<void> precacheTableSelectSvgs() async {
+  for (final asset in _kTableSelectSvgs) {
+    final loader = SvgAssetLoader(asset);
+    await svg.cache.putIfAbsent(
+      loader.cacheKey(null),
+      () => loader.loadBytes(null),
+    );
+  }
+}
 
 /// How a table tile is presented / behaves.
 enum _TileStatus {
@@ -66,7 +92,7 @@ class _MqttTableSelectScreenState extends ConsumerState<MqttTableSelectScreen> {
     final columns = _columns(ref.watch(settingsProvider).tableViewSize);
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Odabir stola (MQTT)')),
+      appBar: AppBar(title: const Text('Odabir stola')),
       body: SafeArea(
         child: zones.isEmpty
             ? const _EmptyTables()

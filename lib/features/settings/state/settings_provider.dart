@@ -13,7 +13,7 @@ final settingsStorageProvider = Provider<SettingsStorage>((ref) {
 class SettingsState {
   const SettingsState({
     this.tableViewSize = TableViewSize.medium,
-    this.shouldGroupArticles = true,
+    this.shouldGroupArticles = false,
     this.businessName,
   });
 

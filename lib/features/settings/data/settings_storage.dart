@@ -24,9 +24,10 @@ class SettingsStorage {
   }
 
   /// Whether identical items are combined into a single line when an order is
-  /// sent. Defaults to **true**, matching the reference client.
+  /// sent. Defaults to **false**: each tap stays its own line on the kitchen
+  /// ticket, which is how the venue wants orders to read.
   bool loadShouldGroupArticles() =>
-      _prefs.getBool(_shouldGroupArticlesKey) ?? true;
+      _prefs.getBool(_shouldGroupArticlesKey) ?? false;
 
   Future<void> saveShouldGroupArticles(bool value) async {
     await _prefs.setBool(_shouldGroupArticlesKey, value);

@@ -8,13 +8,11 @@ import '../../master_data/state/heartbeat_provider.dart';
 import '../../master_data/state/master_data_providers.dart';
 import '../../settings/state/settings_provider.dart';
 import '../../theme/state/theme_mode_provider.dart';
-import '../state/orders_providers.dart';
-import 'table_select_screen.dart' show precacheTableSelectSvgs;
+import '../../mqtt/presentation/mqtt_table_select_screen.dart'
+    show precacheTableSelectSvgs;
 
-/// The waiter's main hub after login: signed-in user, online status, pending
-/// orders, and entry points to ordering and reporting. Auto-resends queued
-/// orders whenever the connection comes back. Mirrors the reference client's
-/// `CashRegisterScreen`.
+/// The waiter's main hub after login: signed-in user and the entry points to
+/// ordering (over MQTT) and the table overview.
 class CashRegisterScreen extends ConsumerStatefulWidget {
   const CashRegisterScreen({super.key});
 
@@ -31,7 +29,6 @@ class _CashRegisterScreenState extends ConsumerState<CashRegisterScreen> {
     super.initState();
     Future.microtask(() {
       ref.read(heartbeatProvider.notifier).start();
-      _resendPending();
       // Warm the floor-plan SVGs now so the first open of "Odabir stola" from
       // the "Unos narudžbe" menu doesn't hitch while compiling them.
       precacheTableSelectSvgs();
@@ -44,21 +41,11 @@ class _CashRegisterScreenState extends ConsumerState<CashRegisterScreen> {
     super.dispose();
   }
 
-  Future<void> _resendPending() async {
-    final sent = await ref.read(orderRepositoryProvider).sendPendingOrders();
-    if (sent > 0 && mounted) {
-      ref.invalidate(pendingOrdersCountProvider);
-    }
-  }
-
-  /// Pull-to-refresh on the menu: refresh the Online/Offline state, re-download
-  /// master data (users, groups, articles, tables), and flush any queued orders.
+  /// Pull-to-refresh on the menu: refresh the Online/Offline state and
+  /// re-download master data (users, groups, articles, tables).
   Future<void> _onRefresh() async {
     await ref.read(heartbeatProvider.notifier).pingNow();
     await ref.read(masterDataRepositoryProvider).syncAll();
-    if (!mounted) return;
-    await _resendPending();
-    if (mounted) ref.invalidate(pendingOrdersCountProvider);
   }
 
   /// Back on the hub forgets the current waiter: clears the session (and the
@@ -76,11 +63,6 @@ class _CashRegisterScreenState extends ConsumerState<CashRegisterScreen> {
   Widget build(BuildContext context) {
     final user = ref.watch(currentUserProvider);
     final businessName = ref.watch(settingsProvider).businessName;
-
-    // Auto-resend the queue whenever the connection comes back up.
-    ref.listen(heartbeatProvider, (prev, next) {
-      if (prev != true && next == true) _resendPending();
-    });
 
     return PopScope(
       // The hub is the top of the logged-in area. Back must NOT close the app —
@@ -143,29 +125,13 @@ class _CashRegisterScreenState extends ConsumerState<CashRegisterScreen> {
                 ),
                 const SizedBox(height: 8),
                 _MenuButton(
-                  icon: Icons.add_shopping_cart,
-                  label: 'Unos narudžbe',
-                  onTap: () async {
-                    await context.push('/table-select');
-                    if (mounted) ref.invalidate(pendingOrdersCountProvider);
-                  },
-                ),
-                _MenuButton(
                   icon: Icons.table_restaurant,
                   label: 'Pregled stolova',
                   onTap: () => context.push('/tables-overview'),
                 ),
                 _MenuButton(
-                  icon: Icons.receipt_long,
-                  label: 'Narudžbe',
-                  onTap: () async {
-                    await context.push('/orders-overview');
-                    if (mounted) ref.invalidate(pendingOrdersCountProvider);
-                  },
-                ),
-                _MenuButton(
                   icon: Icons.fastfood,
-                  label: 'Artikli (MQTT)',
+                  label: 'Unos narudžbe',
                   onTap: () => context.push('/mqtt-tables'),
                 ),
               ],
