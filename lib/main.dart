@@ -1,8 +1,10 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_native_splash/flutter_native_splash.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:google_fonts/google_fonts.dart';
 import 'package:intl/intl.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -16,6 +18,15 @@ import 'features/theme/state/theme_mode_provider.dart';
 
 Future<void> main() async {
   final binding = WidgetsFlutterBinding.ensureInitialized();
+
+  // Inter is bundled in assets/google_fonts/, so nothing should ever be fetched
+  // from fonts.gstatic.com. In debug we forbid fetching outright: if a weight is
+  // ever used that isn't bundled, google_fonts throws here instead of quietly
+  // downloading it (or falling back to Roboto on a device with no internet, the
+  // failure mode this bundling exists to prevent). Release keeps fetching
+  // allowed purely as a safety net — a missing glyph must never crash a waiter
+  // mid-service.
+  GoogleFonts.config.allowRuntimeFetching = !kDebugMode;
 
   // Keep the OS splash on screen until we've restored the session and the
   // first real screen has painted (removed in _OrdermanAppState). This hides

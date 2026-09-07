@@ -93,6 +93,15 @@ flutter:
   assets:
     - assets/table_select/
     - assets/table_select/walls/
+    # Bundled Inter font — the google_fonts package auto-detects .ttf files
+    # placed in assets/google_fonts/ (naming convention `{Family}-{Variant}.ttf`)
+    # and uses them instead of fetching from fonts.gstatic.com. Without this the
+    # font is downloaded on first launch, and on a restaurant network that can't
+    # reach Google the package silently falls back to Roboto — so two waiters'
+    # phones would render the app differently with nothing to show why.
+    # Weights bundled: 400, 500, 600, 700, 800 — the exact set the codebase uses
+    # (verified by grep for `FontWeight.wXXX` plus the Material base theme).
+    - assets/google_fonts/
 
   # To add assets to your application, add an assets section, like this:
   # assets:
