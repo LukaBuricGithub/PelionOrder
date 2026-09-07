@@ -7,6 +7,7 @@ import 'package:mqtt_client/mqtt_server_client.dart';
 
 import '../models/mqtt_connection_config.dart';
 import '../models/mqtt_order_reply.dart';
+import '../models/mqtt_table_query.dart';
 
 /// A long-lived MQTT connection speaking the real Pelion "semafor" protocol,
 /// driven by a [MqttConnectionConfig] built from the scanned QR code. Connects
@@ -72,6 +73,23 @@ class MqttService {
   /// The most recent reply (handy for diagnostics).
   MqttOrderReply? lastOrderReply;
 
+  /// Replies to our table queries (`tip: "stol"`), on the same `mob/{od}` topic
+  /// as the order replies above. Broadcast, paired downstream by `msg_id`.
+  final _tableReplies = StreamController<MqttTableQueryReply>.broadcast();
+  Stream<MqttTableQueryReply> get tableReplies => _tableReplies.stream;
+
+  /// The `tip` of a reply payload, or null when it has none / isn't JSON.
+  /// Used only to route between the order and table-query streams.
+  String? _tipOf(String raw) {
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is Map && decoded['tip'] != null) {
+        return decoded['tip'].toString();
+      }
+    } catch (_) {}
+    return null;
+  }
+
   /// The current version hash for [section] (from the last `podaci/verzija`),
   /// or null if not received / not present.
   String? versionFor(String section) {
@@ -130,6 +148,17 @@ class MqttService {
   bool publishOrder(String payload) {
     if (_client == null || !isConnected || _config == null) return false;
     _publish(_tNarudzbe, payload);
+    return true;
+  }
+
+  /// Where questions for the kasa go ("what is on this table").
+  String get _tUpiti => 'kasa/${_cfg.licenca}/upiti';
+
+  /// Publishes a query payload to `kasa/{LICENCA}/upiti`. QoS 1, retain false —
+  /// a question must never outlive the moment it was asked.
+  bool publishQuery(String payload) {
+    if (_client == null || !isConnected || _config == null) return false;
+    _publish(_tUpiti, payload);
     return true;
   }
 
@@ -296,14 +325,35 @@ class MqttService {
           if (e.topic == _tKorisnici) korisniciRawJson.value = payload;
           if (e.topic == _tStolovi) stoloviRawJson.value = payload;
           if (e.topic == _tStanje) stanjeRawJson.value = payload;
-          // A reply to one of our orders — pair it by msg_id downstream.
+          // Our private reply topic carries BOTH order replies (`tip: "nalog"`)
+          // and table-query answers (`tip: "stol"`); each is paired downstream
+          // by the msg_id we generated.
+          //
+          // Only "stol" is matched positively — everything else keeps going to
+          // the order path. `tip` on order replies is a recent addition on the
+          // kasa side, so a kasa that predates it sends none at all, and a
+          // strict positive match would silently break order sending.
           if (e.topic == _tMob) {
-            final reply = MqttOrderReply.tryParse(payload);
-            if (reply == null) {
-              debugPrint('MQTT ✗ unusable order reply (no msg_id?): $payload');
+            final tip = _tipOf(payload);
+            if (tip == 'stol') {
+              final reply = MqttTableQueryReply.tryParse(payload);
+              if (reply == null) {
+                debugPrint('MQTT ✗ unusable table reply (no msg_id?): $payload');
+              } else {
+                _tableReplies.add(reply);
+              }
             } else {
-              lastOrderReply = reply;
-              _orderReplies.add(reply);
+              if (tip != null && tip != 'nalog') {
+                debugPrint('MQTT ▸ unknown reply tip "$tip" — routed to orders; '
+                    'add a case for it if this is a new query type');
+              }
+              final reply = MqttOrderReply.tryParse(payload);
+              if (reply == null) {
+                debugPrint('MQTT ✗ unusable order reply (no msg_id?): $payload');
+              } else {
+                lastOrderReply = reply;
+                _orderReplies.add(reply);
+              }
             }
           }
           // Set the version LAST so, if it arrives in the same batch as the

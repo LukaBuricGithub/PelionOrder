@@ -174,6 +174,8 @@ class MqttOrderSender {
       if (r.msgId == msgId && !completer.isCompleted) completer.complete(r);
     });
 
+    debugPrint('MQTT ▸ order payload: $payload');
+
     try {
       for (var attempt = 1; attempt <= maxAttempts; attempt++) {
         debugPrint('MQTT ▸ order attempt $attempt/$maxAttempts '

@@ -16,9 +16,9 @@ import '../features/settings/presentation/settings_screen.dart';
 /// App router with a redirect-based auth gate, mirroring ikasa's approach.
 ///
 /// Flow: `/splash` while the session restores → `/login` (with `/pin` and
-/// `/settings` reachable while logged out) → `/cash-register` once a waiter is
-/// signed in. The cash-register and traffic sub-routes are added as those
-/// features land.
+/// `/settings` reachable while logged out) → `/mqtt-tables` once a waiter is
+/// signed in. "Odabir stola" is the signed-in home: there is no menu screen,
+/// and back from it signs the waiter out.
 final routerProvider = Provider<GoRouter>((ref) {
   // Re-evaluate redirects whenever the session or bootstrap flag changes.
   final notifier = ValueNotifier(0);
@@ -42,8 +42,10 @@ final routerProvider = Provider<GoRouter>((ref) {
       final isPin = path == '/pin';
       final isSettings = path == '/settings';
 
-      // Restore finished — leave the splash immediately.
-      if (isSplash) return loggedIn ? '/cash-register' : '/login';
+      // Restore finished — leave the splash immediately. A signed-in waiter
+      // lands straight on the floor plan: "Odabir stola" IS the home screen,
+      // there is no menu in between.
+      if (isSplash) return loggedIn ? '/mqtt-tables' : '/login';
 
       if (!loggedIn) {
         // Logged out: login, PIN entry and settings are reachable.
@@ -52,7 +54,7 @@ final routerProvider = Provider<GoRouter>((ref) {
       }
 
       // Logged in: keep the user out of the login flow.
-      if (isLogin || isPin) return '/cash-register';
+      if (isLogin || isPin) return '/mqtt-tables';
       return null;
     },
     errorBuilder: (context, state) => Scaffold(

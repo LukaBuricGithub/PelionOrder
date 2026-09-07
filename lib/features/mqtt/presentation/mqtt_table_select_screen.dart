@@ -4,8 +4,10 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../auth/state/auth_controller.dart';
 import '../../auth/state/session_provider.dart';
 import '../../settings/models/table_view_size.dart';
+import '../../settings/presentation/settings_drawer.dart';
 import '../../settings/state/settings_provider.dart';
 import '../models/mqtt_tables.dart';
 import '../state/mqtt_orders_provider.dart';
@@ -68,12 +70,21 @@ class MqttTableSelectScreen extends ConsumerStatefulWidget {
 }
 
 class _MqttTableSelectScreenState extends ConsumerState<MqttTableSelectScreen> {
+  final _scaffoldKey = GlobalKey<ScaffoldState>();
   int _selectedZone = 0;
 
   @override
   void initState() {
     super.initState();
     precacheTableSelectSvgs();
+  }
+
+  /// Back here forgets the current waiter: this is the top of the signed-in
+  /// area, so back must NOT close the app — it clears the session and the
+  /// router's auth redirect drops us on the login screen. We must not navigate
+  /// ourselves as well, or the route change double-fires.
+  Future<void> _forgetSession() async {
+    await ref.read(authControllerProvider).logout();
   }
 
   int _columns(TableViewSize s) => switch (s) {
@@ -91,12 +102,30 @@ class _MqttTableSelectScreenState extends ConsumerState<MqttTableSelectScreen> {
     final myCuser = ref.watch(currentUserProvider)?.code;
     final columns = _columns(ref.watch(settingsProvider).tableViewSize);
 
-    return Scaffold(
-      appBar: AppBar(title: const Text('Odabir stola')),
-      body: SafeArea(
-        child: zones.isEmpty
-            ? const _EmptyTables()
-            : _buildBody(zones, occupied, withOrders, myCuser, columns),
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) {
+        if (didPop) return;
+        _forgetSession();
+      },
+      child: Scaffold(
+        key: _scaffoldKey,
+        endDrawer: const SettingsDrawer(),
+        appBar: AppBar(
+          title: const Text('Odabir stola'),
+          actions: [
+            IconButton(
+              icon: const Icon(Icons.settings_outlined),
+              tooltip: 'Postavke',
+              onPressed: () => _scaffoldKey.currentState?.openEndDrawer(),
+            ),
+          ],
+        ),
+        body: SafeArea(
+          child: zones.isEmpty
+              ? const _EmptyTables()
+              : _buildBody(zones, occupied, withOrders, myCuser, columns),
+        ),
       ),
     );
   }
