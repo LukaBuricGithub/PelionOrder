@@ -7,6 +7,7 @@ import '../../shared/presentation/bottom_sheet_safe_area.dart';
 import '../models/mqtt_menu.dart';
 import '../state/mqtt_cart.dart';
 import 'mqtt_napomene.dart';
+import 'mqtt_qty_pad.dart';
 
 double _screenScale(BuildContext context) {
   final size = MediaQuery.sizeOf(context);
@@ -18,9 +19,6 @@ double _screenScale(BuildContext context) {
 /// Fixed width reserved for the line amount ("9.999,99 €"), so amounts stay in a
 /// right-aligned column and the name never collides with them.
 const double _kAmountBaseWidth = 88;
-
-String _fmtQty(double q) =>
-    q == q.roundToDouble() ? q.toInt().toString() : q.toString();
 
 /// Details view for the MQTT order ("Stol X — detalji narudžbe"): the cart's
 /// lines with per-line quantity and napomene, operating on the shared
@@ -204,6 +202,7 @@ class _MqttOrderDetailsScreenState extends State<MqttOrderDetailsScreen> {
                               line: line,
                               cart: cart,
                               name: _name(line.code),
+                              unit: byCode[line.code]?.unit ?? '',
                               lineTotal:
                                   money.format(_price(line.code) * line.qty),
                               available: _remarksFor(line.code),
@@ -263,8 +262,12 @@ class _MqttOrderDetailsScreenState extends State<MqttOrderDetailsScreen> {
   }
 }
 
-/// One compact, expandable item row: quantity stepper · name · line total ·
+/// One compact, expandable item row: quantity button · name · line total ·
 /// chevron. The chevron reveals the napomene (remarks) editor + delete.
+///
+/// Unlike the order screen's cart line, this row keeps its napomene visible
+/// inline — this is the review-before-sending surface, and it has the width for
+/// it. Only the quantity control is shared with that screen.
 class _LineTile extends StatefulWidget {
   const _LineTile({
     super.key,
@@ -272,6 +275,7 @@ class _LineTile extends StatefulWidget {
     required this.line,
     required this.cart,
     required this.name,
+    required this.unit,
     required this.lineTotal,
     required this.available,
   });
@@ -280,6 +284,7 @@ class _LineTile extends StatefulWidget {
   final MqttCartLine line;
   final MqttCart cart;
   final String name;
+  final String unit;
   final String lineTotal;
   final List<MqttRemark> available;
 
@@ -291,16 +296,6 @@ class _LineTileState extends State<_LineTile> {
   bool _expanded = false;
 
   void _toggle() => setState(() => _expanded = !_expanded);
-
-  /// − decrements; at 1 it deletes the line.
-  void _onMinus() {
-    final q = widget.line.qty;
-    if (q > 1) {
-      widget.cart.setQuantity(widget.index, q - 1);
-    } else {
-      widget.cart.removeLine(widget.index);
-    }
-  }
 
   @override
   Widget build(BuildContext context) {
@@ -360,12 +355,11 @@ class _LineTileState extends State<_LineTile> {
                   SizedBox(height: 6 * s),
                   Row(
                     children: [
-                      _QtyStepper(
+                      MqttQtyButton(
                         qty: line.qty,
-                        onMinus: _onMinus,
-                        onPlus: () => widget.cart
-                            .setQuantity(widget.index, line.qty + 1),
-                        onEdit: () => _editQty(context),
+                        unit: widget.unit,
+                        scale: s,
+                        onTap: _editQty,
                       ),
                       const Spacer(),
                       IconButton(
@@ -434,12 +428,16 @@ class _LineTileState extends State<_LineTile> {
     );
   }
 
-  Future<void> _editQty(BuildContext context) async {
-    final result = await showDialog<double>(
+  Future<void> _editQty() async {
+    final v = await showMqttQtyPad(
       context: context,
-      builder: (_) => _QtyDialog(initial: widget.line.qty),
+      articleName: widget.name,
+      unit: widget.unit,
+      initial: widget.line.qty,
     );
-    if (result != null) widget.cart.setQuantity(widget.index, result);
+    if (v == null || !mounted) return;
+    // 0 removes the line — setQuantity already drops a line at <= 0.
+    widget.cart.setQuantity(widget.index, v);
   }
 
   /// Display name for a selected remark code, resolved from this article's
@@ -464,61 +462,7 @@ class _LineTileState extends State<_LineTile> {
   }
 }
 
-/// Compact quantity stepper: outlined − / + with the number between (tap to
-/// type an exact value).
-class _QtyStepper extends StatelessWidget {
-  const _QtyStepper({
-    required this.qty,
-    required this.onMinus,
-    required this.onPlus,
-    required this.onEdit,
-  });
-
-  final double qty;
-  final VoidCallback onMinus;
-  final VoidCallback onPlus;
-  final VoidCallback onEdit;
-
-  @override
-  Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    final s = _screenScale(context);
-
-    Widget btn(IconData icon, VoidCallback onTap) => InkResponse(
-          onTap: onTap,
-          radius: 22 * s,
-          child: Container(
-            width: 30 * s,
-            height: 30 * s,
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(8 * s),
-              border: Border.all(color: scheme.primary.withValues(alpha: 0.6)),
-            ),
-            child: Icon(icon, size: 18 * s, color: scheme.primary),
-          ),
-        );
-
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        btn(Icons.remove, onMinus),
-        InkWell(
-          onTap: onEdit,
-          child: Padding(
-            padding: EdgeInsets.symmetric(horizontal: 11 * s),
-            child: Text(
-              _fmtQty(qty),
-              style: TextStyle(fontSize: 16 * s, fontWeight: FontWeight.w700),
-            ),
-          ),
-        ),
-        btn(Icons.add, onPlus),
-      ],
-    );
-  }
-}
-
-/// Full-width "＋ Dodaj stavku" button — returns to the item picker.
+/// "Dodaj stavku" — returns to the order screen's article grid.
 class _AddItemButton extends StatelessWidget {
   const _AddItemButton({required this.onTap});
 
@@ -536,54 +480,6 @@ class _AddItemButton extends StatelessWidget {
           minimumSize: const Size.fromHeight(46),
         ),
       ),
-    );
-  }
-}
-
-class _QtyDialog extends StatefulWidget {
-  const _QtyDialog({required this.initial});
-  final double initial;
-
-  @override
-  State<_QtyDialog> createState() => _QtyDialogState();
-}
-
-class _QtyDialogState extends State<_QtyDialog> {
-  late final TextEditingController _c = TextEditingController(
-    text: widget.initial == widget.initial.roundToDouble()
-        ? widget.initial.toInt().toString()
-        : widget.initial.toString(),
-  );
-
-  @override
-  void dispose() {
-    _c.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return AlertDialog(
-      title: const Text('Količina'),
-      content: TextField(
-        controller: _c,
-        autofocus: true,
-        keyboardType: const TextInputType.numberWithOptions(decimal: true),
-        decoration: const InputDecoration(border: OutlineInputBorder()),
-      ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.pop(context),
-          child: const Text('Odustani'),
-        ),
-        FilledButton(
-          onPressed: () {
-            final v = double.tryParse(_c.text.replaceAll(',', '.'));
-            Navigator.pop(context, v);
-          },
-          child: const Text('U redu'),
-        ),
-      ],
     );
   }
 }
@@ -645,7 +541,7 @@ class _ReorderTile extends StatelessWidget {
                 ),
               ),
               SizedBox(width: 8 * s),
-              Text('×${_fmtQty(qty)}',
+              Text('×${formatQty(qty)}',
                   style: TextStyle(
                       fontSize: 14 * s, color: scheme.onSurfaceVariant)),
               SizedBox(width: 10 * s),

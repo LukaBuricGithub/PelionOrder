@@ -15,6 +15,7 @@ import '../state/mqtt_menu_provider.dart';
 import '../state/mqtt_orders_provider.dart';
 import 'mqtt_napomene.dart';
 import 'mqtt_order_details_screen.dart';
+import 'mqtt_qty_pad.dart';
 
 /// Screen-size-driven UI scale (identical to the New Order screen): 1.0 ≈ a
 /// typical phone (~928 dp diagonal). Every size is multiplied by this.
@@ -24,9 +25,6 @@ double _screenScale(BuildContext context) {
       math.sqrt(size.width * size.width + size.height * size.height);
   return (diagonal / 928.0).clamp(0.9, 1.4);
 }
-
-String _fmtQty(double q) =>
-    q == q.roundToDouble() ? q.toInt().toString() : q.toString();
 
 /// Order-entry screen ("Stol X") for the MQTT menu, backed by an in-memory
 /// [MqttCart] built from the MQTT groups/articles. Send publishes the order to
@@ -456,8 +454,13 @@ class _CartCardState extends State<_CartCard> {
   }
 }
 
-/// One expandable cart line. Tapping the name / non-button area toggles the
-/// napomene editor (closed by default); the +/−/✕ buttons keep their own taps.
+/// One cart line: name + ✕ on top, then the two editors (quantity, napomene)
+/// and the line total.
+///
+/// Both editors are explicit buttons opening a sheet — there is no hidden
+/// tap-the-row gesture and no inline expansion. That keeps every row the same
+/// height (so the list never reflows under the waiter's finger) and makes the
+/// napomene editor discoverable, which a tap target with no affordance wasn't.
 class _CartLineTile extends StatefulWidget {
   const _CartLineTile({
     super.key,
@@ -483,31 +486,16 @@ class _CartLineTile extends StatefulWidget {
 }
 
 class _CartLineTileState extends State<_CartLineTile> {
-  bool _expanded = false;
-
-  void _toggle() {
-    setState(() => _expanded = !_expanded);
-    // Let the expand/collapse animation settle, then scroll the cart list so
-    // the content is in view: reveal the dropdown on open, settle back on close
-    // (keepVisibleAtEnd nudges just enough to show the line's bottom edge).
-    Future.delayed(const Duration(milliseconds: 200), () {
-      if (!mounted) return;
-      Scrollable.ensureVisible(
-        context,
-        duration: const Duration(milliseconds: 220),
-        curve: Curves.easeOut,
-        alignmentPolicy: ScrollPositionAlignmentPolicy.keepVisibleAtEnd,
-      );
-    });
-  }
-
-  /// Display name for a selected remark code, resolved from this article's
-  /// available remarks (falls back to the code itself).
-  String _nameFor(String cnap) {
-    for (final r in widget.available) {
-      if (r.cnap == cnap) return r.naziv;
-    }
-    return cnap;
+  Future<void> _editQty() async {
+    final v = await showMqttQtyPad(
+      context: context,
+      articleName: widget.name,
+      unit: widget.unit,
+      initial: widget.line.qty,
+    );
+    if (v == null || !mounted) return;
+    // 0 removes the line — setQuantity already drops a line at <= 0.
+    widget.cart.setQuantity(widget.index, v);
   }
 
   void _editRemarks() {
@@ -534,89 +522,75 @@ class _CartLineTileState extends State<_CartLineTile> {
         crossAxisAlignment: CrossAxisAlignment.start,
         mainAxisSize: MainAxisSize.min,
         children: [
-          // Tapping anywhere here (except the ✕ / − / + buttons) toggles the
-          // napomene editor.
-          GestureDetector(
-            onTap: _toggle,
-            behavior: HitTestBehavior.opaque,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Row(
-                  children: [
-                    Expanded(
-                      child: Text(
-                        widget.name,
-                        style: TextStyle(
-                          fontSize: 14 * s,
-                          fontWeight: FontWeight.w700,
-                        ),
-                      ),
-                    ),
-                    // Big invisible hit area on the top-right so removing is
-                    // easy — the ✕ icon itself stays the same size.
-                    GestureDetector(
-                      onTap: () => widget.cart.removeLine(widget.index),
-                      behavior: HitTestBehavior.opaque,
-                      child: Padding(
-                        padding: EdgeInsets.fromLTRB(24 * s, 6 * s, 8 * s, 14 * s),
-                        child: Icon(Icons.close,
-                            size: 18 * s, color: scheme.error),
-                      ),
-                    ),
-                  ],
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  widget.name,
+                  style: TextStyle(
+                    fontSize: 14 * s,
+                    fontWeight: FontWeight.w700,
+                  ),
                 ),
-                Padding(
-                  padding: EdgeInsets.only(right: 2 * s, top: 2 * s),
-                  child: Row(
-                    children: [
-                      _QtyStepper(
-                        qty: line.qty,
-                        unit: widget.unit,
-                        onMinus: () => widget.cart.decrementLine(widget.index),
-                        onPlus: () => widget.cart.incrementLine(widget.index),
-                      ),
-                      const Spacer(),
-                      Text(
-                        widget.lineTotal,
-                        style: TextStyle(
-                          fontSize: 13 * s,
-                          fontWeight: FontWeight.w600,
+              ),
+              // Big invisible hit area on the top-right so removing is easy —
+              // the ✕ icon itself stays the same size. With the − button gone
+              // this is the way to delete a line (typing 0 also works). The
+              // zone continues down the right-hand side over the price; see the
+              // second row.
+              GestureDetector(
+                onTap: () => widget.cart.removeLine(widget.index),
+                behavior: HitTestBehavior.opaque,
+                child: Padding(
+                  padding: EdgeInsets.fromLTRB(24 * s, 6 * s, 8 * s, 14 * s),
+                  child: Icon(Icons.close, size: 18 * s, color: scheme.error),
+                ),
+              ),
+            ],
+          ),
+          Padding(
+            padding: EdgeInsets.only(right: 2 * s, top: 2 * s),
+            child: Row(
+              children: [
+                MqttQtyButton(
+                  qty: line.qty,
+                  unit: widget.unit,
+                  scale: s,
+                  onTap: _editQty,
+                ),
+                SizedBox(width: 6 * s),
+                _NoteButton(
+                  count: line.remarkCodes.length + line.customNotes.length,
+                  onTap: _editRemarks,
+                ),
+                // The ✕ hit area continues here: everything to the right of the
+                // napomene button — the empty gap AND the price — removes the
+                // line, so the whole right-hand side of the row is one target.
+                // Expanded rather than a fixed padding, so the zone flexes with
+                // the row and can never overflow on a narrow phone.
+                Expanded(
+                  child: GestureDetector(
+                    onTap: () => widget.cart.removeLine(widget.index),
+                    behavior: HitTestBehavior.opaque,
+                    child: Padding(
+                      padding: EdgeInsets.only(
+                          left: 12 * s, top: 6 * s, bottom: 10 * s),
+                      child: Align(
+                        alignment: Alignment.centerRight,
+                        child: Text(
+                          widget.lineTotal,
+                          maxLines: 1,
+                          style: TextStyle(
+                            fontSize: 13 * s,
+                            fontWeight: FontWeight.w600,
+                          ),
                         ),
                       ),
-                    ],
+                    ),
                   ),
                 ),
               ],
             ),
-          ),
-          // Napomene editor — revealed when expanded.
-          AnimatedSize(
-            duration: const Duration(milliseconds: 180),
-            curve: Curves.easeOut,
-            alignment: Alignment.topCenter,
-            child: _expanded
-                ? Padding(
-                    padding: EdgeInsets.only(top: 6 * s, right: 4 * s),
-                    child: MqttNoteRow(
-                      chips: [
-                        for (final c in line.remarkCodes)
-                          MqttNoteChip(
-                            label: _nameFor(c),
-                            onRemove: () =>
-                                widget.cart.toggleRemarkCode(widget.index, c),
-                          ),
-                        for (final n in line.customNotes)
-                          MqttNoteChip(
-                            label: n,
-                            onRemove: () =>
-                                widget.cart.removeCustomNote(widget.index, n),
-                          ),
-                      ],
-                      onOpen: _editRemarks,
-                    ),
-                  )
-                : const SizedBox(width: double.infinity),
           ),
         ],
       ),
@@ -624,53 +598,60 @@ class _CartLineTileState extends State<_CartLineTile> {
   }
 }
 
-/// Compact [−] N unit [+] stepper for a cart line.
-class _QtyStepper extends StatelessWidget {
-  const _QtyStepper({
-    required this.qty,
-    required this.unit,
-    required this.onMinus,
-    required this.onPlus,
-  });
+/// The napomene control. It carries the line's napomene count and fills in when
+/// there is at least one: with the editor behind a sheet, this badge is the
+/// only way to see at a glance which lines carry an instruction for the kitchen.
+class _NoteButton extends StatelessWidget {
+  const _NoteButton({required this.count, required this.onTap});
 
-  final double qty;
-  final String unit;
-  final VoidCallback onMinus;
-  final VoidCallback onPlus;
+  final int count;
+  final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final s = _screenScale(context);
+    final has = count > 0;
 
-    Widget btn(IconData icon, VoidCallback onTap) => InkResponse(
-          onTap: onTap,
-          radius: 20 * s,
-          child: Container(
-            width: 28 * s,
-            height: 28 * s,
-            decoration: BoxDecoration(
-              color: scheme.surface,
-              borderRadius: BorderRadius.circular(8 * s),
-              border: Border.all(color: scheme.outlineVariant),
-            ),
-            child: Icon(icon, size: 16 * s, color: scheme.onSurface),
+    return Material(
+      color: has ? scheme.secondaryContainer : scheme.surface,
+      borderRadius: BorderRadius.circular(8 * s),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(8 * s),
+        child: Container(
+          height: 28 * s,
+          padding: EdgeInsets.symmetric(horizontal: 8 * s),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(8 * s),
+            border: Border.all(
+                color: has ? Colors.transparent : scheme.outlineVariant),
           ),
-        );
-
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        btn(Icons.remove, onMinus),
-        Padding(
-          padding: EdgeInsets.symmetric(horizontal: 10 * s),
-          child: Text(
-            '${_fmtQty(qty)}$unit',
-            style: TextStyle(fontSize: 13 * s, fontWeight: FontWeight.w700),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                has ? Icons.sticky_note_2 : Icons.sticky_note_2_outlined,
+                size: 16 * s,
+                color: has
+                    ? scheme.onSecondaryContainer
+                    : scheme.onSurfaceVariant,
+              ),
+              if (has) ...[
+                SizedBox(width: 4 * s),
+                Text(
+                  '$count',
+                  style: TextStyle(
+                    fontSize: 12 * s,
+                    fontWeight: FontWeight.w700,
+                    color: scheme.onSecondaryContainer,
+                  ),
+                ),
+              ],
+            ],
           ),
         ),
-        btn(Icons.add, onPlus),
-      ],
+      ),
     );
   }
 }
