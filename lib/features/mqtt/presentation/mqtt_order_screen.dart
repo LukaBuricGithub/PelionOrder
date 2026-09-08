@@ -7,6 +7,7 @@ import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
 
 import '../../auth/state/session_provider.dart';
+import '../../settings/models/menu_view_size.dart';
 import '../../settings/state/settings_provider.dart';
 import '../data/mqtt_order_sender.dart';
 import '../models/mqtt_menu.dart';
@@ -17,12 +18,26 @@ import 'mqtt_napomene.dart';
 import 'mqtt_order_details_screen.dart';
 import 'mqtt_qty_pad.dart';
 
+/// Tile label size derived from the tile's ACTUAL width.
+///
+/// One rule instead of a font size per density level: it stays right for every
+/// column count AND every device, and a new level needs no new constant. The
+/// ratio is the current 4-column look (≈9.5pt on an ≈89px tile) carried
+/// forward, so the densest setting renders exactly as it does today.
+double _tileFontSize(double tileWidth, {double min = 9, double max = 17}) =>
+    (tileWidth * 0.107).clamp(min, max);
+
+/// Width of one tile in a grid of [columns], given the row's padding and gaps.
+double _tileWidth(double maxWidth, int columns, double hPad, double spacing) =>
+    (maxWidth - hPad * 2 - spacing * (columns - 1)) / columns;
+
 /// Screen-size-driven UI scale (identical to the New Order screen): 1.0 ≈ a
 /// typical phone (~928 dp diagonal). Every size is multiplied by this.
 double _screenScale(BuildContext context) {
   final size = MediaQuery.sizeOf(context);
-  final diagonal =
-      math.sqrt(size.width * size.width + size.height * size.height);
+  final diagonal = math.sqrt(
+    size.width * size.width + size.height * size.height,
+  );
   return (diagonal / 928.0).clamp(0.9, 1.4);
 }
 
@@ -191,29 +206,31 @@ class _MqttOrderScreenState extends ConsumerState<MqttOrderScreen> {
     // it on return (this screen hides it).
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     Navigator.of(context)
-        .push(MaterialPageRoute<String>(
-      builder: (_) => MqttOrderDetailsScreen(
-        cart: _cart,
-        byCode: _byCode,
-        remarks: ref.read(mqttMenuProvider).remarks,
-        money: _money,
-        tableBroj: widget.tableBroj,
-        tableNaziv: widget.tableNaziv,
-        onSend: _sendOrder,
-      ),
-    ))
+        .push(
+          MaterialPageRoute<String>(
+            builder: (_) => MqttOrderDetailsScreen(
+              cart: _cart,
+              byCode: _byCode,
+              remarks: ref.read(mqttMenuProvider).remarks,
+              money: _money,
+              tableBroj: widget.tableBroj,
+              tableNaziv: widget.tableNaziv,
+              onSend: _sendOrder,
+            ),
+          ),
+        )
         .then((result) {
-      if (!mounted) return;
-      // The order was sent from the details screen — leave the table entirely.
-      if (result == 'sent') {
-        if (context.canPop()) context.pop();
-        return;
-      }
-      SystemChrome.setEnabledSystemUIMode(
-        SystemUiMode.manual,
-        overlays: [SystemUiOverlay.top],
-      );
-    });
+          if (!mounted) return;
+          // The order was sent from the details screen — leave the table entirely.
+          if (result == 'sent') {
+            if (context.canPop()) context.pop();
+            return;
+          }
+          SystemChrome.setEnabledSystemUIMode(
+            SystemUiMode.manual,
+            overlays: [SystemUiOverlay.top],
+          );
+        });
   }
 
   Future<void> _confirmClear() async {
@@ -255,8 +272,10 @@ class _MqttOrderScreenState extends ConsumerState<MqttOrderScreen> {
     }
     if (groups.isEmpty) return const [];
     final id = _selectedGroupId ?? groups.first.id;
-    final group =
-        groups.firstWhere((g) => g.id == id, orElse: () => groups.first);
+    final group = groups.firstWhere(
+      (g) => g.id == id,
+      orElse: () => groups.first,
+    );
     return group.articles;
   }
 
@@ -268,16 +287,19 @@ class _MqttOrderScreenState extends ConsumerState<MqttOrderScreen> {
       ..clear()
       ..addEntries([
         for (final g in groups)
-          for (final a in g.articles) MapEntry(a.code, a)
+          for (final a in g.articles) MapEntry(a.code, a),
       ]);
+
+    // Grid density ("Veličina artikala u narudžbi" in Postavke uređaja).
+    final menuSize = ref.watch(settingsProvider).menuViewSize;
 
     final broj = widget.tableBroj;
     final naziv = widget.tableNaziv;
     final title = broj == null
         ? 'Narudžba'
         : (naziv != null && naziv.isNotEmpty
-            ? 'Stol $broj · $naziv'
-            : 'Stol $broj');
+              ? 'Stol $broj · $naziv'
+              : 'Stol $broj');
 
     final hasItems = _cart.isNotEmpty;
     final selectedId =
@@ -314,10 +336,12 @@ class _MqttOrderScreenState extends ConsumerState<MqttOrderScreen> {
                             const SizedBox(width: 10),
                             _ActionColumn(
                               sending: _sending,
-                              onClear:
-                                  hasItems && !_sending ? _confirmClear : null,
-                              onDetails:
-                                  hasItems && !_sending ? _openDetails : null,
+                              onClear: hasItems && !_sending
+                                  ? _confirmClear
+                                  : null,
+                              onDetails: hasItems && !_sending
+                                  ? _openDetails
+                                  : null,
                               onSend: hasItems && !_sending ? _send : null,
                             ),
                           ],
@@ -339,6 +363,7 @@ class _MqttOrderScreenState extends ConsumerState<MqttOrderScreen> {
                         children: [
                           _PickerBar(
                             groups: groups,
+                            size: menuSize,
                             selectedId: selectedId,
                             searching: _searching,
                             searchController: _searchController,
@@ -351,6 +376,7 @@ class _MqttOrderScreenState extends ConsumerState<MqttOrderScreen> {
                           Expanded(
                             child: _ArticleGrid(
                               articles: articles,
+                              size: menuSize,
                               onAdd: _cart.addLine,
                             ),
                           ),
@@ -444,8 +470,9 @@ class _CartCardState extends State<_CartCard> {
                   cart: widget.cart,
                   name: article?.name ?? 'Artikl ${line.code}',
                   unit: article?.unit ?? '',
-                  lineTotal:
-                      widget.money.format((article?.price ?? 0) * line.qty),
+                  lineTotal: widget.money.format(
+                    (article?.price ?? 0) * line.qty,
+                  ),
                   available: widget.remarksFor(line.code),
                 );
               },
@@ -563,27 +590,32 @@ class _CartLineTileState extends State<_CartLineTile> {
                   count: line.remarkCodes.length + line.customNotes.length,
                   onTap: _editRemarks,
                 ),
-                // The ✕ hit area continues here: everything to the right of the
-                // napomene button — the empty gap AND the price — removes the
-                // line, so the whole right-hand side of the row is one target.
-                // Expanded rather than a fixed padding, so the zone flexes with
-                // the row and can never overflow on a narrow phone.
-                Expanded(
+                // Inert gap: the space beside the napomene button must NOT
+                // delete anything — it sits right under the thumb that just
+                // pressed that button.
+                const Spacer(),
+                // The ✕ hit area continues down to the price itself, with a
+                // small lead-in so the glyph doesn't have to be hit exactly.
+                // Flexible (not Expanded) keeps the zone tight to the text and
+                // still lets it shrink rather than overflow on a narrow row.
+                Flexible(
                   child: GestureDetector(
                     onTap: () => widget.cart.removeLine(widget.index),
                     behavior: HitTestBehavior.opaque,
                     child: Padding(
                       padding: EdgeInsets.only(
-                          left: 12 * s, top: 6 * s, bottom: 10 * s),
-                      child: Align(
-                        alignment: Alignment.centerRight,
-                        child: Text(
-                          widget.lineTotal,
-                          maxLines: 1,
-                          style: TextStyle(
-                            fontSize: 13 * s,
-                            fontWeight: FontWeight.w600,
-                          ),
+                        left: 14 * s,
+                        top: 6 * s,
+                        bottom: 10 * s,
+                      ),
+                      child: Text(
+                        widget.lineTotal,
+                        maxLines: 1,
+                        textAlign: TextAlign.right,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 13 * s,
+                          fontWeight: FontWeight.w600,
                         ),
                       ),
                     ),
@@ -625,7 +657,8 @@ class _NoteButton extends StatelessWidget {
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(8 * s),
             border: Border.all(
-                color: has ? Colors.transparent : scheme.outlineVariant),
+              color: has ? Colors.transparent : scheme.outlineVariant,
+            ),
           ),
           child: Row(
             mainAxisSize: MainAxisSize.min,
@@ -683,7 +716,8 @@ class _ActionColumn extends StatelessWidget {
           final btn = c.maxHeight.isFinite
               ? math.min(naturalBtn, (c.maxHeight - gap * 2) / 3)
               : naturalBtn;
-          final roomy = c.maxHeight.isFinite &&
+          final roomy =
+              c.maxHeight.isFinite &&
               c.maxHeight > naturalBtn * 3 + gap * 2 + 1;
           return Column(
             children: [
@@ -744,15 +778,18 @@ class _ActionButton extends StatelessWidget {
     final s = _screenScale(context);
     final iconSize = math.min(26.0 * s, height * 0.46);
     final (bg, fg) = switch (tone) {
-      _Tone.primary => dark
-          ? (const Color(0xFF1FA9B6), const Color(0xFF052A2E))
-          : (const Color(0xFF0E9AA7), Colors.white),
-      _Tone.neutral => dark
-          ? (const Color(0xFF8677E8), const Color(0xFF140A3A))
-          : (const Color(0xFF6A57D8), Colors.white),
-      _Tone.danger => dark
-          ? (const Color(0xFF5A2A2A), const Color(0xFFF0B5B5))
-          : (const Color(0xFFF4D7D7), const Color(0xFF8A2E2E)),
+      _Tone.primary =>
+        dark
+            ? (const Color(0xFF1FA9B6), const Color(0xFF052A2E))
+            : (const Color(0xFF0E9AA7), Colors.white),
+      _Tone.neutral =>
+        dark
+            ? (const Color(0xFF8677E8), const Color(0xFF140A3A))
+            : (const Color(0xFF6A57D8), Colors.white),
+      _Tone.danger =>
+        dark
+            ? (const Color(0xFF5A2A2A), const Color(0xFFF0B5B5))
+            : (const Color(0xFFF4D7D7), const Color(0xFF8A2E2E)),
     };
     final enabled = onTap != null;
     return Opacity(
@@ -772,7 +809,9 @@ class _ActionButton extends StatelessWidget {
                       width: iconSize * 0.85,
                       height: iconSize * 0.85,
                       child: CircularProgressIndicator(
-                          strokeWidth: 2.5, color: fg),
+                        strokeWidth: 2.5,
+                        color: fg,
+                      ),
                     ),
                   )
                 : Icon(icon, color: fg, size: iconSize),
@@ -802,19 +841,23 @@ class _TotalBar extends StatelessWidget {
       padding: EdgeInsets.fromLTRB(14 * s, 0, 4 * s, 2 * s),
       child: Row(
         children: [
-          Text('Ukupno',
-              style: TextStyle(
-                fontSize: 15 * s,
-                fontWeight: FontWeight.w700,
-                color: scheme.onSurface,
-              )),
+          Text(
+            'Ukupno',
+            style: TextStyle(
+              fontSize: 15 * s,
+              fontWeight: FontWeight.w700,
+              color: scheme.onSurface,
+            ),
+          ),
           SizedBox(width: 10 * s),
-          Text(total,
-              style: TextStyle(
-                fontSize: 21 * s,
-                fontWeight: FontWeight.w800,
-                color: scheme.primary,
-              )),
+          Text(
+            total,
+            style: TextStyle(
+              fontSize: 21 * s,
+              fontWeight: FontWeight.w800,
+              color: scheme.primary,
+            ),
+          ),
           const Spacer(),
           IconButton(
             icon: Icon(searching ? Icons.close : Icons.search, size: 24 * s),
@@ -827,11 +870,13 @@ class _TotalBar extends StatelessWidget {
   }
 }
 
-/// Group picker above the article grid: a paged 2×4 grid of group cards (swipe
-/// for more), or the search field when search is active.
+/// Group picker above the article grid: a paged grid of group cards — at most
+/// two rows, with as many columns as the density setting gives it (swipe for
+/// more) — or the search field when search is active.
 class _PickerBar extends StatelessWidget {
   const _PickerBar({
     required this.groups,
+    required this.size,
     required this.selectedId,
     required this.searching,
     required this.searchController,
@@ -840,6 +885,7 @@ class _PickerBar extends StatelessWidget {
   });
 
   final List<MqttArticleGroup> groups;
+  final MenuViewSize size;
   final int? selectedId;
   final bool searching;
   final TextEditingController searchController;
@@ -864,71 +910,87 @@ class _PickerBar extends StatelessWidget {
       );
     }
     final dark = Theme.of(context).brightness == Brightness.dark;
-    final selectedFill =
-        dark ? const Color(0xFFF4A83A) : const Color(0xFFE8890C);
+    final selectedFill = dark
+        ? const Color(0xFFF4A83A)
+        : const Color(0xFFE8890C);
     final selectedText = dark ? const Color(0xFF3A2600) : Colors.white;
-    final unselectedFill =
-        dark ? const Color(0xFF403322) : const Color(0xFFF3E4CC);
-    final unselectedText =
-        dark ? const Color(0xFFE4C89A) : const Color(0xFF6B4E1E);
+    final unselectedFill = dark
+        ? const Color(0xFF403322)
+        : const Color(0xFFF3E4CC);
+    final unselectedText = dark
+        ? const Color(0xFFE4C89A)
+        : const Color(0xFF6B4E1E);
 
     final s = _screenScale(context);
     final spacing = 6.0 * s;
     final hPad = 8.0 * s;
-    final rowHeight = 44.0 * s;
+    final rowHeight = size.groupRowHeight * s;
     final vPad = 4.0 * s;
-    const perPage = 8; // 4 columns × 2 rows
-    // Only reserve a second row when there are more than 4 groups — otherwise a
+    final columns = size.groupColumns;
+    final perPage = columns * 2; // always at most two rows of groups
+    // Only reserve a second row when the first one is full — otherwise a
     // single row of groups leaves an empty row (the gap above the articles).
-    final rows = groups.length > 4 ? 2 : 1;
+    final rows = groups.length > columns ? 2 : 1;
     final pageCount = (groups.length + perPage - 1) ~/ perPage;
 
     return Padding(
       padding: EdgeInsets.only(bottom: 2 * s),
       child: SizedBox(
         height: rowHeight * rows + spacing * (rows - 1) + vPad * 2,
-        child: PageView.builder(
-          itemCount: pageCount,
-          itemBuilder: (context, page) {
-            final start = page * perPage;
-            final end = (start + perPage).clamp(0, groups.length);
-            final pageItems = groups.sublist(start, end);
-            return GridView.builder(
-              physics: const NeverScrollableScrollPhysics(),
-              padding: EdgeInsets.symmetric(horizontal: hPad, vertical: vPad),
-              gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                crossAxisCount: 4,
-                mainAxisExtent: rowHeight,
-                crossAxisSpacing: spacing,
-                mainAxisSpacing: spacing,
-              ),
-              itemCount: pageItems.length,
-              itemBuilder: (context, i) {
-                final g = pageItems[i];
-                final selected = g.id == selectedId;
-                return Material(
-                  color: selected ? selectedFill : unselectedFill,
-                  borderRadius: BorderRadius.circular(8 * s),
-                  clipBehavior: Clip.antiAlias,
-                  child: InkWell(
-                    onTap: () => onSelectGroup(g.id),
-                    child: Container(
-                      alignment: Alignment.center,
-                      padding: EdgeInsets.symmetric(
-                          horizontal: 4 * s, vertical: 2 * s),
-                      child: Text(
-                        g.name,
-                        textAlign: TextAlign.center,
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          fontSize: 9.5 * s,
-                          fontWeight: FontWeight.w600,
-                          color: selected ? selectedText : unselectedText,
+        child: LayoutBuilder(
+          builder: (context, c) {
+            final groupFontSize = _tileFontSize(
+              _tileWidth(c.maxWidth, columns, hPad, spacing),
+            );
+            return PageView.builder(
+              itemCount: pageCount,
+              itemBuilder: (context, page) {
+                final start = page * perPage;
+                final end = (start + perPage).clamp(0, groups.length);
+                final pageItems = groups.sublist(start, end);
+                return GridView.builder(
+                  physics: const NeverScrollableScrollPhysics(),
+                  padding: EdgeInsets.symmetric(
+                    horizontal: hPad,
+                    vertical: vPad,
+                  ),
+                  gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                    crossAxisCount: columns,
+                    mainAxisExtent: rowHeight,
+                    crossAxisSpacing: spacing,
+                    mainAxisSpacing: spacing,
+                  ),
+                  itemCount: pageItems.length,
+                  itemBuilder: (context, i) {
+                    final g = pageItems[i];
+                    final selected = g.id == selectedId;
+                    return Material(
+                      color: selected ? selectedFill : unselectedFill,
+                      borderRadius: BorderRadius.circular(8 * s),
+                      clipBehavior: Clip.antiAlias,
+                      child: InkWell(
+                        onTap: () => onSelectGroup(g.id),
+                        child: Container(
+                          alignment: Alignment.center,
+                          padding: EdgeInsets.symmetric(
+                            horizontal: 4 * s,
+                            vertical: 2 * s,
+                          ),
+                          child: Text(
+                            g.name,
+                            textAlign: TextAlign.center,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              fontSize: groupFontSize,
+                              fontWeight: FontWeight.w600,
+                              color: selected ? selectedText : unselectedText,
+                            ),
+                          ),
                         ),
                       ),
-                    ),
-                  ),
+                    );
+                  },
                 );
               },
             );
@@ -944,12 +1006,12 @@ class _ArticleGrid extends StatelessWidget {
   const _ArticleGrid({
     required this.articles,
     required this.onAdd,
+    required this.size,
   });
 
   final List<MqttArticle> articles;
   final ValueChanged<int> onAdd;
-
-  static const _perPage = 16; // 4 columns × 4 rows
+  final MenuViewSize size;
 
   @override
   Widget build(BuildContext context) {
@@ -961,30 +1023,40 @@ class _ArticleGrid extends StatelessWidget {
     final spacing = 6.0 * s;
     final hPad = 8.0 * s;
     final vPad = 4.0 * s;
-    final tileHeight = 58.0 * s;
-    final pageCount = (articles.length + _perPage - 1) ~/ _perPage;
+    final tileHeight = size.articleTileHeight * s;
+    final columns = size.articleColumns;
+    final perPage = size.articlesPerPage;
+    final pageCount = (articles.length + perPage - 1) ~/ perPage;
 
-    return PageView.builder(
-      itemCount: pageCount,
-      itemBuilder: (context, page) {
-        final start = page * _perPage;
-        final end = (start + _perPage).clamp(0, articles.length);
-        final pageItems = articles.sublist(start, end);
-        return GridView.builder(
-          physics: const NeverScrollableScrollPhysics(),
-          padding: EdgeInsets.symmetric(horizontal: hPad, vertical: vPad),
-          gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-            crossAxisCount: 4,
-            mainAxisExtent: tileHeight,
-            crossAxisSpacing: spacing,
-            mainAxisSpacing: spacing,
-          ),
-          itemCount: pageItems.length,
-          itemBuilder: (context, i) {
-            final a = pageItems[i];
-            return _ArticleTile(
-              name: a.name,
-              onTap: () => onAdd(a.code),
+    return LayoutBuilder(
+      builder: (context, c) {
+        final fontSize = _tileFontSize(
+          _tileWidth(c.maxWidth, columns, hPad, spacing),
+        );
+        return PageView.builder(
+          itemCount: pageCount,
+          itemBuilder: (context, page) {
+            final start = page * perPage;
+            final end = (start + perPage).clamp(0, articles.length);
+            final pageItems = articles.sublist(start, end);
+            return GridView.builder(
+              physics: const NeverScrollableScrollPhysics(),
+              padding: EdgeInsets.symmetric(horizontal: hPad, vertical: vPad),
+              gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                crossAxisCount: columns,
+                mainAxisExtent: tileHeight,
+                crossAxisSpacing: spacing,
+                mainAxisSpacing: spacing,
+              ),
+              itemCount: pageItems.length,
+              itemBuilder: (context, i) {
+                final a = pageItems[i];
+                return _ArticleTile(
+                  name: a.name,
+                  fontSize: fontSize,
+                  onTap: () => onAdd(a.code),
+                );
+              },
             );
           },
         );
@@ -996,10 +1068,15 @@ class _ArticleGrid extends StatelessWidget {
 class _ArticleTile extends StatelessWidget {
   const _ArticleTile({
     required this.name,
+    required this.fontSize,
     required this.onTap,
   });
 
   final String name;
+
+  /// Proportional to the tile width — the label grows with the tile instead of
+  /// leaving a big square with small text.
+  final double fontSize;
   final VoidCallback onTap;
 
   @override
@@ -1022,6 +1099,9 @@ class _ArticleTile extends StatelessWidget {
         child: Padding(
           padding: EdgeInsets.all(3 * s),
           child: Center(
+            // One size for every tile: a grid where each label picks its own
+            // size reads as untidy, so long names wrap and ellipsize exactly as
+            // before — only the size itself now follows the tile.
             child: Text(
               name,
               textAlign: TextAlign.center,
@@ -1029,7 +1109,7 @@ class _ArticleTile extends StatelessWidget {
               maxLines: 4,
               overflow: TextOverflow.ellipsis,
               style: TextStyle(
-                fontSize: 9.5 * s,
+                fontSize: fontSize,
                 fontWeight: FontWeight.w600,
                 color: textColor,
               ),
@@ -1052,8 +1132,11 @@ class _EmptyMenu extends StatelessWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(Icons.fastfood_outlined,
-                size: 56, color: Theme.of(context).colorScheme.outline),
+            Icon(
+              Icons.fastfood_outlined,
+              size: 56,
+              color: Theme.of(context).colorScheme.outline,
+            ),
             const SizedBox(height: 12),
             const Text(
               'Nema artikala. Spojite se na MQTT u "Postavke uređaja".',

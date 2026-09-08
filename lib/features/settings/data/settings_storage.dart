@@ -1,5 +1,6 @@
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../models/menu_view_size.dart';
 import '../models/table_view_size.dart';
 
 /// Persists device display / sending preferences in [SharedPreferences],
@@ -12,6 +13,7 @@ class SettingsStorage {
   final SharedPreferences _prefs;
 
   static const _tableViewSizeKey = 'table_view_size_v1';
+  static const _menuViewSizeKey = 'menu_view_size_v1';
   static const _shouldGroupArticlesKey = 'should_group_articles_v1';
   static const _businessNameKey = 'business_name_v1';
   static const _currentUserCodeKey = 'current_user_code_v1';
@@ -21,6 +23,16 @@ class SettingsStorage {
 
   Future<void> saveTableViewSize(TableViewSize size) async {
     await _prefs.setString(_tableViewSizeKey, size.name);
+  }
+
+  /// Density of the price-list grid on the order screen. Defaults to the
+  /// densest layout — that is what the app shipped with, so an existing device
+  /// sees no change until someone chooses otherwise.
+  MenuViewSize loadMenuViewSize() =>
+      MenuViewSize.fromName(_prefs.getString(_menuViewSizeKey));
+
+  Future<void> saveMenuViewSize(MenuViewSize size) async {
+    await _prefs.setString(_menuViewSizeKey, size.name);
   }
 
   /// Whether identical items are combined into a single line when an order is

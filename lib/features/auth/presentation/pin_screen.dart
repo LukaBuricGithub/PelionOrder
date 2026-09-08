@@ -1,6 +1,10 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../mqtt/state/mqtt_users_provider.dart';
 import '../../shared/presentation/hero_background.dart';
 import '../state/auth_controller.dart';
 
@@ -14,15 +18,38 @@ class PinScreen extends ConsumerStatefulWidget {
   ConsumerState<PinScreen> createState() => _PinScreenState();
 }
 
-class _PinScreenState extends ConsumerState<PinScreen> {
+class _PinScreenState extends ConsumerState<PinScreen>
+    with SingleTickerProviderStateMixin {
   final _digits = <int>[];
   bool _checking = false;
+
+  /// Shown only for failures that are NOT a wrong PIN. A mismatch is answered
+  /// by the shake — telling a waiter "Neispravan PIN" when the real problem is
+  /// that no staff list has arrived would send them hunting for a typo.
   String? _error;
+
+  /// True while the rejection animation plays: the dots turn red and shake,
+  /// then clear.
+  bool _wrong = false;
+
+  late final AnimationController _shake = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 320),
+  );
 
   static const _maxLen = 8;
 
+  @override
+  void dispose() {
+    _shake.dispose();
+    super.dispose();
+  }
+
   void _onDigit(int d) {
-    if (_checking || _digits.length >= _maxLen) return;
+    // `_wrong` blocks input for the length of the shake — a digit typed during
+    // it would be wiped by the clear that ends the animation.
+    if (_checking || _wrong || _digits.length >= _maxLen) return;
+    HapticFeedback.selectionClick();
     setState(() {
       _digits.add(d);
       _error = null;
@@ -30,30 +57,59 @@ class _PinScreenState extends ConsumerState<PinScreen> {
   }
 
   void _onDelete() {
-    if (_checking || _digits.isEmpty) return;
+    if (_checking || _wrong || _digits.isEmpty) return;
+    HapticFeedback.selectionClick();
     setState(() => _digits.removeLast());
   }
 
   Future<void> _onOk() async {
-    if (_checking) return;
+    if (_checking || _wrong) return;
+    HapticFeedback.selectionClick();
     if (_digits.isEmpty) {
       setState(() => _error = 'Unesite PIN.');
       return;
     }
-    setState(() => _checking = true);
+    setState(() {
+      _checking = true;
+      _error = null;
+    });
     final pin = int.tryParse(_digits.join()) ?? -1;
     final user = await ref.read(authControllerProvider).loginWithPin(pin);
     if (!mounted) return;
     if (user == null) {
-      setState(() {
-        _checking = false;
-        _digits.clear();
-        _error = 'Neispravan PIN.';
-      });
+      // loginWithPin returns null for more than one reason. Without a staff
+      // list EVERY pin fails, so say that instead of implying a typo.
+      if (ref.read(mqttUsersProvider).isEmpty) {
+        setState(() {
+          _checking = false;
+          _digits.clear();
+          _error = 'Nema popisa korisnika. Spojite se na MQTT '
+              '(Postavke uređaja).';
+        });
+      } else {
+        await _rejectPin();
+      }
     }
     // On success the router's auth redirect (refreshListenable on currentUser)
     // moves us to /mqtt-tables ("Odabir stola") automatically; navigating here
     // too would double-trigger the route change and crash the shell route.
+  }
+
+  /// The wrong-PIN answer: a haptic thump, the filled dots turn red and shake,
+  /// then they clear. No text — the gesture is the message, and it needs no
+  /// reading, which matters when the phone is being glanced at rather than read.
+  Future<void> _rejectPin() async {
+    setState(() {
+      _checking = false;
+      _wrong = true;
+    });
+    HapticFeedback.heavyImpact();
+    await _shake.forward(from: 0);
+    if (!mounted) return;
+    setState(() {
+      _wrong = false;
+      _digits.clear();
+    });
   }
 
   @override
@@ -80,14 +136,37 @@ class _PinScreenState extends ConsumerState<PinScreen> {
                     children: [
                   Text('Unesite PIN', style: theme.textTheme.titleLarge),
                   const SizedBox(height: 20),
-                  _PinDots(length: _digits.length),
-                  const SizedBox(height: 12),
-                  SizedBox(
-                    height: 22,
+                  AnimatedBuilder(
+                    animation: _shake,
+                    builder: (context, child) {
+                      // Damped oscillation: two full swings, decaying to zero
+                      // so the dots settle instead of stopping mid-swing.
+                      final t = _shake.value;
+                      final dx =
+                          math.sin(t * math.pi * 4) * 10 * (1 - t);
+                      return Transform.translate(
+                        offset: Offset(dx, 0),
+                        child: child,
+                      );
+                    },
+                    child: _PinDots(length: _digits.length, error: _wrong),
+                  ),
+                  // No reserved slot: the message is the exception now, so the
+                  // gap only exists when there is something in it.
+                  AnimatedSize(
+                    duration: const Duration(milliseconds: 160),
+                    curve: Curves.easeOut,
                     child: _error == null
-                        ? null
-                        : Text(_error!,
-                            style: TextStyle(color: theme.colorScheme.error)),
+                        ? const SizedBox(width: double.infinity)
+                        : Padding(
+                            padding: const EdgeInsets.only(top: 12),
+                            child: Text(
+                              _error!,
+                              textAlign: TextAlign.center,
+                              style:
+                                  TextStyle(color: theme.colorScheme.error),
+                            ),
+                          ),
                   ),
                   const SizedBox(height: 12),
                   _Keypad(
@@ -109,9 +188,12 @@ class _PinScreenState extends ConsumerState<PinScreen> {
 }
 
 class _PinDots extends StatelessWidget {
-  const _PinDots({required this.length});
+  const _PinDots({required this.length, this.error = false});
 
   final int length;
+
+  /// Paints the dots in the error colour while the rejection shake plays.
+  final bool error;
 
   @override
   Widget build(BuildContext context) {
@@ -126,12 +208,13 @@ class _PinDots extends StatelessWidget {
           for (var i = 0; i < length; i++)
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 6),
-              child: Container(
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 120),
                 width: 14,
                 height: 14,
                 decoration: BoxDecoration(
                   shape: BoxShape.circle,
-                  color: scheme.primary,
+                  color: error ? scheme.error : scheme.primary,
                 ),
               ),
             ),

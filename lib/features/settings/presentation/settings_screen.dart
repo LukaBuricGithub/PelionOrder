@@ -9,6 +9,7 @@ import '../../profiles/models/api_entry.dart';
 import '../../profiles/state/profiles_provider.dart';
 import '../../shared/presentation/app_bottom_sheet.dart';
 import '../../shared/presentation/bottom_sheet_safe_area.dart';
+import '../models/menu_view_size.dart';
 import '../models/table_view_size.dart';
 import '../state/settings_provider.dart';
 import 'qr_scanner_screen.dart';
@@ -103,6 +104,37 @@ class SettingsScreen extends ConsumerWidget {
                     onSelectionChanged: (s) => ref
                         .read(settingsProvider.notifier)
                         .setTableViewSize(s.first),
+                  ),
+                ),
+                const SizedBox(height: 18),
+                Text('Veličina prikaza artikala',
+                    style: theme.textTheme.bodyLarge),
+                const SizedBox(height: 12),
+                SizedBox(
+                  width: double.infinity,
+                  child: SegmentedButton<MenuViewSize>(
+                    showSelectedIcon: false,
+                    style: SegmentedButton.styleFrom(
+                      visualDensity: VisualDensity.compact,
+                      padding: const EdgeInsets.symmetric(horizontal: 4),
+                      textStyle: const TextStyle(fontSize: 13),
+                      selectedBackgroundColor: theme.colorScheme.primary,
+                      selectedForegroundColor: theme.colorScheme.onPrimary,
+                    ),
+                    segments: [
+                      for (final size in MenuViewSize.values)
+                        ButtonSegment(
+                          value: size,
+                          label: FittedBox(
+                            fit: BoxFit.scaleDown,
+                            child: Text(size.label, maxLines: 1),
+                          ),
+                        ),
+                    ],
+                    selected: {settings.menuViewSize},
+                    onSelectionChanged: (s) => ref
+                        .read(settingsProvider.notifier)
+                        .setMenuViewSize(s.first),
                   ),
                 ),
               ],
