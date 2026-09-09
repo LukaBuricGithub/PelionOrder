@@ -182,6 +182,11 @@ class _MqttOrderScreenState extends ConsumerState<MqttOrderScreen> {
       // ...but the kasa still has to move the lines ONTO the table, which can
       // take a while. Keep the floor plan marked until it has.
       ref.read(mqttPendingTransfersProvider.notifier).watchTable(broj);
+      // No snackbar on success: the screen pops straight back to the floor plan
+      // and the table gains its badge, so a message would only repeat what is
+      // already on screen. A light tap confirms it without asking the waiter to
+      // read anything — and stays clearly below the send-tile thump.
+      HapticFeedback.lightImpact();
     } else if (result.needsNewMsgId) {
       // Expired / never sent: the next attempt must be a NEW order.
       _cart.pendingMsgId = null;
@@ -192,9 +197,13 @@ class _MqttOrderScreenState extends ConsumerState<MqttOrderScreen> {
       orders.save(broj, _cart.lines, msgId);
     }
 
-    messenger
-      ..hideCurrentSnackBar()
-      ..showSnackBar(SnackBar(content: Text(result.message)));
+    // Failures still speak: they are the cases the waiter cannot see for
+    // themselves and may need to act on.
+    if (!result.isOk) {
+      messenger
+        ..hideCurrentSnackBar()
+        ..showSnackBar(SnackBar(content: Text(result.message)));
+    }
     return result.isOk;
   }
 
