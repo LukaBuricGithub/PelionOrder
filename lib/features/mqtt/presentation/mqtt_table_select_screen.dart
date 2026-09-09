@@ -11,6 +11,7 @@ import '../../settings/presentation/settings_drawer.dart';
 import '../../settings/state/settings_provider.dart';
 import '../models/mqtt_tables.dart';
 import '../state/mqtt_orders_provider.dart';
+import '../state/mqtt_pending_transfers_provider.dart';
 import '../state/mqtt_tables_provider.dart';
 import 'mqtt_table_view_screen.dart';
 
@@ -57,6 +58,21 @@ enum _TileStatus {
   occupiedOther, // occupied by someone else → blocked
 }
 
+/// "Jesu li poslane sve narudžbe sa stola" — drawn as a corner badge, kept
+/// separate from [_TileStatus] so the answer never competes with the tile's
+/// colour for the same pixels.
+enum _SendMark {
+  /// Nothing ordered here — nothing to report.
+  none,
+
+  /// Something is outstanding: a local draft that was never accepted, or an
+  /// accepted order the kasa has not yet moved onto the table.
+  pending,
+
+  /// Everything this device knows about has reached the table.
+  sent,
+}
+
 /// MQTT floor plan: pick a zone (terasa), then a free table to open its menu.
 /// Same visuals as "Odabir stola", but tables/zones come from `podaci/stolovi`
 /// and occupancy from `podaci/stolovi_stanje` — occupied tables are red and
@@ -99,6 +115,8 @@ class _MqttTableSelectScreenState extends ConsumerState<MqttTableSelectScreen> {
     final occupied = ref.watch(mqttOccupiedProvider);
     // Tables with a local (in-progress) order — coloured "yours" and reopenable.
     final withOrders = ref.watch(mqttOrdersProvider).keys.toSet();
+    // Tables the kasa has accepted an order for but not yet applied it to.
+    final pendingTransfer = ref.watch(mqttPendingTransfersProvider);
     final myCuser = ref.watch(currentUserProvider)?.code;
     final columns = _columns(ref.watch(settingsProvider).tableViewSize);
 
@@ -124,7 +142,8 @@ class _MqttTableSelectScreenState extends ConsumerState<MqttTableSelectScreen> {
         body: SafeArea(
           child: zones.isEmpty
               ? const _EmptyTables()
-              : _buildBody(zones, occupied, withOrders, myCuser, columns),
+              : _buildBody(zones, occupied, withOrders, pendingTransfer,
+                  myCuser, columns),
         ),
       ),
     );
@@ -134,6 +153,7 @@ class _MqttTableSelectScreenState extends ConsumerState<MqttTableSelectScreen> {
     List<MqttTerrace> zones,
     Map<int, MqttTableState> occupied,
     Set<int> withOrders,
+    Set<int> pendingTransfer,
     String? myCuser,
     int columns,
   ) {
@@ -158,6 +178,7 @@ class _MqttTableSelectScreenState extends ConsumerState<MqttTableSelectScreen> {
                       tables: tables,
                       occupied: occupied,
                       withOrders: withOrders,
+                      pendingTransfer: pendingTransfer,
                       myCuser: myCuser,
                       columns: columns,
                       showName: columns < 4, // drop naziv at "small"
@@ -178,9 +199,18 @@ class _MqttTableSelectScreenState extends ConsumerState<MqttTableSelectScreen> {
   void _onTap(MqttTable table, _TileStatus status, MqttTableState? occ) {
     switch (status) {
       case _TileStatus.occupiedOther:
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Stol je zauzet od drugog konobara.')),
-        );
+        // Name them here: this is the moment the waiter actually asks who has
+        // the table, and the snackbar has room the tile doesn't.
+        final konobar = occ?.konobar.trim() ?? '';
+        ScaffoldMessenger.of(context)
+          ..hideCurrentSnackBar()
+          ..showSnackBar(
+            SnackBar(
+              content: Text(konobar.isEmpty
+                  ? 'Stol je zauzet od drugog konobara.'
+                  : 'Stol je zauzet — $konobar.'),
+            ),
+          );
       case _TileStatus.occupiedMine:
         // Read-only summary of the table (occupied by the current user).
         Navigator.of(context).push(MaterialPageRoute<void>(
@@ -206,6 +236,7 @@ class _PagedTableGrid extends StatelessWidget {
     required this.tables,
     required this.occupied,
     required this.withOrders,
+    required this.pendingTransfer,
     required this.myCuser,
     required this.columns,
     required this.showName,
@@ -215,6 +246,9 @@ class _PagedTableGrid extends StatelessWidget {
   final List<MqttTable> tables;
   final Map<int, MqttTableState> occupied;
   final Set<int> withOrders;
+
+  /// Tables whose accepted order the kasa has not yet moved onto the table.
+  final Set<int> pendingTransfer;
   final String? myCuser;
   final int columns;
   final bool showName;
@@ -231,6 +265,19 @@ class _PagedTableGrid extends StatelessWidget {
     return withOrders.contains(table.broj)
         ? _TileStatus.order
         : _TileStatus.free;
+  }
+
+  /// Independent of [_statusFor]: a draft on an ALREADY OCCUPIED table (added
+  /// via "Dodaj stavke") is exactly the case the status colour cannot show,
+  /// since occupancy wins there.
+  _SendMark _markFor(MqttTable table) {
+    if (withOrders.contains(table.broj) ||
+        pendingTransfer.contains(table.broj)) {
+      return _SendMark.pending;
+    }
+    // Everything on the table has landed — but only mark a table that actually
+    // has an order; an empty table has nothing to report.
+    return occupied.containsKey(table.broj) ? _SendMark.sent : _SendMark.none;
   }
 
   static const double _pad = 6;
@@ -271,6 +318,8 @@ class _PagedTableGrid extends StatelessWidget {
                   table: table,
                   status: status,
                   showName: showName,
+                  occupantName: occupied[table.broj]?.konobar,
+                  mark: _markFor(table),
                   onTap: () =>
                       onTapTable(table, status, occupied[table.broj]),
                 );
@@ -283,6 +332,24 @@ class _PagedTableGrid extends StatelessWidget {
   }
 }
 
+/// A waiter's name shortened to fit a table tile: "Ana Horvat" → "Ana H.",
+/// "Ana" → "Ana".
+///
+/// Shortening the STRING rather than shrinking the font is the point: the tile
+/// has a fixed ~52-94px of width, and a full name only fits there by scaling the
+/// type down past the point anyone can read it at arm's length. This form fits
+/// at full size, and keeps the surname initial that tells two Anas apart.
+String _shortName(String name) {
+  final parts = name
+      .trim()
+      .split(RegExp(r'\s+'))
+      .where((p) => p.isNotEmpty)
+      .toList();
+  if (parts.isEmpty) return '';
+  if (parts.length == 1) return parts.first;
+  return '${parts.first} ${parts[1].characters.first.toUpperCase()}.';
+}
+
 /// One table cell: the chairs sprite with a status-coloured top (red = occupied,
 /// neutral = free) drawn on the central 60%.
 class _TableCell extends StatelessWidget {
@@ -290,12 +357,25 @@ class _TableCell extends StatelessWidget {
     required this.table,
     required this.status,
     required this.showName,
+    required this.occupantName,
+    required this.mark,
     required this.onTap,
   });
 
   final MqttTable table;
   final _TileStatus status;
   final bool showName;
+
+  /// The waiter holding the table (`konobar` from `stolovi_stanje`), or null
+  /// when it is free.
+  final String? occupantName;
+
+  /// Whether everything ordered for this table has reached the kasa.
+  ///
+  /// Drawn as a MARK rather than a colour so it is independent of the status
+  /// hue: it has to be visible on a free table and on an occupied one alike,
+  /// and red/teal already carry a different meaning.
+  final _SendMark mark;
   final VoidCallback onTap;
 
   @override
@@ -315,7 +395,17 @@ class _TableCell extends StatelessWidget {
           ? (const Color(0xFF3A4756), const Color(0xFFC9D3DE), null)
           : (const Color(0xFFD8DEE4), const Color(0xFF37424E), null),
     };
-    final hasName = showName && table.naziv.isNotEmpty;
+    // The second line carries the WAITER when the table is occupied, and the
+    // table's naziv otherwise: the naziv is static (a waiter learns it in a
+    // day), the occupant is the fact that changes. Same line, no extra space.
+    //
+    // The waiter shows at EVERY size, including the small tiles where the naziv
+    // is dropped — who holds a table is worth the small type, a table's name is
+    // not.
+    final konobar = _shortName(occupantName ?? '');
+    final secondLine =
+        konobar.isNotEmpty ? konobar : (showName ? table.naziv : '');
+    final hasSecondLine = secondLine.isNotEmpty;
 
     return GestureDetector(
       onTap: onTap,
@@ -356,12 +446,24 @@ class _TableCell extends StatelessWidget {
                             height: 1,
                           ),
                         ),
-                        if (hasName) ...[
+                        if (hasSecondLine) ...[
                           SizedBox(height: w * 0.02),
                           AutoSizeText(
-                            table.naziv,
+                            secondLine,
                             maxLines: 1,
-                            minFontSize: 7,
+                            // Floor is proportional (80% of the intended size),
+                            // not a fixed 7pt: on a large tile that let text
+                            // shrink to less than half its size before
+                            // ellipsizing, which is unreadable rather than
+                            // helpful. Past this point, ellipsis is the honest
+                            // answer.
+                            //
+                            // MUST be a whole number: AutoSizeText asserts
+                            // minFontSize is a multiple of stepGranularity
+                            // (default 1), and a fractional value throws during
+                            // layout for every tile.
+                            minFontSize:
+                                (w * 0.068).clamp(6.0, 24.0).roundToDouble(),
                             overflow: TextOverflow.ellipsis,
                             style: TextStyle(
                               color: fg,
@@ -381,6 +483,46 @@ class _TableCell extends StatelessWidget {
                   top: w * 0.22,
                   right: w * 0.22,
                   child: Icon(corner, size: w * 0.11, color: fg),
+                ),
+              // "Jesu li poslane sve narudžbe" — bottom-right, the corner the
+              // status icon never uses, so the two never compete. Both badges
+              // are ringed so they read against every status fill (red, teal,
+              // blue, grey) — the green one especially, since it sits on a teal
+              // tile whenever the table is yours.
+              if (mark != _SendMark.none)
+                Positioned(
+                  right: w * 0.17,
+                  bottom: w * 0.17,
+                  child: Container(
+                    width: w * 0.17,
+                    height: w * 0.17,
+                    alignment: Alignment.center,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: mark == _SendMark.pending
+                          ? (dark
+                              ? const Color(0xFFF4A83A)
+                              : const Color(0xFFE8890C))
+                          : (dark
+                              ? const Color(0xFF4FC98A)
+                              : const Color(0xFF2E9E5B)),
+                      border: Border.all(
+                        color: dark
+                            ? const Color(0xFF1B2430)
+                            : Colors.white,
+                        width: w * 0.018,
+                      ),
+                    ),
+                    child: Icon(
+                      Icons.arrow_upward,
+                      size: w * 0.10,
+                      color: dark
+                          ? (mark == _SendMark.pending
+                              ? const Color(0xFF3A2600)
+                              : const Color(0xFF063020))
+                          : Colors.white,
+                    ),
+                  ),
                 ),
             ],
           );

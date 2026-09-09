@@ -14,6 +14,7 @@ import '../models/mqtt_menu.dart';
 import '../state/mqtt_cart.dart';
 import '../state/mqtt_menu_provider.dart';
 import '../state/mqtt_orders_provider.dart';
+import '../state/mqtt_pending_transfers_provider.dart';
 import 'mqtt_napomene.dart';
 import 'mqtt_order_details_screen.dart';
 import 'mqtt_qty_pad.dart';
@@ -178,6 +179,9 @@ class _MqttOrderScreenState extends ConsumerState<MqttOrderScreen> {
       // Accepted — drop the local order for this table.
       orders.clear(broj);
       _cart.clear();
+      // ...but the kasa still has to move the lines ONTO the table, which can
+      // take a while. Keep the floor plan marked until it has.
+      ref.read(mqttPendingTransfersProvider.notifier).watchTable(broj);
     } else if (result.needsNewMsgId) {
       // Expired / never sent: the next attempt must be a NEW order.
       _cart.pendingMsgId = null;
@@ -1093,7 +1097,14 @@ class _ArticleTile extends StatelessWidget {
       borderRadius: BorderRadius.circular(10 * s),
       clipBehavior: Clip.antiAlias,
       child: InkWell(
-        onTap: onTap,
+        // A thump per added item: the tile's colour flash is easy to miss when
+        // the eyes are on the guest rather than the phone. Medium, not heavy —
+        // heavy stays reserved for the wrong-PIN rejection, so the two never
+        // feel like the same event.
+        onTap: () {
+          HapticFeedback.mediumImpact();
+          onTap();
+        },
         splashColor: press.withValues(alpha: 0.35),
         highlightColor: press.withValues(alpha: 0.22),
         child: Padding(

@@ -95,12 +95,9 @@ class MqttTableQuerySender {
       try {
         debugPrint('MQTT ▸ table query $attempt/$maxAttempts '
             '(stol=$stol, msg_id=$msgId)');
-        debugPrint('MQTT ▸ query payload: $payload');
         svc.publishQuery(payload);
         final reply = await completer.future.timeout(replyTimeout);
         debugPrint('MQTT ◂ $reply');
-        debugPrint('MQTT ◂ my od tag: "${odTag(od)}" — '
-            'pending for me: ${reply.pendingForDevice(od)}');
         if (reply.isOk) {
           return MqttTableQueryResult(
             outcome: MqttQueryOutcome.ok,
