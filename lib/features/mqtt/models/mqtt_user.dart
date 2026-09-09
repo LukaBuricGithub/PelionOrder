@@ -10,6 +10,7 @@ class MqttUser {
     required this.role,
     required this.pin,
     required this.pj,
+    this.prava = const [],
   });
 
   final String code; // cuser
@@ -18,6 +19,15 @@ class MqttUser {
   final String role; // uloga (e.g. "Blagajna", "Administracija")
   final String pin; // pin (string; may be empty → cannot log in)
   final String pj; // pj
+
+  /// Right codes granted to this user (`prava` in the payload), e.g. `["008"]`.
+  final List<String> prava;
+
+  /// `008` — may open tables held by OTHER waiters. Without it a waiter only
+  /// reaches their own.
+  static const pravoSviStolovi = '008';
+
+  bool get canOpenAllTables => prava.contains(pravoSviStolovi);
 
   /// Best name to display: the full name if present, else the short naziv.
   String get displayName =>
@@ -36,6 +46,11 @@ class MqttUser {
         role: (j['uloga'] ?? '').toString(),
         pin: (j['pin'] ?? '').toString(),
         pj: (j['pj'] ?? '').toString(),
+        prava: (j['prava'] as List?)
+                ?.map((e) => e.toString().trim())
+                .where((s) => s.isNotEmpty)
+                .toList() ??
+            const [],
       );
 
   /// Parses the full `podaci/korisnici` payload (`{"korisnici":[...],"ts":...}`)

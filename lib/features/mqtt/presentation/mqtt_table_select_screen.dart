@@ -55,7 +55,7 @@ enum _TileStatus {
   free, // openable → new order
   order, // your in-progress local order → openable, editable
   occupiedMine, // occupied by you → openable, read-only summary
-  occupiedOther, // occupied by someone else → blocked
+  occupiedOther, // occupied by a colleague → openable only with pravo 008
 }
 
 /// "Jesu li poslane sve narudžbe sa stola" — drawn as a corner badge, kept
@@ -66,17 +66,17 @@ enum _SendMark {
   none,
 
   /// Something is outstanding: a local draft that was never accepted, or an
-  /// accepted order the kasa has not yet moved onto the table.
+  /// accepted order the kasa has not yet moved onto the table. Amber ↑.
   pending,
 
-  /// Everything this device knows about has reached the table.
+  /// Everything this device knows about has reached the table. Green ✓.
   sent,
 }
 
-/// MQTT floor plan: pick a zone (terasa), then a free table to open its menu.
-/// Same visuals as "Odabir stola", but tables/zones come from `podaci/stolovi`
-/// and occupancy from `podaci/stolovi_stanje` — occupied tables are red and
-/// cannot be opened.
+/// MQTT floor plan: pick a zone (terasa), then a table to open its menu.
+/// Tables/zones come from `podaci/stolovi` and occupancy from
+/// `podaci/stolovi_stanje`. A colleague's table is red, and openable only for a
+/// waiter holding pravo 008.
 class MqttTableSelectScreen extends ConsumerStatefulWidget {
   const MqttTableSelectScreen({super.key});
 
@@ -117,7 +117,10 @@ class _MqttTableSelectScreenState extends ConsumerState<MqttTableSelectScreen> {
     final withOrders = ref.watch(mqttOrdersProvider).keys.toSet();
     // Tables the kasa has accepted an order for but not yet applied it to.
     final pendingTransfer = ref.watch(mqttPendingTransfersProvider);
-    final myCuser = ref.watch(currentUserProvider)?.code;
+    final me = ref.watch(currentUserProvider);
+    final myCuser = me?.code;
+    // Pravo 008: may open a table held by another waiter.
+    final canOpenAll = me?.allTablesOpenRight ?? false;
     final columns = _columns(ref.watch(settingsProvider).tableViewSize);
 
     return PopScope(
@@ -143,7 +146,7 @@ class _MqttTableSelectScreenState extends ConsumerState<MqttTableSelectScreen> {
           child: zones.isEmpty
               ? const _EmptyTables()
               : _buildBody(zones, occupied, withOrders, pendingTransfer,
-                  myCuser, columns),
+                  myCuser, canOpenAll, columns),
         ),
       ),
     );
@@ -155,6 +158,7 @@ class _MqttTableSelectScreenState extends ConsumerState<MqttTableSelectScreen> {
     Set<int> withOrders,
     Set<int> pendingTransfer,
     String? myCuser,
+    bool canOpenAll,
     int columns,
   ) {
     final selected = _selectedZone.clamp(0, zones.length - 1);
@@ -180,6 +184,7 @@ class _MqttTableSelectScreenState extends ConsumerState<MqttTableSelectScreen> {
                       withOrders: withOrders,
                       pendingTransfer: pendingTransfer,
                       myCuser: myCuser,
+                      canOpenAll: canOpenAll,
                       columns: columns,
                       showName: columns < 4, // drop naziv at "small"
                       onTapTable: _onTap,
@@ -199,6 +204,18 @@ class _MqttTableSelectScreenState extends ConsumerState<MqttTableSelectScreen> {
   void _onTap(MqttTable table, _TileStatus status, MqttTableState? occ) {
     switch (status) {
       case _TileStatus.occupiedOther:
+        // Pravo 008 turns a colleague's table from blocked into openable —
+        // treated exactly like your own from here on.
+        if (ref.read(currentUserProvider)?.allTablesOpenRight ?? false) {
+          Navigator.of(context).push(MaterialPageRoute<void>(
+            builder: (_) => MqttTableViewScreen(
+              state: occ!,
+              tableBroj: table.broj,
+              tableNaziv: table.naziv.isEmpty ? null : table.naziv,
+            ),
+          ));
+          return;
+        }
         // Name them here: this is the moment the waiter actually asks who has
         // the table, and the snackbar has room the tile doesn't.
         final konobar = occ?.konobar.trim() ?? '';
@@ -238,6 +255,7 @@ class _PagedTableGrid extends StatelessWidget {
     required this.withOrders,
     required this.pendingTransfer,
     required this.myCuser,
+    required this.canOpenAll,
     required this.columns,
     required this.showName,
     required this.onTapTable,
@@ -250,6 +268,9 @@ class _PagedTableGrid extends StatelessWidget {
   /// Tables whose accepted order the kasa has not yet moved onto the table.
   final Set<int> pendingTransfer;
   final String? myCuser;
+
+  /// Whether this waiter holds pravo 008 (may open colleagues' tables).
+  final bool canOpenAll;
   final int columns;
   final bool showName;
   final void Function(MqttTable table, _TileStatus status, MqttTableState? occ)
@@ -319,6 +340,7 @@ class _PagedTableGrid extends StatelessWidget {
                   status: status,
                   showName: showName,
                   occupantName: occupied[table.broj]?.konobar,
+                  canOpenAll: canOpenAll,
                   mark: _markFor(table),
                   onTap: () =>
                       onTapTable(table, status, occupied[table.broj]),
@@ -358,6 +380,7 @@ class _TableCell extends StatelessWidget {
     required this.status,
     required this.showName,
     required this.occupantName,
+    required this.canOpenAll,
     required this.mark,
     required this.onTap,
   });
@@ -369,6 +392,10 @@ class _TableCell extends StatelessWidget {
   /// The waiter holding the table (`konobar` from `stolovi_stanje`), or null
   /// when it is free.
   final String? occupantName;
+
+  /// Pravo 008 — decides whether a colleague's table shows as locked or as
+  /// openable.
+  final bool canOpenAll;
 
   /// Whether everything ordered for this table has reached the kasa.
   ///
@@ -386,8 +413,13 @@ class _TableCell extends StatelessWidget {
     // occupied table → teal + eye (open, read-only), your unsent order → blue,
     // free → neutral. Red is reserved for "you cannot go in here".
     final (Color fill, Color fg, IconData? corner) = switch (status) {
-      _TileStatus.occupiedOther =>
-        (const Color(0xFFD46A5A), Colors.white, Icons.lock),
+      // Red always means "another waiter holds this" — but the icon says
+      // whether that BLOCKS you: a lock without pravo 008, an eye with it.
+      _TileStatus.occupiedOther => (
+          const Color(0xFFD46A5A),
+          Colors.white,
+          canOpenAll ? Icons.visibility : Icons.lock,
+        ),
       _TileStatus.occupiedMine =>
         (const Color(0xFF3E8E7E), Colors.white, Icons.visibility),
       _TileStatus.order => (const Color(0xFF4A78B4), Colors.white, null),
@@ -514,8 +546,14 @@ class _TableCell extends StatelessWidget {
                       ),
                     ),
                     child: Icon(
-                      Icons.arrow_upward,
-                      size: w * 0.10,
+                      // Arrow = still on its way up, check = landed. The shape
+                      // carries the meaning as well as the colour, so the two
+                      // states stay distinguishable in a glance — and for
+                      // anyone who reads amber and green as the same hue.
+                      mark == _SendMark.pending
+                          ? Icons.arrow_upward
+                          : Icons.check,
+                      size: mark == _SendMark.pending ? w * 0.10 : w * 0.11,
                       color: dark
                           ? (mark == _SendMark.pending
                               ? const Color(0xFF3A2600)

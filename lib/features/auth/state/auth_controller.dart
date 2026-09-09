@@ -19,15 +19,18 @@ class AuthController {
 
   final Ref _ref;
 
-  /// Maps an MQTT user onto the app's [User]. The MQTT payload doesn't carry
-  /// per-right flags, so we grant the working rights and treat the
-  /// "Administracija" role as superuser.
+  /// Maps an MQTT user onto the app's [User].
+  ///
+  /// `allTablesOpenRight` comes from the payload's `prava` (right `008`): with
+  /// it a waiter may open tables held by colleagues, without it only their own.
+  /// The remaining rights are still granted unconditionally — no code has been
+  /// defined for them yet.
   User _toUser(MqttUser u) => User(
         code: u.code,
         username: u.displayName,
         pin: u.pinValue ?? 0,
         changeQuantityRight: true,
-        allTablesOpenRight: true,
+        allTablesOpenRight: u.canOpenAllTables,
         deleteRight: true,
         superuser: u.isAdmin,
       );
