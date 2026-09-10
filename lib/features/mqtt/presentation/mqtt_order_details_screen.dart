@@ -1,11 +1,16 @@
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 
 import '../../shared/presentation/bottom_sheet_safe_area.dart';
+import '../data/mqtt_service.dart';
 import '../models/mqtt_menu.dart';
 import '../state/mqtt_cart.dart';
+import '../state/mqtt_pending_transfers_provider.dart';
+import '../state/mqtt_table_contents.dart';
+import 'mqtt_existing_items.dart';
 import 'mqtt_napomene.dart';
 import 'mqtt_qty_pad.dart';
 
@@ -24,7 +29,7 @@ const double _kAmountBaseWidth = 88;
 /// lines with per-line quantity and napomene, operating on the shared
 /// [MqttCart]. "Pošalji narudžbu" delegates to [onSend] (owned by the order
 /// screen); on success this screen pops with `'sent'`.
-class MqttOrderDetailsScreen extends StatefulWidget {
+class MqttOrderDetailsScreen extends ConsumerStatefulWidget {
   const MqttOrderDetailsScreen({
     super.key,
     required this.cart,
@@ -34,6 +39,7 @@ class MqttOrderDetailsScreen extends StatefulWidget {
     this.tableBroj,
     this.tableNaziv,
     this.onSend,
+    this.contents,
   });
 
   final MqttCart cart;
@@ -47,12 +53,17 @@ class MqttOrderDetailsScreen extends StatefulWidget {
   /// accepted it — this screen then pops with `'sent'`.
   final Future<bool> Function()? onSend;
 
+  /// The table's existing order (owned by the order screen), shown read-only
+  /// above the editable lines. Null when the table had no order.
+  final MqttTableContents? contents;
+
   @override
-  State<MqttOrderDetailsScreen> createState() =>
+  ConsumerState<MqttOrderDetailsScreen> createState() =>
       _MqttOrderDetailsScreenState();
 }
 
-class _MqttOrderDetailsScreenState extends State<MqttOrderDetailsScreen> {
+class _MqttOrderDetailsScreenState
+    extends ConsumerState<MqttOrderDetailsScreen> {
   bool _sending = false;
 
   /// Reorder mode: rows collapse to one compact line with a drag handle and
@@ -92,8 +103,34 @@ class _MqttOrderDetailsScreenState extends State<MqttOrderDetailsScreen> {
     ];
   }
 
-  double get _total =>
+  /// Value of the lines being added now (the existing order is added on top).
+  double get _cartTotal =>
       cart.lines.fold(0.0, (s, l) => s + _price(l.code) * l.qty);
+
+  String _remarkName(String cnap) {
+    for (final r in remarks) {
+      if (r.cnap == cnap) return r.naziv;
+    }
+    return cnap;
+  }
+
+  /// Card chrome for a read-only existing line, matching the editable rows.
+  Widget _existingCard(BuildContext context, Widget child, double s) {
+    final scheme = Theme.of(context).colorScheme;
+    return Padding(
+      padding: EdgeInsets.only(bottom: 8 * s),
+      child: Material(
+        color: scheme.surface,
+        clipBehavior: Clip.antiAlias,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(12 * s),
+          side:
+              BorderSide(color: scheme.outlineVariant.withValues(alpha: 0.5)),
+        ),
+        child: child,
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -105,14 +142,94 @@ class _MqttOrderDetailsScreenState extends State<MqttOrderDetailsScreen> {
             ? 'Stol $broj · $naziv'
             : 'Stol $broj');
 
+    // Watched here rather than inside the builder below: travelling lines come
+    // from a provider, and a provider must be read in this widget's own build.
+    final inTransit = broj == null
+        ? const <MqttInTransitOrder>[]
+        : (ref.watch(mqttPendingTransfersProvider)[broj] ??
+            const <MqttInTransitOrder>[]);
+
     return MediaQuery(
       data: MediaQuery.of(context).copyWith(
         textScaler: MediaQuery.textScalerOf(context).clamp(maxScaleFactor: 1.3),
       ),
       child: ListenableBuilder(
-        listenable: cart,
+        listenable: Listenable.merge([
+          cart,
+          if (widget.contents != null) widget.contents!,
+        ]),
         builder: (context, _) {
           final lines = cart.lines;
+          final existing = MqttExistingItems.compute(
+            contents: widget.contents,
+            inTransit: inTransit,
+            byCode: byCode,
+            remarkName: _remarkName,
+            od: MqttService.instance.clientId,
+          );
+          // The whole table: what is on it, what is travelling, and what is
+          // about to be sent.
+          final total = existing.total + _cartTotal;
+          final s = _screenScale(context);
+          final dark = Theme.of(context).brightness == Brightness.dark;
+          // The existing order renders first and read-only. It is never part of
+          // the reorder list, the clear action or what gets sent.
+          final existingWidgets = <Widget>[
+            if (existing.loading)
+              _existingCard(
+                context,
+                MqttExistingNoticeTile(
+                  scale: s,
+                  busy: true,
+                  text: 'Učitavanje stavki sa stola…',
+                ),
+                s,
+              ),
+            if (existing.error != null)
+              _existingCard(
+                context,
+                MqttExistingNoticeTile(
+                  scale: s,
+                  icon: Icons.cloud_off,
+                  text: 'Stavke sa stola nisu dostupne. '
+                      'Dodirnite za ponovni pokušaj.',
+                  onTap: () => widget.contents?.refresh(refill: true),
+                ),
+                s,
+              ),
+            for (final row in existing.rows)
+              _existingCard(
+                context,
+                MqttExistingItemTile(
+                  row: row,
+                  money: money,
+                  scale: s,
+                  // The review screen: every napomena, wrapped.
+                  compact: false,
+                ),
+                s,
+              ),
+            if (existing.othersPending > 0)
+              _existingCard(
+                context,
+                MqttExistingNoticeTile(
+                  scale: s,
+                  icon: Icons.arrow_upward,
+                  color: mqttExistingStatusStyle(
+                    MqttExistingStatus.naPutu,
+                    dark,
+                  ).$1,
+                  text: mqttOthersPendingText(existing.othersPending),
+                ),
+                s,
+              ),
+            if (existing.hasContent && lines.isNotEmpty)
+              MqttOrderSectionLabel(
+                text: 'Nove stavke',
+                scale: s,
+                horizontalPadding: 2,
+              ),
+          ];
           return Scaffold(
             appBar: AppBar(
               titleSpacing: 0,
@@ -184,8 +301,13 @@ class _MqttOrderDetailsScreenState extends State<MqttOrderDetailsScreen> {
                         )
                       : ListView.builder(
                           padding: const EdgeInsets.fromLTRB(12, 12, 12, 8),
-                          itemCount: lines.length + 1,
-                          itemBuilder: (context, i) {
+                          itemCount: existingWidgets.length + lines.length + 1,
+                          itemBuilder: (context, index) {
+                            // Existing order first, read-only.
+                            if (index < existingWidgets.length) {
+                              return existingWidgets[index];
+                            }
+                            final i = index - existingWidgets.length;
                             if (i == lines.length) {
                               return _AddItemButton(
                                 onTap: () => Navigator.of(context).pop(),
@@ -212,12 +334,12 @@ class _MqttOrderDetailsScreenState extends State<MqttOrderDetailsScreen> {
                 ),
                 if (_reordering)
                   _ReorderDoneBar(
-                    total: money.format(_total),
+                    total: money.format(total),
                     onDone: () => setState(() => _reordering = false),
                   )
                 else
                   _BottomBar(
-                    total: money.format(_total),
+                    total: money.format(total),
                     sending: _sending,
                     canSend: lines.isNotEmpty &&
                         !_sending &&

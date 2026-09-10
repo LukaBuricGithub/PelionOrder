@@ -13,7 +13,6 @@ import '../models/mqtt_tables.dart';
 import '../state/mqtt_orders_provider.dart';
 import '../state/mqtt_pending_transfers_provider.dart';
 import '../state/mqtt_tables_provider.dart';
-import 'mqtt_table_view_screen.dart';
 
 // ── SVG assets (see assets/table_select) ───────────────────────────────────
 // Two theme-specific chair sprites, each with its own per-part colours
@@ -54,7 +53,7 @@ Future<void> precacheTableSelectSvgs() async {
 enum _TileStatus {
   free, // openable → new order
   order, // your in-progress local order → openable, editable
-  occupiedMine, // occupied by you → openable, read-only summary
+  occupiedMine, // occupied by you → order screen, existing lines read-only
   occupiedOther, // occupied by a colleague → openable only with pravo 008
 }
 
@@ -116,7 +115,8 @@ class _MqttTableSelectScreenState extends ConsumerState<MqttTableSelectScreen> {
     // Tables with a local (in-progress) order — coloured "yours" and reopenable.
     final withOrders = ref.watch(mqttOrdersProvider).keys.toSet();
     // Tables the kasa has accepted an order for but not yet applied it to.
-    final pendingTransfer = ref.watch(mqttPendingTransfersProvider);
+    final pendingTransfer =
+        ref.watch(mqttPendingTransfersProvider).keys.toSet();
     final me = ref.watch(currentUserProvider);
     final myCuser = me?.code;
     // Pravo 008: may open a table held by another waiter.
@@ -207,13 +207,7 @@ class _MqttTableSelectScreenState extends ConsumerState<MqttTableSelectScreen> {
         // Pravo 008 turns a colleague's table from blocked into openable —
         // treated exactly like your own from here on.
         if (ref.read(currentUserProvider)?.allTablesOpenRight ?? false) {
-          Navigator.of(context).push(MaterialPageRoute<void>(
-            builder: (_) => MqttTableViewScreen(
-              state: occ!,
-              tableBroj: table.broj,
-              tableNaziv: table.naziv.isEmpty ? null : table.naziv,
-            ),
-          ));
+          _openOrder(table);
           return;
         }
         // Name them here: this is the moment the waiter actually asks who has
@@ -229,21 +223,20 @@ class _MqttTableSelectScreenState extends ConsumerState<MqttTableSelectScreen> {
             ),
           );
       case _TileStatus.occupiedMine:
-        // Read-only summary of the table (occupied by the current user).
-        Navigator.of(context).push(MaterialPageRoute<void>(
-          builder: (_) => MqttTableViewScreen(
-            state: occ!,
-            tableBroj: table.broj,
-            tableNaziv: table.naziv.isEmpty ? null : table.naziv,
-          ),
-        ));
       case _TileStatus.free:
       case _TileStatus.order:
-        final q = table.naziv.isEmpty
-            ? ''
-            : '?naziv=${Uri.encodeComponent(table.naziv)}';
-        context.push('/mqtt-menu/${table.broj}$q');
+        _openOrder(table);
     }
+  }
+
+  /// Every openable table goes straight into the order screen. For a table that
+  /// already has an order, that screen loads and shows the existing lines above
+  /// the new ones — there is no separate "Sadržaj stola" step any more.
+  void _openOrder(MqttTable table) {
+    final q = table.naziv.isEmpty
+        ? ''
+        : '?naziv=${Uri.encodeComponent(table.naziv)}';
+    context.push('/mqtt-menu/${table.broj}$q');
   }
 }
 

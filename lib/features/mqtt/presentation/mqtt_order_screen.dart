@@ -10,11 +10,16 @@ import '../../auth/state/session_provider.dart';
 import '../../settings/models/menu_view_size.dart';
 import '../../settings/state/settings_provider.dart';
 import '../data/mqtt_order_sender.dart';
+import '../data/mqtt_service.dart';
 import '../models/mqtt_menu.dart';
+import '../models/mqtt_tables.dart';
 import '../state/mqtt_cart.dart';
 import '../state/mqtt_menu_provider.dart';
 import '../state/mqtt_orders_provider.dart';
 import '../state/mqtt_pending_transfers_provider.dart';
+import '../state/mqtt_table_contents.dart';
+import '../state/mqtt_tables_provider.dart';
+import 'mqtt_existing_items.dart';
 import 'mqtt_napomene.dart';
 import 'mqtt_order_details_screen.dart';
 import 'mqtt_qty_pad.dart';
@@ -67,6 +72,10 @@ class _MqttOrderScreenState extends ConsumerState<MqttOrderScreen> {
   /// True while an order is in flight (publish + up to 5 reply waits).
   bool _sending = false;
 
+  /// What is already on this table, from the kasa. Null for a table with no
+  /// existing order — then there is nothing to load and nothing to show.
+  MqttTableContents? _contents;
+
   // Rebuilt each build from the current menu — maps article code → article.
   final _byCode = <int, MqttArticle>{};
   MqttMenu _menu = MqttMenu.empty;
@@ -92,6 +101,14 @@ class _MqttOrderScreenState extends ConsumerState<MqttOrderScreen> {
       // of an already-sent order reuses the same id instead of duplicating it.
       _cart.pendingMsgId = orders.msgIdFor(broj);
     }
+    // A table that already has an order — or one this phone just sent to —
+    // shows its existing lines above the new ones, read-only.
+    if (broj != null &&
+        (ref.read(mqttOccupiedProvider).containsKey(broj) ||
+            ref.read(mqttPendingTransfersProvider).containsKey(broj))) {
+      _contents = MqttTableContents(broj)..addListener(_onContents);
+      Future.microtask(() => _contents?.refresh());
+    }
     _cart.addListener(_onCart);
     // Match the New Order screen: hide the Android nav bar (keep the status
     // bar) and lock to portrait while ordering.
@@ -107,6 +124,8 @@ class _MqttOrderScreenState extends ConsumerState<MqttOrderScreen> {
 
   @override
   void dispose() {
+    _contents?.removeListener(_onContents);
+    _contents?.dispose();
     _cart.removeListener(_onCart);
     _cart.dispose();
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
@@ -127,9 +146,22 @@ class _MqttOrderScreenState extends ConsumerState<MqttOrderScreen> {
     if (mounted) setState(() {});
   }
 
+  void _onContents() {
+    if (!mounted) return;
+    final broj = widget.tableBroj;
+    final reply = _contents?.reply;
+    // A fresh answer may show our travelling lines have landed — clear them
+    // from the watch at once, so they are never listed twice.
+    if (broj != null && reply != null) {
+      ref.read(mqttPendingTransfersProvider.notifier).applyReply(broj, reply);
+    }
+    setState(() {});
+  }
+
   double _priceFor(int code) => _byCode[code]?.price ?? 0;
 
-  double get _total =>
+  /// Value of the lines being added now (the existing order is added on top).
+  double get _cartTotal =>
       _cart.lines.fold(0.0, (sum, l) => sum + _priceFor(l.code) * l.qty);
 
   void _toggleSearch() {
@@ -176,12 +208,22 @@ class _MqttOrderScreenState extends ConsumerState<MqttOrderScreen> {
     setState(() => _sending = false);
 
     if (result.isOk) {
+      // Keep what was sent: until the kasa moves these lines onto the table its
+      // query reply only COUNTS them, so this copy is the only way to show them
+      // as "na putu". Captured before the cart is cleared.
+      final sent = MqttInTransitOrder(
+        msgId: msgId,
+        lines: [for (final l in _cart.lines) l.copy()],
+        sentLineCount: ref.read(settingsProvider).shouldGroupArticles
+            ? groupCartLines(_cart.lines).length
+            : _cart.lines.length,
+      );
       // Accepted — drop the local order for this table.
       orders.clear(broj);
       _cart.clear();
       // ...but the kasa still has to move the lines ONTO the table, which can
       // take a while. Keep the floor plan marked until it has.
-      ref.read(mqttPendingTransfersProvider.notifier).watchTable(broj);
+      ref.read(mqttPendingTransfersProvider.notifier).watchTable(broj, sent);
       // No snackbar on success: the screen pops straight back to the floor plan
       // and the table gains its badge, so a message would only repeat what is
       // already on screen. A light tap confirms it without asking the waiter to
@@ -229,6 +271,7 @@ class _MqttOrderScreenState extends ConsumerState<MqttOrderScreen> {
               tableBroj: widget.tableBroj,
               tableNaziv: widget.tableNaziv,
               onSend: _sendOrder,
+              contents: _contents,
             ),
           ),
         )
@@ -306,6 +349,33 @@ class _MqttOrderScreenState extends ConsumerState<MqttOrderScreen> {
     // Grid density ("Veličina artikala u narudžbi" in Postavke uređaja).
     final menuSize = ref.watch(settingsProvider).menuViewSize;
 
+    // The table's existing order: lines already on it (from the kasa) plus lines
+    // this phone sent that are still travelling.
+    final tableBroj = widget.tableBroj;
+    final inTransit = tableBroj == null
+        ? const <MqttInTransitOrder>[]
+        : (ref.watch(mqttPendingTransfersProvider)[tableBroj] ??
+              const <MqttInTransitOrder>[]);
+    final existing = MqttExistingItems.compute(
+      contents: _contents,
+      inTransit: inTransit,
+      byCode: _byCode,
+      remarkName: _menu.remarkName,
+      od: MqttService.instance.clientId,
+    );
+    // Re-ask when the kasa announces a change on this table.
+    if (_contents != null) {
+      ref.listen<Map<int, MqttTableState>>(mqttOccupiedProvider, (prev, next) {
+        final before = prev?[tableBroj];
+        final after = next[tableBroj];
+        if (before?.stavki != after?.stavki ||
+            before?.iznos != after?.iznos ||
+            before?.cuser != after?.cuser) {
+          _contents?.refresh(refill: true);
+        }
+      });
+    }
+
     final broj = widget.tableBroj;
     final naziv = widget.tableNaziv;
     final title = broj == null
@@ -344,6 +414,9 @@ class _MqttOrderScreenState extends ConsumerState<MqttOrderScreen> {
                                 byCode: _byCode,
                                 money: _money,
                                 remarksFor: _remarksFor,
+                                existing: existing,
+                                onRetryExisting: () =>
+                                    _contents?.refresh(refill: true),
                               ),
                             ),
                             const SizedBox(width: 10),
@@ -352,7 +425,11 @@ class _MqttOrderScreenState extends ConsumerState<MqttOrderScreen> {
                               onClear: hasItems && !_sending
                                   ? _confirmClear
                                   : null,
-                              onDetails: hasItems && !_sending
+                              // Details also opens on the existing order alone,
+                              // to read it — sending still needs new lines.
+                              onDetails:
+                                  (hasItems || existing.rows.isNotEmpty) &&
+                                      !_sending
                                   ? _openDetails
                                   : null,
                               onSend: hasItems && !_sending ? _send : null,
@@ -364,7 +441,9 @@ class _MqttOrderScreenState extends ConsumerState<MqttOrderScreen> {
 
                     // ── Total (+ search toggle) ─────────────────────────────
                     _TotalBar(
-                      total: _money.format(_total),
+                      // The whole table: what is on it, what is travelling,
+                      // and what is about to be sent.
+                      total: _money.format(existing.total + _cartTotal),
                       searching: _searching,
                       onToggleSearch: _toggleSearch,
                     ),
@@ -404,21 +483,27 @@ class _MqttOrderScreenState extends ConsumerState<MqttOrderScreen> {
   }
 }
 
-/// The running order as a card of compact lines (name, quantity, line total,
-/// remove ✕). Each line is expandable — tapping the name / non-button area
-/// reveals its napomene editor. Auto-scrolls to the newest line when added.
+/// The running order as a card: the table's existing lines first (read-only,
+/// coloured by status), then the lines being added now (editable). Auto-scrolls
+/// to the newest line when one is added.
 class _CartCard extends StatefulWidget {
   const _CartCard({
     required this.cart,
     required this.byCode,
     required this.money,
     required this.remarksFor,
+    required this.existing,
+    required this.onRetryExisting,
   });
 
   final MqttCart cart;
   final Map<int, MqttArticle> byCode;
   final NumberFormat money;
   final List<MqttRemark> Function(int code) remarksFor;
+
+  /// The table's existing order, shown read-only above the new lines.
+  final MqttExistingItems existing;
+  final VoidCallback onRetryExisting;
 
   @override
   State<_CartCard> createState() => _CartCardState();
@@ -454,6 +539,56 @@ class _CartCardState extends State<_CartCard> {
     }
     _lastCount = lines.length;
 
+    final dark = Theme.of(context).brightness == Brightness.dark;
+    final existing = widget.existing;
+    // Existing order first (read-only, oldest at the top), then the lines being
+    // added now — so a new line always lands at the bottom, where the
+    // auto-scroll above takes the waiter.
+    final children = <Widget>[
+      if (existing.loading)
+        MqttExistingNoticeTile(
+          scale: s,
+          busy: true,
+          text: 'Učitavanje stavki sa stola…',
+        ),
+      if (existing.error != null)
+        MqttExistingNoticeTile(
+          scale: s,
+          icon: Icons.cloud_off,
+          text: 'Stavke sa stola nisu dostupne. Dodirnite za ponovni pokušaj.',
+          onTap: widget.onRetryExisting,
+        ),
+      for (final row in existing.rows)
+        MqttExistingItemTile(
+          key: ValueKey(row.id),
+          row: row,
+          money: widget.money,
+          scale: s,
+        ),
+      if (existing.othersPending > 0)
+        MqttExistingNoticeTile(
+          scale: s,
+          icon: Icons.arrow_upward,
+          color: mqttExistingStatusStyle(MqttExistingStatus.naPutu, dark).$1,
+          text: mqttOthersPendingText(existing.othersPending),
+        ),
+      if (existing.hasContent && lines.isNotEmpty)
+        MqttOrderSectionLabel(text: 'Nove stavke', scale: s),
+      for (var i = 0; i < lines.length; i++)
+        _CartLineTile(
+          key: ValueKey('cartline_${lines[i].code}_$i'),
+          index: i,
+          line: lines[i],
+          cart: widget.cart,
+          name: widget.byCode[lines[i].code]?.name ?? 'Artikl ${lines[i].code}',
+          unit: widget.byCode[lines[i].code]?.unit ?? '',
+          lineTotal: widget.money.format(
+            (widget.byCode[lines[i].code]?.price ?? 0) * lines[i].qty,
+          ),
+          available: widget.remarksFor(lines[i].code),
+        ),
+    ];
+
     return Material(
       color: scheme.surface,
       clipBehavior: Clip.antiAlias,
@@ -461,7 +596,7 @@ class _CartCardState extends State<_CartCard> {
         borderRadius: BorderRadius.circular(14 * s),
         side: BorderSide(color: scheme.outlineVariant.withValues(alpha: 0.5)),
       ),
-      child: lines.isEmpty
+      child: children.isEmpty
           ? Center(
               child: Text(
                 'Nema stavki u narudžbi',
@@ -471,24 +606,9 @@ class _CartCardState extends State<_CartCard> {
           : ListView.separated(
               controller: _scroll,
               padding: EdgeInsets.only(bottom: 2 * s),
-              itemCount: lines.length,
+              itemCount: children.length,
               separatorBuilder: (_, _) => const Divider(height: 1),
-              itemBuilder: (context, i) {
-                final line = lines[i];
-                final article = widget.byCode[line.code];
-                return _CartLineTile(
-                  key: ValueKey('cartline_${line.code}_$i'),
-                  index: i,
-                  line: line,
-                  cart: widget.cart,
-                  name: article?.name ?? 'Artikl ${line.code}',
-                  unit: article?.unit ?? '',
-                  lineTotal: widget.money.format(
-                    (article?.price ?? 0) * line.qty,
-                  ),
-                  available: widget.remarksFor(line.code),
-                );
-              },
+              itemBuilder: (context, i) => children[i],
             ),
     );
   }
