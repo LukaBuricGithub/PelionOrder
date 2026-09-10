@@ -180,10 +180,10 @@ class _MqttOrderDetailsScreenState
         ? const <MqttInTransitOrder>[]
         : (ref.watch(mqttPendingTransfersProvider)[broj] ??
             const <MqttInTransitOrder>[]);
-    // The kasa's total for this table from stolovi_stanje — already on the
-    // device, so Ukupno is right before the first query answer arrives.
-    final seedTotal =
-        broj == null ? null : ref.watch(mqttOccupiedProvider)[broj]?.iznos;
+    // The kasa's summary of this table from stolovi_stanje — already on the
+    // device, so Ukupno and the placeholder rows are right before the first
+    // query answer arrives.
+    final seed = broj == null ? null : ref.watch(mqttOccupiedProvider)[broj];
 
     return MediaQuery(
       data: MediaQuery.of(context).copyWith(
@@ -205,63 +205,97 @@ class _MqttOrderDetailsScreenState
             byCode: byCode,
             remarkName: _remarkName,
             od: MqttService.instance.clientId,
-            seedTotal: seedTotal,
+            seedTotal: seed?.iznos,
+            seedLineCount: seed?.stavki,
           );
           // The whole table: what is on it, what is travelling, and what is
           // about to be sent.
           final total = existing.total + _cartTotal;
           final s = _screenScale(context);
           final dark = Theme.of(context).brightness == Brightness.dark;
+          final loadingCard = _existingCard(
+            context,
+            MqttExistingNoticeTile(
+              scale: s,
+              busy: true,
+              text: 'Učitavanje stavki sa stola…',
+            ),
+            s,
+          );
           // The existing order renders first and read-only. It is never part of
-          // the reorder list, the clear action or what gets sent.
+          // the reorder list, the clear action or what gets sent. One animated
+          // block, exactly as on Stol X: placeholders until the kasa answers,
+          // a cross-fade into the real rows, and an animated height.
           final existingWidgets = <Widget>[
-            if (existing.loading)
-              _existingCard(
-                context,
-                MqttExistingNoticeTile(
-                  scale: s,
-                  busy: true,
-                  text: 'Učitavanje stavki sa stola…',
-                ),
-                s,
-              ),
-            if (existing.error != null)
-              _existingCard(
-                context,
-                MqttExistingNoticeTile(
-                  scale: s,
-                  icon: Icons.cloud_off,
-                  text: 'Stavke sa stola nisu dostupne. '
-                      'Dodirnite za ponovni pokušaj.',
-                  onTap: () => widget.contents?.refresh(refill: true),
-                ),
-                s,
-              ),
-            for (final row in existing.rows)
-              _existingCard(
-                context,
-                MqttExistingItemTile(
-                  row: row,
-                  money: money,
-                  scale: s,
-                  // The review screen: every napomena, wrapped.
-                  compact: false,
-                ),
-                s,
-              ),
-            if (existing.othersPending > 0)
-              _existingCard(
-                context,
-                MqttExistingNoticeTile(
-                  scale: s,
-                  icon: Icons.arrow_upward,
-                  color: mqttExistingStatusStyle(
-                    MqttExistingStatus.naPutu,
-                    dark,
-                  ).$1,
-                  text: mqttOthersPendingText(existing.othersPending),
-                ),
-                s,
+            if (existing.hasContent)
+              MqttExistingSection(
+                key: const ValueKey('existing'),
+                showPlaceholders: existing.placeholders > 0,
+                placeholders: [
+                  if (existing.loading)
+                    MqttFadeIn(
+                        key: const ValueKey('loading'), child: loadingCard),
+                  for (var i = 0; i < existing.placeholders; i++)
+                    KeyedSubtree(
+                      key: ValueKey('ph$i'),
+                      child: _existingCard(
+                        context,
+                        MqttExistingSkeletonTile(index: i, scale: s),
+                        s,
+                      ),
+                    ),
+                ],
+                items: [
+                  if (existing.loading && existing.placeholders == 0)
+                    ('loading', loadingCard),
+                  if (existing.error != null)
+                    (
+                      'error',
+                      _existingCard(
+                        context,
+                        MqttExistingNoticeTile(
+                          scale: s,
+                          icon: Icons.cloud_off,
+                          text: 'Stavke sa stola nisu dostupne. '
+                              'Dodirnite za ponovni pokušaj.',
+                          onTap: () => widget.contents?.refresh(refill: true),
+                        ),
+                        s,
+                      ),
+                    ),
+                  for (final row in existing.rows)
+                    (
+                      row.id,
+                      _existingCard(
+                        context,
+                        MqttExistingItemTile(
+                          row: row,
+                          money: money,
+                          scale: s,
+                          // The review screen: every napomena, wrapped.
+                          compact: false,
+                        ),
+                        s,
+                      ),
+                    ),
+                  if (existing.othersPending > 0)
+                    (
+                      'others',
+                      _existingCard(
+                        context,
+                        MqttExistingNoticeTile(
+                          scale: s,
+                          icon: Icons.arrow_upward,
+                          color: mqttExistingStatusStyle(
+                            MqttExistingStatus.naPutu,
+                            dark,
+                          ).$1,
+                          text: mqttOthersPendingText(existing.othersPending),
+                        ),
+                        s,
+                      ),
+                    ),
+                ],
               ),
             if (existing.hasContent && lines.isNotEmpty)
               MqttOrderSectionLabel(

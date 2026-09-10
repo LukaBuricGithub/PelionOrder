@@ -27,13 +27,13 @@ class MqttTableContents extends ChangeNotifier {
   /// Waiting for the FIRST answer.
   bool loading = false;
 
-  /// [loading], and slow enough to be worth saying so. A quick answer — the
-  /// usual case — never shows a loading row at all, so the list doesn't flash
-  /// "Učitavanje…" for a moment before the items replace it.
+  /// [loading], and slow enough to be worth saying so in words. Placeholder
+  /// rows cover the wait from the first frame, so the "Učitavanje…" line is
+  /// only for a kasa that is genuinely slow — a normal answer never shows it.
   bool get showLoading => loading && _slow;
   bool _slow = false;
   Timer? _slowTimer;
-  static const _loadingGrace = Duration(milliseconds: 400);
+  static const _loadingGrace = Duration(seconds: 3);
 
   /// Why the kasa couldn't be asked — only set while there is no [reply] yet.
   String? error;

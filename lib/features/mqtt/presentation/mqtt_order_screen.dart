@@ -425,16 +425,20 @@ class _MqttOrderScreenState extends ConsumerState<MqttOrderScreen> {
         ? const <MqttInTransitOrder>[]
         : (ref.watch(mqttPendingTransfersProvider)[tableBroj] ??
               const <MqttInTransitOrder>[]);
+    // The kasa's summary of this table from stolovi_stanje — already on the
+    // device, so the total and the number of placeholder rows are right before
+    // the kasa answers.
+    final seed = tableBroj == null
+        ? null
+        : ref.watch(mqttOccupiedProvider)[tableBroj];
     final existing = MqttExistingItems.compute(
       contents: _contents,
       inTransit: inTransit,
       byCode: _byCode,
       remarkName: _menu.remarkName,
       od: MqttService.instance.clientId,
-      // Already on the device, so the total is right before the kasa answers.
-      seedTotal: tableBroj == null
-          ? null
-          : ref.watch(mqttOccupiedProvider)[tableBroj]?.iznos,
+      seedTotal: seed?.iznos,
+      seedLineCount: seed?.stavki,
     );
     // Re-ask when the kasa announces a change on this table.
     if (_contents != null) {
@@ -591,14 +595,100 @@ class _CartCard extends StatefulWidget {
   State<_CartCard> createState() => _CartCardState();
 }
 
-class _CartCardState extends State<_CartCard> {
+class _CartCardState extends State<_CartCard>
+    with SingleTickerProviderStateMixin {
   final _scroll = ScrollController();
   int _lastCount = 0;
 
+  /// Keep the end of the order in view — where the newest lines are. On from
+  /// the start, so opening a table lists its order all the way down; switched
+  /// off the moment the waiter touches the list, and on again when they add a
+  /// line.
+  bool _followEnd = true;
+
+  /// Drives every automatic scroll of this list.
+  ///
+  /// Not `animateTo` a fixed offset: that end keeps moving — the list only
+  /// ESTIMATES the height of rows it hasn't built yet, and the existing order
+  /// grows while its rows cascade in — so a fixed target is reached too early
+  /// and has to be chased again, which is exactly the stop-and-go this avoids.
+  /// Instead every frame moves toward wherever the end is NOW, in one motion.
+  late final AnimationController _glide = AnimationController(vsync: this)
+    ..addListener(_onGlideTick)
+    ..addStatusListener((status) {
+      if (status == AnimationStatus.completed) {
+        WidgetsBinding.instance.addPostFrameCallback((_) => _catchUp());
+      }
+    });
+  double _glideFrom = 0;
+  Curve _glideCurve = Curves.easeOutCubic;
+
+  bool _hadPlaceholders = false;
+
   @override
   void dispose() {
+    _glide.dispose();
     _scroll.dispose();
     super.dispose();
+  }
+
+  void _onGlideTick() {
+    if (!_scroll.hasClients) return;
+    final position = _scroll.position;
+    final end = position.maxScrollExtent;
+    final t = _glideCurve.transform(_glide.value);
+    final target = (_glideFrom + (end - _glideFrom) * t).clamp(
+      position.minScrollExtent,
+      end,
+    );
+    if ((target - position.pixels).abs() > 0.1) _scroll.jumpTo(target);
+  }
+
+  /// Glides to the end of the list: holds still for [delay], then moves over
+  /// [duration] — re-reading where the end is on every frame.
+  void _glideToEnd({
+    required Duration duration,
+    Duration delay = Duration.zero,
+    Curve curve = Curves.easeOutCubic,
+  }) {
+    if (!mounted || !_followEnd || !_scroll.hasClients) return;
+    final total = delay + duration;
+    _glideFrom = _scroll.position.pixels;
+    _glideCurve = Interval(
+      delay.inMicroseconds / total.inMicroseconds,
+      1,
+      curve: curve,
+    );
+    _glide.duration = total;
+    _glide.forward(from: 0);
+  }
+
+  /// A short glide to the end when it has moved away — unless a glide is
+  /// already on its way there (it will reach the new end by itself), or the
+  /// placeholders are still standing in for the rows (there is no real end).
+  void _catchUp() {
+    if (!mounted || !_followEnd || _glide.isAnimating) return;
+    if (widget.existing.placeholders > 0 || !_scroll.hasClients) return;
+    final position = _scroll.position;
+    if (position.maxScrollExtent - position.pixels < 0.5) return;
+    _glideToEnd(duration: const Duration(milliseconds: 260));
+  }
+
+  /// The kasa's rows have just replaced the placeholders and cascade in from
+  /// the top. Listing them and scrolling down is ONE motion: the list holds
+  /// while the rows fill what is on screen, then rolls down at about the pace
+  /// the next rows keep arriving at the bottom, and lands on the end.
+  void _listToEnd(int rowCount, double rowHeight) {
+    if (!mounted || !_followEnd || !_scroll.hasClients) return;
+    final step = MqttExistingSection.cascadeStepFor(rowCount);
+    final onScreen = (_scroll.position.viewportDimension / rowHeight)
+        .floor()
+        .clamp(0, rowCount);
+    _glideToEnd(
+      delay: step * onScreen,
+      duration: step * (rowCount - onScreen) + MqttFadeIn.duration,
+      curve: Curves.easeInOutCubic,
+    );
   }
 
   @override
@@ -610,49 +700,84 @@ class _CartCardState extends State<_CartCard> {
     // The cart list is mutated in place (same reference), so compare against the
     // last-built count to detect a newly added line and scroll to it.
     if (lines.length > _lastCount) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!_scroll.hasClients) return;
-        _scroll.animateTo(
-          _scroll.position.maxScrollExtent,
-          duration: const Duration(milliseconds: 250),
-          curve: Curves.easeOut,
-        );
-      });
+      _followEnd = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) => _catchUp());
     }
     _lastCount = lines.length;
 
     final dark = Theme.of(context).brightness == Brightness.dark;
     final existing = widget.existing;
+    final loadingNotice = MqttExistingNoticeTile(
+      scale: s,
+      busy: true,
+      text: 'Učitavanje stavki sa stola…',
+    );
+    // The existing order's entries, each with a stable id (see
+    // [MqttExistingSection]).
+    final existingItems = <(String, Widget)>[
+      if (existing.loading && existing.placeholders == 0)
+        ('loading', loadingNotice),
+      if (existing.error != null)
+        (
+          'error',
+          MqttExistingNoticeTile(
+            scale: s,
+            icon: Icons.cloud_off,
+            text:
+                'Stavke sa stola nisu dostupne. Dodirnite za ponovni pokušaj.',
+            onTap: widget.onRetryExisting,
+          ),
+        ),
+      for (final row in existing.rows)
+        (row.id, MqttExistingItemTile(row: row, money: widget.money, scale: s)),
+      if (existing.othersPending > 0)
+        (
+          'others',
+          MqttExistingNoticeTile(
+            scale: s,
+            icon: Icons.arrow_upward,
+            color: mqttExistingStatusStyle(MqttExistingStatus.naPutu, dark).$1,
+            text: mqttOthersPendingText(existing.othersPending),
+          ),
+        ),
+    ];
+
+    // The kasa's rows just replaced the placeholders: list them and scroll
+    // down together, once this frame has been laid out.
+    final showingPlaceholders = existing.placeholders > 0;
+    if (_hadPlaceholders && !showingPlaceholders) {
+      final rowCount = existingItems.length;
+      // An existing row's height, near enough: the tile plus its divider.
+      final rowHeight = 53 * s;
+      WidgetsBinding.instance.addPostFrameCallback(
+        (_) => _listToEnd(rowCount, rowHeight),
+      );
+    }
+    _hadPlaceholders = showingPlaceholders;
+
     // Existing order first (read-only, oldest at the top), then the lines being
     // added now — so a new line always lands at the bottom, where the
     // auto-scroll above takes the waiter.
     final children = <Widget>[
-      if (existing.loading)
-        MqttExistingNoticeTile(
-          scale: s,
-          busy: true,
-          text: 'Učitavanje stavki sa stola…',
-        ),
-      if (existing.error != null)
-        MqttExistingNoticeTile(
-          scale: s,
-          icon: Icons.cloud_off,
-          text: 'Stavke sa stola nisu dostupne. Dodirnite za ponovni pokušaj.',
-          onTap: widget.onRetryExisting,
-        ),
-      for (final row in existing.rows)
-        MqttExistingItemTile(
-          key: ValueKey(row.id),
-          row: row,
-          money: widget.money,
-          scale: s,
-        ),
-      if (existing.othersPending > 0)
-        MqttExistingNoticeTile(
-          scale: s,
-          icon: Icons.arrow_upward,
-          color: mqttExistingStatusStyle(MqttExistingStatus.naPutu, dark).$1,
-          text: mqttOthersPendingText(existing.othersPending),
+      // The existing order as one animated block: placeholder rows until the
+      // kasa answers, the real rows cascading in, and an animated height so the
+      // new lines below slide down instead of jumping.
+      if (existing.hasContent)
+        MqttExistingSection(
+          key: const ValueKey('existing'),
+          showPlaceholders: existing.placeholders > 0,
+          separator: const Divider(height: 1),
+          placeholders: [
+            if (existing.loading)
+              MqttFadeIn(key: const ValueKey('loading'), child: loadingNotice),
+            for (var i = 0; i < existing.placeholders; i++)
+              MqttExistingSkeletonTile(
+                key: ValueKey('ph$i'),
+                index: i,
+                scale: s,
+              ),
+          ],
+          items: existingItems,
         ),
       if (existing.hasContent && lines.isNotEmpty)
         MqttOrderSectionLabel(text: 'Nove stavke', scale: s),
@@ -690,12 +815,33 @@ class _CartCardState extends State<_CartCard> {
                 style: TextStyle(color: scheme.onSurfaceVariant),
               ),
             )
-          : ListView.separated(
-              controller: _scroll,
-              padding: EdgeInsets.only(bottom: 2 * s),
-              itemCount: children.length,
-              separatorBuilder: (_, _) => const Divider(height: 1),
-              itemBuilder: (context, i) => children[i],
+          : NotificationListener<ScrollMetricsNotification>(
+              // The list's extent changed (rows built, a row added or grown):
+              // if we are following the end, catch up with it. Deferred a
+              // frame — this arrives during layout.
+              onNotification: (_) {
+                if (_followEnd) {
+                  WidgetsBinding.instance.addPostFrameCallback(
+                    (_) => _catchUp(),
+                  );
+                }
+                return false;
+              },
+              child: Listener(
+                // The waiter took over — a scroll, or a tap that can grow a row
+                // (expanding its napomene): stop pulling the list to the end.
+                onPointerDown: (_) {
+                  _followEnd = false;
+                  _glide.stop();
+                },
+                child: ListView.separated(
+                  controller: _scroll,
+                  padding: EdgeInsets.only(bottom: 2 * s),
+                  itemCount: children.length,
+                  separatorBuilder: (_, _) => const Divider(height: 1),
+                  itemBuilder: (context, i) => children[i],
+                ),
+              ),
             ),
     );
   }
