@@ -10,6 +10,7 @@ import '../models/mqtt_menu.dart';
 import '../state/mqtt_cart.dart';
 import '../state/mqtt_pending_transfers_provider.dart';
 import '../state/mqtt_table_contents.dart';
+import '../state/mqtt_tables_provider.dart';
 import 'mqtt_existing_items.dart';
 import 'mqtt_napomene.dart';
 import 'mqtt_qty_pad.dart';
@@ -25,6 +26,10 @@ double _screenScale(BuildContext context) {
 /// right-aligned column and the name never collides with them.
 const double _kAmountBaseWidth = 88;
 
+/// How long the ✓ stays on the send button after the kasa accepts, before the
+/// screen leaves. Long enough to register, short enough not to feel slow.
+const kMqttSendConfirmHold = Duration(milliseconds: 350);
+
 /// Details view for the MQTT order ("Stol X — detalji narudžbe"): the cart's
 /// lines with per-line quantity and napomene, operating on the shared
 /// [MqttCart]. "Pošalji narudžbu" delegates to [onSend] (owned by the order
@@ -39,6 +44,7 @@ class MqttOrderDetailsScreen extends ConsumerStatefulWidget {
     this.tableBroj,
     this.tableNaziv,
     this.onSend,
+    this.onSent,
     this.contents,
   });
 
@@ -57,6 +63,10 @@ class MqttOrderDetailsScreen extends ConsumerStatefulWidget {
   /// above the editable lines. Null when the table had no order.
   final MqttTableContents? contents;
 
+  /// Called after a successful send, once the ✓ has been shown. The order
+  /// screen uses it to close both screens in one step and apply the send.
+  final VoidCallback? onSent;
+
   @override
   ConsumerState<MqttOrderDetailsScreen> createState() =>
       _MqttOrderDetailsScreenState();
@@ -65,6 +75,13 @@ class MqttOrderDetailsScreen extends ConsumerStatefulWidget {
 class _MqttOrderDetailsScreenState
     extends ConsumerState<MqttOrderDetailsScreen> {
   bool _sending = false;
+
+  /// The kasa accepted the order and the ✓ is showing — see [_frozen].
+  bool _confirmed = false;
+
+  /// The first frame built after [_confirmed], returned as-is by every later
+  /// build, so nothing on this screen changes while it leaves.
+  Widget? _frozen;
 
   /// Reorder mode: rows collapse to one compact line with a drag handle and
   /// every editing control is hidden. Keeping it a separate mode is what makes
@@ -85,8 +102,23 @@ class _MqttOrderDetailsScreenState
     setState(() => _sending = true);
     final ok = await send();
     if (!mounted) return;
-    setState(() => _sending = false);
-    if (ok) Navigator.of(context).pop('sent');
+    setState(() {
+      _sending = false;
+      // ✓ in the same frame the spinner goes — and from here this screen is
+      // frozen (see build) until it has left.
+      _confirmed = ok;
+    });
+    if (!ok) return;
+    // Let the ✓ register, then hand back to the order screen, which closes
+    // both screens in one step and only then applies the send.
+    await Future<void>.delayed(kMqttSendConfirmHold);
+    if (!mounted) return;
+    final onSent = widget.onSent;
+    if (onSent != null) {
+      onSent();
+    } else {
+      Navigator.of(context).pop('sent');
+    }
   }
 
   String _name(int code) => byCode[code]?.name ?? 'Artikl $code';
@@ -148,6 +180,10 @@ class _MqttOrderDetailsScreenState
         ? const <MqttInTransitOrder>[]
         : (ref.watch(mqttPendingTransfersProvider)[broj] ??
             const <MqttInTransitOrder>[]);
+    // The kasa's total for this table from stolovi_stanje — already on the
+    // device, so Ukupno is right before the first query answer arrives.
+    final seedTotal =
+        broj == null ? null : ref.watch(mqttOccupiedProvider)[broj]?.iznos;
 
     return MediaQuery(
       data: MediaQuery.of(context).copyWith(
@@ -159,6 +195,9 @@ class _MqttOrderDetailsScreenState
           if (widget.contents != null) widget.contents!,
         ]),
         builder: (context, _) {
+          // After a successful send this screen shows its ✓ frame until gone.
+          final frozen = _frozen;
+          if (frozen != null) return frozen;
           final lines = cart.lines;
           final existing = MqttExistingItems.compute(
             contents: widget.contents,
@@ -166,6 +205,7 @@ class _MqttOrderDetailsScreenState
             byCode: byCode,
             remarkName: _remarkName,
             od: MqttService.instance.clientId,
+            seedTotal: seedTotal,
           );
           // The whole table: what is on it, what is travelling, and what is
           // about to be sent.
@@ -230,7 +270,11 @@ class _MqttOrderDetailsScreenState
                 horizontalPadding: 2,
               ),
           ];
-          return Scaffold(
+          // Once the kasa has accepted, nothing may be tapped: the ✓ is showing
+          // and the screen is about to leave.
+          final scaffold = IgnorePointer(
+            ignoring: _confirmed,
+            child: Scaffold(
             appBar: AppBar(
               titleSpacing: 0,
               title: Column(
@@ -345,10 +389,16 @@ class _MqttOrderDetailsScreenState
                         !_sending &&
                         widget.onSend != null,
                     onSend: _send,
+                    confirmed: _confirmed,
                   ),
               ],
             ),
+            ),
           );
+          // The first frame showing the ✓ is kept and returned by every later
+          // build, so nothing on this screen changes while it leaves.
+          if (_confirmed) _frozen = scaffold;
+          return scaffold;
         },
       ),
     );
@@ -740,12 +790,16 @@ class _BottomBar extends StatelessWidget {
     required this.sending,
     required this.canSend,
     required this.onSend,
+    this.confirmed = false,
   });
 
   final String total;
   final bool sending;
   final bool canSend;
   final VoidCallback onSend;
+
+  /// The kasa accepted the order — the send button shows ✓.
+  final bool confirmed;
 
   @override
   Widget build(BuildContext context) {
@@ -785,14 +839,25 @@ class _BottomBar extends StatelessWidget {
                 backgroundColor: sendBg,
                 foregroundColor: sendFg,
               ),
-              icon: sending
-                  ? SizedBox(
-                      width: 18,
-                      height: 18,
-                      child: CircularProgressIndicator(
-                          strokeWidth: 2, color: sendFg),
-                    )
-                  : const Icon(Icons.send),
+              // spinner → ✓ is a small scale-in, so the confirmation reads as
+              // the button finishing its job rather than an icon being swapped.
+              icon: AnimatedSwitcher(
+                duration: const Duration(milliseconds: 180),
+                transitionBuilder: (child, anim) =>
+                    ScaleTransition(scale: anim, child: child),
+                child: sending
+                    ? SizedBox(
+                        key: const ValueKey('busy'),
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(
+                            strokeWidth: 2, color: sendFg),
+                      )
+                    : Icon(
+                        confirmed ? Icons.check : Icons.send,
+                        key: ValueKey(confirmed ? 'done' : 'idle'),
+                      ),
+              ),
               label: const Text('Pošalji narudžbu'),
             ),
           ],

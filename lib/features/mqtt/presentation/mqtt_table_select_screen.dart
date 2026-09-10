@@ -13,6 +13,7 @@ import '../models/mqtt_tables.dart';
 import '../state/mqtt_orders_provider.dart';
 import '../state/mqtt_pending_transfers_provider.dart';
 import '../state/mqtt_tables_provider.dart';
+import '../state/mqtt_users_provider.dart';
 
 // ── SVG assets (see assets/table_select) ───────────────────────────────────
 // Two theme-specific chair sprites, each with its own per-part colours
@@ -53,7 +54,7 @@ Future<void> precacheTableSelectSvgs() async {
 enum _TileStatus {
   free, // openable → new order
   order, // your in-progress local order → openable, editable
-  occupiedMine, // occupied by you → order screen, existing lines read-only
+  occupiedMine, // yours (or your order is arriving) → order screen, read-only lines
   occupiedOther, // occupied by a colleague → openable only with pravo 008
 }
 
@@ -61,14 +62,14 @@ enum _TileStatus {
 /// separate from [_TileStatus] so the answer never competes with the tile's
 /// colour for the same pixels.
 enum _SendMark {
-  /// Nothing ordered here — nothing to report.
+  /// No badge: nothing ordered here, or only an unsent draft (which the blue
+  /// tile already shows on a free table) — neither on its way nor arrived.
   none,
 
-  /// Something is outstanding: a local draft that was never accepted, or an
-  /// accepted order the kasa has not yet moved onto the table. Amber ↑.
+  /// Accepted by the kasa, not yet on the table — "šalje se". Amber ↑.
   pending,
 
-  /// Everything this device knows about has reached the table. Green ✓.
+  /// Everything sent from this device has reached the table. Green ✓.
   sent,
 }
 
@@ -119,6 +120,15 @@ class _MqttTableSelectScreenState extends ConsumerState<MqttTableSelectScreen> {
         ref.watch(mqttPendingTransfersProvider).keys.toSet();
     final me = ref.watch(currentUserProvider);
     final myCuser = me?.code;
+    // Our own short name as the kasa shows it (naziv), for a table whose order
+    // is still arriving and so isn't in stolovi_stanje yet.
+    String? myName;
+    for (final u in ref.watch(mqttUsersProvider)) {
+      if (u.code == myCuser) {
+        myName = u.name;
+        break;
+      }
+    }
     // Pravo 008: may open a table held by another waiter.
     final canOpenAll = me?.allTablesOpenRight ?? false;
     final columns = _columns(ref.watch(settingsProvider).tableViewSize);
@@ -146,7 +156,7 @@ class _MqttTableSelectScreenState extends ConsumerState<MqttTableSelectScreen> {
           child: zones.isEmpty
               ? const _EmptyTables()
               : _buildBody(zones, occupied, withOrders, pendingTransfer,
-                  myCuser, canOpenAll, columns),
+                  myCuser, myName, canOpenAll, columns),
         ),
       ),
     );
@@ -158,6 +168,7 @@ class _MqttTableSelectScreenState extends ConsumerState<MqttTableSelectScreen> {
     Set<int> withOrders,
     Set<int> pendingTransfer,
     String? myCuser,
+    String? myName,
     bool canOpenAll,
     int columns,
   ) {
@@ -184,6 +195,7 @@ class _MqttTableSelectScreenState extends ConsumerState<MqttTableSelectScreen> {
                       withOrders: withOrders,
                       pendingTransfer: pendingTransfer,
                       myCuser: myCuser,
+                      myName: myName,
                       canOpenAll: canOpenAll,
                       columns: columns,
                       showName: columns < 4, // drop naziv at "small"
@@ -248,6 +260,7 @@ class _PagedTableGrid extends StatelessWidget {
     required this.withOrders,
     required this.pendingTransfer,
     required this.myCuser,
+    required this.myName,
     required this.canOpenAll,
     required this.columns,
     required this.showName,
@@ -261,6 +274,9 @@ class _PagedTableGrid extends StatelessWidget {
   /// Tables whose accepted order the kasa has not yet moved onto the table.
   final Set<int> pendingTransfer;
   final String? myCuser;
+
+  /// Our own naziv — shown on a table whose order is still arriving.
+  final String? myName;
 
   /// Whether this waiter holds pravo 008 (may open colleagues' tables).
   final bool canOpenAll;
@@ -276,19 +292,27 @@ class _PagedTableGrid extends StatelessWidget {
           ? _TileStatus.occupiedMine
           : _TileStatus.occupiedOther;
     }
+    // Sent from this phone and accepted, but the kasa hasn't put it on the table
+    // yet, so it isn't in stolovi_stanje. Show it as ours straight away — the
+    // amber ↑ says it is still arriving — so that when it lands only the badge
+    // changes, instead of a grey "free" table suddenly turning teal.
+    if (pendingTransfer.contains(table.broj)) return _TileStatus.occupiedMine;
     return withOrders.contains(table.broj)
         ? _TileStatus.order
         : _TileStatus.free;
   }
 
-  /// Independent of [_statusFor]: a draft on an ALREADY OCCUPIED table (added
-  /// via "Dodaj stavke") is exactly the case the status colour cannot show,
-  /// since occupancy wins there.
+  /// The corner badge — independent of [_statusFor], so it answers a different
+  /// question from the tile's colour: where is the order on its journey?
+  ///
+  /// Amber ↑ only while the kasa has an order but hasn't put it on the table;
+  /// green ✓ once everything has landed. An unsent draft gets NO badge: nothing
+  /// is on its way, so ↑ would suggest something was sent — and it must also
+  /// stop an occupied table falling through to ✓, which would claim an unsent
+  /// addition had arrived.
   _SendMark _markFor(MqttTable table) {
-    if (withOrders.contains(table.broj) ||
-        pendingTransfer.contains(table.broj)) {
-      return _SendMark.pending;
-    }
+    if (pendingTransfer.contains(table.broj)) return _SendMark.pending;
+    if (withOrders.contains(table.broj)) return _SendMark.none;
     // Everything on the table has landed — but only mark a table that actually
     // has an order; an empty table has nothing to report.
     return occupied.containsKey(table.broj) ? _SendMark.sent : _SendMark.none;
@@ -332,7 +356,11 @@ class _PagedTableGrid extends StatelessWidget {
                   table: table,
                   status: status,
                   showName: showName,
-                  occupantName: occupied[table.broj]?.konobar,
+                  // While our order is still arriving the table isn't in
+                  // stolovi_stanje yet, so show our own name — the one the kasa
+                  // will show once it lands, so nothing changes then.
+                  occupantName: occupied[table.broj]?.konobar ??
+                      (pendingTransfer.contains(table.broj) ? myName : null),
                   canOpenAll: canOpenAll,
                   mark: _markFor(table),
                   onTap: () =>

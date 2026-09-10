@@ -27,6 +27,14 @@ class MqttTableContents extends ChangeNotifier {
   /// Waiting for the FIRST answer.
   bool loading = false;
 
+  /// [loading], and slow enough to be worth saying so. A quick answer — the
+  /// usual case — never shows a loading row at all, so the list doesn't flash
+  /// "Učitavanje…" for a moment before the items replace it.
+  bool get showLoading => loading && _slow;
+  bool _slow = false;
+  Timer? _slowTimer;
+  static const _loadingGrace = Duration(milliseconds: 400);
+
   /// Why the kasa couldn't be asked — only set while there is no [reply] yet.
   String? error;
 
@@ -52,7 +60,13 @@ class MqttTableContents extends ChangeNotifier {
     _inFlight = true;
     if (reply == null) {
       loading = true;
-      notifyListeners();
+      // Deliberately not shown yet: the loading row appears only if the answer
+      // is slow (see [showLoading]).
+      _slowTimer ??= Timer(_loadingGrace, () {
+        if (_disposed || !loading) return;
+        _slow = true;
+        notifyListeners();
+      });
     }
     try {
       final result = await MqttTableQuerySender.instance.ask(stol);
@@ -68,6 +82,9 @@ class MqttTableContents extends ChangeNotifier {
             result.message.isNotEmpty ? result.message : 'Kasa ne odgovara.';
       }
       loading = false;
+      _slow = false;
+      _slowTimer?.cancel();
+      _slowTimer = null;
       notifyListeners();
 
       _timer?.cancel();
@@ -89,6 +106,7 @@ class MqttTableContents extends ChangeNotifier {
   void dispose() {
     _disposed = true;
     _timer?.cancel();
+    _slowTimer?.cancel();
     super.dispose();
   }
 }

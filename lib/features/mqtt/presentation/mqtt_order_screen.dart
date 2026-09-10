@@ -3,7 +3,6 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
 
 import '../../auth/state/session_provider.dart';
@@ -76,6 +75,26 @@ class _MqttOrderScreenState extends ConsumerState<MqttOrderScreen> {
   /// existing order — then there is nothing to load and nothing to show.
   MqttTableContents? _contents;
 
+  /// The kasa accepted the order and the ✓ is showing. From here the screen is
+  /// on its way out: input is ignored and it no longer changes.
+  bool _confirmed = false;
+
+  /// The first frame built after [_confirmed], returned as-is by every later
+  /// build — so nothing that happens next (dropping the draft, lines moving to
+  /// "šalje se") can be seen before the screen has left.
+  Widget? _frozen;
+
+  /// Leaving after a send has started — guards against leaving twice.
+  bool _leaving = false;
+
+  /// What a successful send still has to apply once the screen is leaving.
+  _SendCommit? _pendingCommit;
+
+  // Captured in initState: the send is applied while the screen is leaving,
+  // when `ref` may no longer be used.
+  late final MqttOrdersNotifier _ordersNotifier;
+  late final MqttPendingTransfersNotifier _transfersNotifier;
+
   // Rebuilt each build from the current menu — maps article code → article.
   final _byCode = <int, MqttArticle>{};
   MqttMenu _menu = MqttMenu.empty;
@@ -90,6 +109,8 @@ class _MqttOrderScreenState extends ConsumerState<MqttOrderScreen> {
   @override
   void initState() {
     super.initState();
+    _ordersNotifier = ref.read(mqttOrdersProvider.notifier);
+    _transfersNotifier = ref.read(mqttPendingTransfersProvider.notifier);
     // Restore any in-progress order for this table (kept for the session), then
     // start listening so subsequent edits are saved back.
     final broj = widget.tableBroj;
@@ -124,6 +145,19 @@ class _MqttOrderScreenState extends ConsumerState<MqttOrderScreen> {
 
   @override
   void dispose() {
+    // Left some other way during the ✓ hold (e.g. back): the send still stands,
+    // so apply it — after this frame, since providers must not change while the
+    // widget tree is being torn down.
+    final commit = _pendingCommit;
+    if (commit != null) {
+      _pendingCommit = null;
+      final orders = _ordersNotifier;
+      final transfers = _transfersNotifier;
+      Future.microtask(() {
+        orders.clear(commit.broj);
+        transfers.watchTable(commit.broj, commit.sent);
+      });
+    }
     _contents?.removeListener(_onContents);
     _contents?.dispose();
     _cart.removeListener(_onCart);
@@ -205,12 +239,18 @@ class _MqttOrderScreenState extends ConsumerState<MqttOrderScreen> {
       groupArticles: ref.read(settingsProvider).shouldGroupArticles,
     );
     if (!mounted) return result.isOk;
-    setState(() => _sending = false);
+    setState(() {
+      _sending = false;
+      // The ✓ replaces the spinner in the same frame, so there is no flash of
+      // the plain send icon between "sending" and "sent". Setting it also
+      // freezes the screen (see build) until it has left.
+      _confirmed = result.isOk;
+    });
 
     if (result.isOk) {
       // Keep what was sent: until the kasa moves these lines onto the table its
       // query reply only COUNTS them, so this copy is the only way to show them
-      // as "na putu". Captured before the cart is cleared.
+      // as "šalje se".
       final sent = MqttInTransitOrder(
         msgId: msgId,
         lines: [for (final l in _cart.lines) l.copy()],
@@ -218,16 +258,11 @@ class _MqttOrderScreenState extends ConsumerState<MqttOrderScreen> {
             ? groupCartLines(_cart.lines).length
             : _cart.lines.length,
       );
-      // Accepted — drop the local order for this table.
-      orders.clear(broj);
-      _cart.clear();
-      // ...but the kasa still has to move the lines ONTO the table, which can
-      // take a while. Keep the floor plan marked until it has.
-      ref.read(mqttPendingTransfersProvider.notifier).watchTable(broj, sent);
-      // No snackbar on success: the screen pops straight back to the floor plan
-      // and the table gains its badge, so a message would only repeat what is
-      // already on screen. A light tap confirms it without asking the waiter to
-      // read anything — and stays clearly below the send-tile thump.
+      // Nothing changes on screen yet: the draft is dropped and the transfer
+      // watched only once the screen is leaving — see [_commitSend].
+      _pendingCommit = _SendCommit(broj, sent);
+      // No snackbar on success: the ✓ on the button is the confirmation. A
+      // light tap goes with it — clearly below the article-tile thump.
       HapticFeedback.lightImpact();
     } else if (result.needsNewMsgId) {
       // Expired / never sent: the next attempt must be a NEW order.
@@ -252,7 +287,33 @@ class _MqttOrderScreenState extends ConsumerState<MqttOrderScreen> {
   Future<void> _send() async {
     final ok = await _sendOrder();
     if (!mounted || !ok) return;
-    if (context.canPop()) context.pop();
+    // Let the ✓ register — an instant jump straight after a network wait is
+    // what reads as a glitch — then leave.
+    await Future<void>.delayed(kMqttSendConfirmHold);
+    if (!mounted) return;
+    _leave();
+  }
+
+  /// Returns to the floor plan in ONE step — closing the details screen too if
+  /// it is open, instead of two pops in a row — and only then applies the send.
+  /// Both screens are frozen by now, so the change is never seen on them.
+  void _leave() {
+    if (_leaving) return;
+    _leaving = true;
+    Navigator.of(context).popUntil((route) => route.isFirst);
+    _commitSend();
+  }
+
+  /// Applies a successful send: drops the table's draft and starts watching the
+  /// transfer. Deliberately deferred until the screen is leaving — doing it at
+  /// the moment of success is what made the lines jump into the existing
+  /// section and turn amber before the screen left.
+  void _commitSend() {
+    final commit = _pendingCommit;
+    if (commit == null) return;
+    _pendingCommit = null;
+    _ordersNotifier.clear(commit.broj);
+    _transfersNotifier.watchTable(commit.broj, commit.sent);
   }
 
   /// Opens the details screen on the same cart (edit quantities/remarks/delete).
@@ -271,15 +332,20 @@ class _MqttOrderScreenState extends ConsumerState<MqttOrderScreen> {
               tableBroj: widget.tableBroj,
               tableNaziv: widget.tableNaziv,
               onSend: _sendOrder,
+              onSent: _leave,
               contents: _contents,
             ),
           ),
         )
         .then((result) {
-          if (!mounted) return;
-          // The order was sent from the details screen — leave the table entirely.
-          if (result == 'sent') {
-            if (context.canPop()) context.pop();
+          // Already leaving after a send from details: both screens close
+          // together, so leave the nav bar alone on the way out.
+          if (!mounted || _leaving) return;
+          // Sent from details but closed before the ✓ finished (e.g. back): the
+          // send stands, so finish leaving from here rather than sit on a
+          // frozen screen.
+          if (_confirmed) {
+            _leave();
             return;
           }
           SystemChrome.setEnabledSystemUIMode(
@@ -337,6 +403,9 @@ class _MqttOrderScreenState extends ConsumerState<MqttOrderScreen> {
 
   @override
   Widget build(BuildContext context) {
+    // After a successful send the screen shows its ✓ frame until it has left.
+    final frozen = _frozen;
+    if (frozen != null) return frozen;
     _menu = ref.watch(mqttMenuProvider);
     final groups = _menu.groups;
     _byCode
@@ -362,6 +431,10 @@ class _MqttOrderScreenState extends ConsumerState<MqttOrderScreen> {
       byCode: _byCode,
       remarkName: _menu.remarkName,
       od: MqttService.instance.clientId,
+      // Already on the device, so the total is right before the kasa answers.
+      seedTotal: tableBroj == null
+          ? null
+          : ref.watch(mqttOccupiedProvider)[tableBroj]?.iznos,
     );
     // Re-ask when the kasa announces a change on this table.
     if (_contents != null) {
@@ -389,97 +462,106 @@ class _MqttOrderScreenState extends ConsumerState<MqttOrderScreen> {
         _selectedGroupId ?? (groups.isEmpty ? null : groups.first.id);
     final articles = _visibleArticles(groups);
 
-    return MediaQuery(
+    final screen = MediaQuery(
       data: MediaQuery.of(context).copyWith(
         textScaler: MediaQuery.textScalerOf(context).clamp(maxScaleFactor: 1.3),
       ),
-      child: Scaffold(
-        appBar: AppBar(title: Text(title)),
-        body: groups.isEmpty
-            ? const _EmptyMenu()
-            : SafeArea(
-                child: Column(
-                  children: [
-                    // ── Order (cart) + actions ──────────────────────────────
-                    Expanded(
-                      flex: 5,
-                      child: Padding(
-                        padding: const EdgeInsets.fromLTRB(8, 0, 8, 2),
-                        child: Row(
-                          crossAxisAlignment: CrossAxisAlignment.stretch,
-                          children: [
-                            Expanded(
-                              child: _CartCard(
-                                cart: _cart,
-                                byCode: _byCode,
-                                money: _money,
-                                remarksFor: _remarksFor,
-                                existing: existing,
-                                onRetryExisting: () =>
-                                    _contents?.refresh(refill: true),
+      // Once the kasa has accepted, nothing may be tapped: the ✓ is showing and
+      // the screen is about to leave.
+      child: IgnorePointer(
+        ignoring: _confirmed,
+        child: Scaffold(
+          appBar: AppBar(title: Text(title)),
+          body: groups.isEmpty
+              ? const _EmptyMenu()
+              : SafeArea(
+                  child: Column(
+                    children: [
+                      // ── Order (cart) + actions ──────────────────────────────
+                      Expanded(
+                        flex: 5,
+                        child: Padding(
+                          padding: const EdgeInsets.fromLTRB(8, 0, 8, 2),
+                          child: Row(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              Expanded(
+                                child: _CartCard(
+                                  cart: _cart,
+                                  byCode: _byCode,
+                                  money: _money,
+                                  remarksFor: _remarksFor,
+                                  existing: existing,
+                                  onRetryExisting: () =>
+                                      _contents?.refresh(refill: true),
+                                ),
                               ),
+                              const SizedBox(width: 10),
+                              _ActionColumn(
+                                sending: _sending,
+                                confirmed: _confirmed,
+                                onClear: hasItems && !_sending
+                                    ? _confirmClear
+                                    : null,
+                                // Details also opens on the existing order alone,
+                                // to read it — sending still needs new lines.
+                                onDetails:
+                                    (hasItems || existing.rows.isNotEmpty) &&
+                                        !_sending
+                                    ? _openDetails
+                                    : null,
+                                onSend: hasItems && !_sending ? _send : null,
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+
+                      // ── Total (+ search toggle) ─────────────────────────────
+                      _TotalBar(
+                        // The whole table: what is on it, what is travelling,
+                        // and what is about to be sent.
+                        total: _money.format(existing.total + _cartTotal),
+                        searching: _searching,
+                        onToggleSearch: _toggleSearch,
+                      ),
+
+                      // ── Article picker ──────────────────────────────────────
+                      Expanded(
+                        flex: 6,
+                        child: Column(
+                          children: [
+                            _PickerBar(
+                              groups: groups,
+                              size: menuSize,
+                              selectedId: selectedId,
+                              searching: _searching,
+                              searchController: _searchController,
+                              onSelectGroup: (id) => setState(() {
+                                _selectedGroupId = id;
+                                _query = '';
+                              }),
+                              onQuery: (q) => setState(() => _query = q),
                             ),
-                            const SizedBox(width: 10),
-                            _ActionColumn(
-                              sending: _sending,
-                              onClear: hasItems && !_sending
-                                  ? _confirmClear
-                                  : null,
-                              // Details also opens on the existing order alone,
-                              // to read it — sending still needs new lines.
-                              onDetails:
-                                  (hasItems || existing.rows.isNotEmpty) &&
-                                      !_sending
-                                  ? _openDetails
-                                  : null,
-                              onSend: hasItems && !_sending ? _send : null,
+                            Expanded(
+                              child: _ArticleGrid(
+                                articles: articles,
+                                size: menuSize,
+                                onAdd: _cart.addLine,
+                              ),
                             ),
                           ],
                         ),
                       ),
-                    ),
-
-                    // ── Total (+ search toggle) ─────────────────────────────
-                    _TotalBar(
-                      // The whole table: what is on it, what is travelling,
-                      // and what is about to be sent.
-                      total: _money.format(existing.total + _cartTotal),
-                      searching: _searching,
-                      onToggleSearch: _toggleSearch,
-                    ),
-
-                    // ── Article picker ──────────────────────────────────────
-                    Expanded(
-                      flex: 6,
-                      child: Column(
-                        children: [
-                          _PickerBar(
-                            groups: groups,
-                            size: menuSize,
-                            selectedId: selectedId,
-                            searching: _searching,
-                            searchController: _searchController,
-                            onSelectGroup: (id) => setState(() {
-                              _selectedGroupId = id;
-                              _query = '';
-                            }),
-                            onQuery: (q) => setState(() => _query = q),
-                          ),
-                          Expanded(
-                            child: _ArticleGrid(
-                              articles: articles,
-                              size: menuSize,
-                              onAdd: _cart.addLine,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
-              ),
+        ),
       ),
     );
+    // The first frame showing the ✓ is kept and returned by every later build.
+    if (_confirmed) _frozen = screen;
+    return screen;
   }
 }
 
@@ -596,7 +678,12 @@ class _CartCardState extends State<_CartCard> {
         borderRadius: BorderRadius.circular(14 * s),
         side: BorderSide(color: scheme.outlineVariant.withValues(alpha: 0.5)),
       ),
-      child: children.isEmpty
+      // While the kasa's first answer is on its way the card stays blank: the
+      // items are coming, and saying "Nema stavki" for a moment is exactly the
+      // flash we don't want. The empty text only appears once that is true.
+      child: children.isEmpty && existing.awaiting
+          ? const SizedBox.shrink()
+          : children.isEmpty
           ? Center(
               child: Text(
                 'Nema stavki u narudžbi',
@@ -826,12 +913,16 @@ class _NoteButton extends StatelessWidget {
 class _ActionColumn extends StatelessWidget {
   const _ActionColumn({
     required this.sending,
+    required this.confirmed,
     required this.onClear,
     required this.onDetails,
     required this.onSend,
   });
 
   final bool sending;
+
+  /// The kasa accepted the order — the send button shows ✓.
+  final bool confirmed;
   final VoidCallback? onClear;
   final VoidCallback? onDetails;
   final VoidCallback? onSend;
@@ -874,6 +965,7 @@ class _ActionColumn extends StatelessWidget {
                 icon: Icons.send,
                 tone: _Tone.primary,
                 busy: sending,
+                confirmed: confirmed,
                 onTap: onSend,
                 width: width,
                 height: btn,
@@ -896,6 +988,7 @@ class _ActionButton extends StatelessWidget {
     required this.width,
     required this.height,
     this.busy = false,
+    this.confirmed = false,
   });
 
   final IconData icon;
@@ -904,6 +997,7 @@ class _ActionButton extends StatelessWidget {
   final double width;
   final double height;
   final bool busy;
+  final bool confirmed;
 
   @override
   Widget build(BuildContext context) {
@@ -936,18 +1030,31 @@ class _ActionButton extends StatelessWidget {
           child: SizedBox(
             width: width,
             height: height,
-            child: busy
-                ? Center(
-                    child: SizedBox(
-                      width: iconSize * 0.85,
-                      height: iconSize * 0.85,
-                      child: CircularProgressIndicator(
-                        strokeWidth: 2.5,
-                        color: fg,
+            // spinner → ✓ is a small scale-in, so the confirmation reads as the
+            // button finishing its job rather than an icon being swapped.
+            child: AnimatedSwitcher(
+              duration: const Duration(milliseconds: 180),
+              transitionBuilder: (child, anim) =>
+                  ScaleTransition(scale: anim, child: child),
+              child: busy
+                  ? Center(
+                      key: const ValueKey('busy'),
+                      child: SizedBox(
+                        width: iconSize * 0.85,
+                        height: iconSize * 0.85,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2.5,
+                          color: fg,
+                        ),
                       ),
+                    )
+                  : Icon(
+                      confirmed ? Icons.check : icon,
+                      key: ValueKey(confirmed ? 'done' : 'idle'),
+                      color: fg,
+                      size: iconSize,
                     ),
-                  )
-                : Icon(icon, color: fg, size: iconSize),
+            ),
           ),
         ),
       ),
@@ -1287,4 +1394,13 @@ class _EmptyMenu extends StatelessWidget {
       ),
     );
   }
+}
+
+/// The part of a successful send that is applied only once the order screen is
+/// leaving: drop the table's draft and start watching the transfer.
+class _SendCommit {
+  const _SendCommit(this.broj, this.sent);
+
+  final int broj;
+  final MqttInTransitOrder sent;
 }

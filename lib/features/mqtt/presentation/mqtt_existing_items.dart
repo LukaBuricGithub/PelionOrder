@@ -101,6 +101,7 @@ class MqttExistingItems {
     required this.othersPending,
     required this.total,
     required this.loading,
+    required this.awaiting,
     required this.error,
   });
 
@@ -109,6 +110,7 @@ class MqttExistingItems {
     othersPending: 0,
     total: 0,
     loading: false,
+    awaiting: false,
     error: null,
   );
 
@@ -123,8 +125,13 @@ class MqttExistingItems {
   /// table, plus this phone's travelling lines.
   final double total;
 
-  /// Waiting for the first answer from the kasa.
+  /// Show the loading row: the first answer is taking a while.
   final bool loading;
+
+  /// Still waiting for the kasa's first answer — true from the moment the
+  /// screen opens, before [loading] starts showing — so the order list can stay
+  /// blank instead of briefly claiming "Nema stavki u narudžbi".
+  final bool awaiting;
 
   /// The kasa couldn't be asked and there is no earlier answer to show.
   final String? error;
@@ -138,6 +145,9 @@ class MqttExistingItems {
     required Map<int, MqttArticle> byCode,
     required String Function(String cnap) remarkName,
     required String? od,
+    // The kasa's own total for the table from stolovi_stanje, used until the
+    // first query answer arrives.
+    double? seedTotal,
   }) {
     if (contents == null && inTransit.isEmpty) return none;
     final reply = contents?.reply;
@@ -181,6 +191,10 @@ class MqttExistingItems {
         ));
       }
       total += reply.ukupno;
+    } else if (seedTotal != null) {
+      // No answer yet: use the total the device already holds, so Ukupno is
+      // right from the first frame instead of jumping when the answer lands.
+      total += seedTotal;
     }
 
     // ...then what this phone sent that has not landed yet.
@@ -210,7 +224,8 @@ class MqttExistingItems {
       rows: rows,
       othersPending: others > 0 ? others : 0,
       total: total,
-      loading: reply == null && (contents?.loading ?? false),
+      loading: reply == null && (contents?.showLoading ?? false),
+      awaiting: contents != null && reply == null && contents.error == null,
       error: reply == null ? contents?.error : null,
     );
   }
