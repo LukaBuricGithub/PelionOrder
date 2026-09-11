@@ -140,7 +140,7 @@ class _CashRegisterScreenState extends ConsumerState<CashRegisterScreen> {
                   onTap: () => context.push('/mqtt-tables'),
                 ),
                 _MenuButton(
-                  icon: Icons.cloud_upload_outlined,
+                  icon: Icons.schedule_send_outlined,
                   label: 'Neposlane narudžbe',
                   count: unsentCount,
                   onTap: () => context.push('/mqtt-outbox'),

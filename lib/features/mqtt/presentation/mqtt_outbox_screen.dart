@@ -19,7 +19,7 @@ import 'mqtt_qty_pad.dart' show formatQtyWithUnit;
 /// A waiter sees their own orders; pravo 008 sees all. Waiting orders need
 /// nothing — they are resent automatically as themselves. Refused and expired
 /// orders wait here for the waiter, who sends them again (as new orders) or
-/// deletes them, one table at a time.
+/// deletes them — per table, or all of them at once from the bottom bar.
 class MqttOutboxScreen extends ConsumerWidget {
   const MqttOutboxScreen({super.key});
 
@@ -49,18 +49,23 @@ class MqttOutboxScreen extends ConsumerWidget {
       byTable.putIfAbsent(o.stol, () => []).add(o);
     }
 
+    // Everything the waiter could send again right now, across all tables.
+    final resendable = [
+      for (final o in orders)
+        if (o.needsWaiter) o,
+    ];
+
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Neposlane narudžbe'),
-        actions: [
-          if (orders.any((o) => o.status == MqttOutboxStatus.waiting))
-            IconButton(
-              icon: const Icon(Icons.refresh),
-              tooltip: 'Pošalji odmah',
-              onPressed: () => ref.read(mqttOutboxProvider.notifier).retryNow(),
+      appBar: AppBar(title: const Text('Neposlane narudžbe')),
+      // One tap for several tables — only worth a bar once there is more than
+      // one order to send; a single one has its own button on its table.
+      bottomNavigationBar: resendable.length < 2
+          ? null
+          : _ResendAllBar(
+              count: resendable.length,
+              onPressed: () =>
+                  _confirmResendAll(context, ref, resendable, allowed),
             ),
-        ],
-      ),
       body: orders.isEmpty
           ? const _Empty()
           : ListView(
@@ -115,7 +120,48 @@ class MqttOutboxScreen extends ConsumerWidget {
     ref
         .read(mqttOutboxProvider.notifier)
         .resendAsNew(
-          stol,
+          stol: stol,
+          allowed: allowed,
+          groupArticles: ref.read(settingsProvider).shouldGroupArticles,
+        );
+  }
+
+  Future<void> _confirmResendAll(
+    BuildContext context,
+    WidgetRef ref,
+    List<MqttOutboxOrder> resendable,
+    bool Function(MqttOutboxOrder) allowed,
+  ) async {
+    final count = resendable.length;
+    final tables = {for (final o in resendable) o.stol}.toList()..sort();
+    final where = tables.length == 1
+        ? 'stol ${tables.first}'
+        : 'stolovi ${tables.join(', ')}';
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Pošalji sve ponovno'),
+        content: Text(
+          'Kasa nije zaprimila $count ${_narudzbuForm(count)} ($where). '
+          'Poslati ih ponovno kao nove narudžbe?',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Odustani'),
+          ),
+          FilledButton.icon(
+            onPressed: () => Navigator.pop(ctx, true),
+            icon: const Icon(Icons.send, size: 18),
+            label: const Text('Pošalji sve'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !context.mounted) return;
+    ref
+        .read(mqttOutboxProvider.notifier)
+        .resendAsNew(
           allowed: allowed,
           groupArticles: ref.read(settingsProvider).shouldGroupArticles,
         );
@@ -172,6 +218,58 @@ class MqttOutboxScreen extends ConsumerWidget {
   }
 }
 
+/// "narudžbu / narudžbe / narudžbi" for [n], as it follows a number in the
+/// accusative: 1 narudžbu, 2–4 narudžbe, 5+ narudžbi (11–14 take the 5+ form).
+String _narudzbuForm(int n) {
+  final last = n % 10;
+  final lastTwo = n % 100;
+  if (last == 1 && lastTwo != 11) return 'narudžbu';
+  if (last >= 2 && last <= 4 && (lastTwo < 12 || lastTwo > 14)) {
+    return 'narudžbe';
+  }
+  return 'narudžbi';
+}
+
+/// The bottom bar sending every refused / expired order again at once.
+class _ResendAllBar extends StatelessWidget {
+  const _ResendAllBar({required this.count, required this.onPressed});
+
+  final int count;
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: scheme.surface,
+        border: Border(top: BorderSide(color: scheme.outlineVariant)),
+      ),
+      child: SafeArea(
+        top: false,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
+          child: SizedBox(
+            width: double.infinity,
+            height: 52,
+            child: FilledButton.icon(
+              onPressed: onPressed,
+              icon: const Icon(Icons.send),
+              label: Text(
+                'Pošalji sve ponovno ($count)',
+                style: const TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _Empty extends StatelessWidget {
   const _Empty();
 
@@ -197,6 +295,8 @@ class _Empty extends StatelessWidget {
   }
 }
 
+/// The explanation at the top of the list, as an information bubble. Tinted
+/// amber while there is no connection: then it is news, not just a hint.
 class _Intro extends StatelessWidget {
   const _Intro({required this.connected});
 
@@ -205,15 +305,42 @@ class _Intro extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(4, 4, 4, 12),
-      child: Text(
-        connected
-            ? 'Narudžbe koje čekaju potvrdu šalju se automatski. Odbijene i '
-                  'istekle pošaljite ponovno ili obrišite.'
-            : 'Nema veze s kasom. Narudžbe koje čekaju potvrdu poslat će se '
-                  'automatski kad se veza vrati.',
-        style: TextStyle(fontSize: 13, color: scheme.onSurfaceVariant),
+    final dark = Theme.of(context).brightness == Brightness.dark;
+    final accent = connected
+        ? scheme.primary
+        : (dark ? const Color(0xFFF4A83A) : const Color(0xFFE8890C));
+    return Container(
+      margin: const EdgeInsets.fromLTRB(0, 4, 0, 12),
+      padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+      decoration: BoxDecoration(
+        color: accent.withValues(alpha: dark ? 0.16 : 0.10),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: accent.withValues(alpha: 0.35)),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(
+            connected ? Icons.info_outline : Icons.wifi_off_rounded,
+            size: 20,
+            color: accent,
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              connected
+                  ? 'Narudžbe koje čekaju potvrdu šalju se automatski. '
+                        'Odbijene i istekle pošaljite ponovno ili obrišite.'
+                  : 'Nema veze s kasom. Narudžbe koje čekaju potvrdu poslat '
+                        'će se automatski kad se veza vrati.',
+              style: TextStyle(
+                fontSize: 13.5,
+                height: 1.3,
+                color: scheme.onSurface,
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -249,8 +376,11 @@ class _TableCard extends StatelessWidget {
 
     return Card(
       margin: const EdgeInsets.only(bottom: 12),
+      clipBehavior: Clip.antiAlias,
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(14, 12, 14, 6),
+        // No top/right padding: the delete target reaches the card's corner
+        // and pads its own icon.
+        padding: const EdgeInsets.only(left: 14, bottom: 6),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
@@ -275,28 +405,54 @@ class _TableCard extends StatelessWidget {
                     ),
                   ),
                 ),
+                // Delete: a small icon with a big invisible hit area filling
+                // the card's top-right corner — easy to hit, like the ✕ on a
+                // cart line in Stol X — and well away from "Pošalji ponovno".
+                Semantics(
+                  button: true,
+                  label: 'Obriši narudžbe za stol $stol',
+                  child: GestureDetector(
+                    onTap: onDelete,
+                    behavior: HitTestBehavior.opaque,
+                    child: Padding(
+                      padding: const EdgeInsets.fromLTRB(28, 12, 14, 12),
+                      child: Icon(
+                        Icons.delete_outline,
+                        size: 22,
+                        color: scheme.error,
+                      ),
+                    ),
+                  ),
+                ),
               ],
             ),
-            for (final o in orders)
-              _OrderBlock(order: o, byCode: byCode, remarkName: remarkName),
-            const SizedBox(height: 4),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.end,
-              children: [
-                TextButton.icon(
-                  onPressed: onDelete,
-                  icon: Icon(Icons.delete_outline, color: scheme.error),
-                  label: Text('Obriši', style: TextStyle(color: scheme.error)),
-                ),
-                if (canResend) ...[
-                  const SizedBox(width: 8),
-                  FilledButton.icon(
-                    onPressed: onResend,
-                    icon: const Icon(Icons.send, size: 18),
-                    label: const Text('Pošalji ponovno'),
-                  ),
+            Padding(
+              padding: const EdgeInsets.only(right: 14),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  for (final o in orders)
+                    _OrderBlock(
+                      order: o,
+                      byCode: byCode,
+                      remarkName: remarkName,
+                    ),
+                  if (canResend)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 10, bottom: 4),
+                      child: Align(
+                        alignment: Alignment.centerRight,
+                        child: FilledButton.icon(
+                          onPressed: onResend,
+                          icon: const Icon(Icons.send, size: 18),
+                          label: const Text('Pošalji ponovno'),
+                        ),
+                      ),
+                    )
+                  else
+                    const SizedBox(height: 8),
                 ],
-              ],
+              ),
             ),
           ],
         ),

@@ -258,14 +258,12 @@ class MqttOutboxNotifier extends StateNotifier<List<MqttOutboxOrder>> {
 
   // ── Called by "Neposlane narudžbe" ────────────────────────────────────────
 
-  /// Tries every waiting order now instead of at the next round.
-  Future<void> retryNow() => _pump();
-
-  /// Sends the refused / expired orders of [stol] that [allowed] permits again,
-  /// each as a NEW order (new msg_id, fresh time). The old ids are final on the
-  /// kasa and booked nothing, so this cannot duplicate.
-  void resendAsNew(
-    int stol, {
+  /// Sends the refused / expired orders that [allowed] permits again — those of
+  /// [stol], or of every table when [stol] is null — each as a NEW order (new
+  /// msg_id, fresh time). The old ids are final on the kasa and booked nothing,
+  /// so this cannot duplicate.
+  void resendAsNew({
+    int? stol,
     required bool Function(MqttOutboxOrder order) allowed,
     required bool groupArticles,
   }) {
@@ -273,7 +271,7 @@ class MqttOutboxNotifier extends StateNotifier<List<MqttOutboxOrder>> {
     final next = <MqttOutboxOrder>[];
     for (final o in state) {
       final eligible =
-          o.stol == stol &&
+          (stol == null || o.stol == stol) &&
           o.needsWaiter &&
           allowed(o) &&
           MqttOrderSender.instance.precheck(cuser: o.cuser, lines: o.lines) ==
