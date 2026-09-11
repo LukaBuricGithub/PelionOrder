@@ -56,8 +56,17 @@ class MqttPendingTransfersNotifier
   static const _interval = Duration(seconds: 3);
   static const _maxWatch = Duration(minutes: 5);
 
+  /// Tables whose last watch ended because the order LANDED — not because we
+  /// gave up on it. The floor plan uses this to keep such a table drawn as ours
+  /// until `stolovi_stanje` catches up, instead of flashing it free in between.
+  final _landed = <int>{};
+
+  /// Whether the watch on [stol] ended with its order on the table.
+  bool justLanded(int stol) => _landed.contains(stol);
+
   /// Starts watching [stol] — call it right after the kasa accepts [order].
   void watchTable(int stol, MqttInTransitOrder order) {
+    _landed.remove(stol);
     _deadlines[stol] = DateTime.now().add(_maxWatch);
     state = {
       ...state,
@@ -83,7 +92,10 @@ class MqttPendingTransfersNotifier
   /// landed lines are cleared the moment ANY fresh answer shows it.
   void applyReply(int stol, MqttTableQueryReply reply) {
     if (!state.containsKey(stol)) return;
-    if (transferLanded(reply, MqttService.instance.clientId)) _drop(stol);
+    if (transferLanded(reply, MqttService.instance.clientId)) {
+      _landed.add(stol);
+      _drop(stol);
+    }
   }
 
   void _drop(int stol) {
@@ -115,6 +127,7 @@ class MqttPendingTransfersNotifier
         if (deadline != null && DateTime.now().isAfter(deadline)) {
           debugPrint('MQTT ▸ giving up watching table $stol — still pending '
               'after ${_maxWatch.inMinutes} min');
+          _landed.remove(stol);
           _drop(stol);
           continue;
         }

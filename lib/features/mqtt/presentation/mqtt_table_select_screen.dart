@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:auto_size_text/auto_size_text.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -23,6 +25,10 @@ const _kSpriteDark = 'assets/table_select/table_sprite_dark.svg'; // dark theme
 const _kWalls = 'assets/table_select/walls';
 const _kDarkAssetTint =
     ColorFilter.mode(Color(0xFF434A53), BlendMode.modulate);
+
+/// How long a table tile takes to change colour, icon or badge — long enough
+/// to read as one smooth change, short enough never to lag behind the state.
+const _kTileAnimation = Duration(milliseconds: 250);
 
 const _kTableSelectSvgs = <String>[
   _kSprite,
@@ -89,10 +95,106 @@ class _MqttTableSelectScreenState extends ConsumerState<MqttTableSelectScreen> {
   final _scaffoldKey = GlobalKey<ScaffoldState>();
   int _selectedZone = 0;
 
+  /// Tables that dropped out of `stolovi_stanje` a moment ago, still drawn with
+  /// their last entry until `until`.
+  ///
+  /// The floor plan combines two live sources that update independently —
+  /// `stolovi_stanje` from the kasa and our own transfer watch — so a table
+  /// can briefly be in NEITHER while one has changed and the other hasn't yet.
+  /// Drawn as-is, that gap is a flash: teal → grey → teal, ✓ → nothing → ✓.
+  /// A short hold bridges it; a table that really was closed turns free a few
+  /// seconds late, which nobody can see.
+  final _heldOccupied = <int, ({MqttTableState state, DateTime until})>{};
+
+  /// Tables whose order has just landed but that `stolovi_stanje` doesn't list
+  /// yet — drawn as ours with ✓ until it does (or until the time runs out).
+  final _heldLanded = <int, DateTime>{};
+
+  Timer? _holdTimer;
+
+  static const _goneGrace = Duration(seconds: 3);
+  static const _landedGrace = Duration(seconds: 10);
+
   @override
   void initState() {
     super.initState();
     precacheTableSelectSvgs();
+    // Listened to (not only watched) so a hold starts in the same moment the
+    // source changes — before the frame that would otherwise show the gap.
+    ref.listenManual<Map<int, MqttTableState>>(
+      mqttOccupiedProvider,
+      _onOccupancy,
+    );
+    ref.listenManual<Map<int, List<MqttInTransitOrder>>>(
+      mqttPendingTransfersProvider,
+      _onTransfers,
+    );
+  }
+
+  @override
+  void dispose() {
+    _holdTimer?.cancel();
+    super.dispose();
+  }
+
+  void _onOccupancy(
+    Map<int, MqttTableState>? prev,
+    Map<int, MqttTableState> next,
+  ) {
+    final until = DateTime.now().add(_goneGrace);
+    for (final entry in (prev ?? const <int, MqttTableState>{}).entries) {
+      if (!next.containsKey(entry.key)) {
+        _heldOccupied[entry.key] = (state: entry.value, until: until);
+      }
+    }
+    // Back in stolovi_stanje: the live entry takes over.
+    _heldOccupied.removeWhere((stol, _) => next.containsKey(stol));
+    _heldLanded.removeWhere((stol, _) => next.containsKey(stol));
+    _scheduleHoldExpiry();
+  }
+
+  void _onTransfers(
+    Map<int, List<MqttInTransitOrder>>? prev,
+    Map<int, List<MqttInTransitOrder>> next,
+  ) {
+    final transfers = ref.read(mqttPendingTransfersProvider.notifier);
+    final occupied = ref.read(mqttOccupiedProvider);
+    final until = DateTime.now().add(_landedGrace);
+    for (final stol in (prev ?? const <int, List<MqttInTransitOrder>>{}).keys) {
+      // Only a watch that ended by LANDING is held — one we gave up on has
+      // nothing to show as arrived.
+      if (!next.containsKey(stol) &&
+          !occupied.containsKey(stol) &&
+          transfers.justLanded(stol)) {
+        _heldLanded[stol] = until;
+      }
+    }
+    _heldLanded.removeWhere((stol, _) => next.containsKey(stol));
+    _scheduleHoldExpiry();
+  }
+
+  /// Redraws when the earliest hold runs out, so an expired hold never waits
+  /// for some unrelated change to disappear.
+  void _scheduleHoldExpiry() {
+    _holdTimer?.cancel();
+    final times = [
+      for (final h in _heldOccupied.values) h.until,
+      ..._heldLanded.values,
+    ];
+    if (times.isEmpty) return;
+    final first = times.reduce((a, b) => a.isBefore(b) ? a : b);
+    _holdTimer = Timer(
+      first.difference(DateTime.now()) + const Duration(milliseconds: 20),
+      () {
+        if (!mounted) return;
+        final now = DateTime.now();
+        setState(() {
+          _heldOccupied.removeWhere((_, h) => !h.until.isAfter(now));
+          _heldLanded.removeWhere((_, until) => !until.isAfter(now));
+        });
+        _scheduleHoldExpiry();
+      },
+    );
   }
 
   /// Back here forgets the current waiter: this is the top of the signed-in
@@ -112,7 +214,17 @@ class _MqttTableSelectScreenState extends ConsumerState<MqttTableSelectScreen> {
   @override
   Widget build(BuildContext context) {
     final zones = ref.watch(mqttTablesProvider);
-    final occupied = ref.watch(mqttOccupiedProvider);
+    // Occupancy as DRAWN: live stolovi_stanje, plus tables that dropped out of
+    // it a moment ago (see [_heldOccupied]). Live entries win.
+    final liveOccupied = ref.watch(mqttOccupiedProvider);
+    final occupied = _heldOccupied.isEmpty
+        ? liveOccupied
+        : {
+            for (final e in _heldOccupied.entries) e.key: e.value.state,
+            ...liveOccupied,
+          };
+    // Orders that just landed on a table stolovi_stanje doesn't list yet.
+    final landed = _heldLanded.keys.toSet();
     // Tables with a local (in-progress) order — coloured "yours" and reopenable.
     final withOrders = ref.watch(mqttOrdersProvider).keys.toSet();
     // Tables the kasa has accepted an order for but not yet applied it to.
@@ -143,6 +255,12 @@ class _MqttTableSelectScreenState extends ConsumerState<MqttTableSelectScreen> {
         key: _scaffoldKey,
         endDrawer: const SettingsDrawer(),
         appBar: AppBar(
+          // The top of the signed-in area has no route below it, so Flutter
+          // shows no back arrow by itself. This is the same arrow Stol X has,
+          // doing what system back does here: sign the waiter out, which the
+          // router's auth redirect turns into the first screen (Prijava /
+          // Postavke uređaja).
+          leading: BackButton(onPressed: _forgetSession),
           title: const Text('Odabir stola'),
           actions: [
             IconButton(
@@ -156,7 +274,7 @@ class _MqttTableSelectScreenState extends ConsumerState<MqttTableSelectScreen> {
           child: zones.isEmpty
               ? const _EmptyTables()
               : _buildBody(zones, occupied, withOrders, pendingTransfer,
-                  myCuser, myName, canOpenAll, columns),
+                  landed, myCuser, myName, canOpenAll, columns),
         ),
       ),
     );
@@ -167,6 +285,7 @@ class _MqttTableSelectScreenState extends ConsumerState<MqttTableSelectScreen> {
     Map<int, MqttTableState> occupied,
     Set<int> withOrders,
     Set<int> pendingTransfer,
+    Set<int> landed,
     String? myCuser,
     String? myName,
     bool canOpenAll,
@@ -194,6 +313,7 @@ class _MqttTableSelectScreenState extends ConsumerState<MqttTableSelectScreen> {
                       occupied: occupied,
                       withOrders: withOrders,
                       pendingTransfer: pendingTransfer,
+                      landed: landed,
                       myCuser: myCuser,
                       myName: myName,
                       canOpenAll: canOpenAll,
@@ -259,6 +379,7 @@ class _PagedTableGrid extends StatelessWidget {
     required this.occupied,
     required this.withOrders,
     required this.pendingTransfer,
+    required this.landed,
     required this.myCuser,
     required this.myName,
     required this.canOpenAll,
@@ -273,6 +394,10 @@ class _PagedTableGrid extends StatelessWidget {
 
   /// Tables whose accepted order the kasa has not yet moved onto the table.
   final Set<int> pendingTransfer;
+
+  /// Tables whose order has just landed but that stolovi_stanje doesn't list
+  /// yet — drawn as ours with ✓, exactly as they will look once it does.
+  final Set<int> landed;
   final String? myCuser;
 
   /// Our own naziv — shown on a table whose order is still arriving.
@@ -296,7 +421,9 @@ class _PagedTableGrid extends StatelessWidget {
     // yet, so it isn't in stolovi_stanje. Show it as ours straight away — the
     // amber ↑ says it is still arriving — so that when it lands only the badge
     // changes, instead of a grey "free" table suddenly turning teal.
-    if (pendingTransfer.contains(table.broj)) return _TileStatus.occupiedMine;
+    if (pendingTransfer.contains(table.broj) || landed.contains(table.broj)) {
+      return _TileStatus.occupiedMine;
+    }
     return withOrders.contains(table.broj)
         ? _TileStatus.order
         : _TileStatus.free;
@@ -315,7 +442,9 @@ class _PagedTableGrid extends StatelessWidget {
     if (withOrders.contains(table.broj)) return _SendMark.none;
     // Everything on the table has landed — but only mark a table that actually
     // has an order; an empty table has nothing to report.
-    return occupied.containsKey(table.broj) ? _SendMark.sent : _SendMark.none;
+    return occupied.containsKey(table.broj) || landed.contains(table.broj)
+        ? _SendMark.sent
+        : _SendMark.none;
   }
 
   static const double _pad = 6;
@@ -353,6 +482,9 @@ class _PagedTableGrid extends StatelessWidget {
                 final table = pageItems[i];
                 final status = _statusFor(table);
                 return _TableCell(
+                  // Keyed by table, so switching zones builds fresh tiles
+                  // instead of animating one table's colour into another's.
+                  key: ValueKey(table.broj),
                   table: table,
                   status: status,
                   showName: showName,
@@ -360,7 +492,10 @@ class _PagedTableGrid extends StatelessWidget {
                   // stolovi_stanje yet, so show our own name — the one the kasa
                   // will show once it lands, so nothing changes then.
                   occupantName: occupied[table.broj]?.konobar ??
-                      (pendingTransfer.contains(table.broj) ? myName : null),
+                      (pendingTransfer.contains(table.broj) ||
+                              landed.contains(table.broj)
+                          ? myName
+                          : null),
                   canOpenAll: canOpenAll,
                   mark: _markFor(table),
                   onTap: () =>
@@ -397,6 +532,7 @@ String _shortName(String name) {
 /// neutral = free) drawn on the central 60%.
 class _TableCell extends StatelessWidget {
   const _TableCell({
+    super.key,
     required this.table,
     required this.status,
     required this.showName,
@@ -475,7 +611,9 @@ class _TableCell extends StatelessWidget {
                 top: w * 0.2,
                 width: w * 0.6,
                 height: w * 0.6,
-                child: DecoratedBox(
+                child: AnimatedContainer(
+                  duration: _kTileAnimation,
+                  curve: Curves.easeInOut,
                   decoration: BoxDecoration(
                     color: fill,
                     borderRadius: BorderRadius.circular(w * 0.075),
@@ -486,106 +624,160 @@ class _TableCell extends StatelessWidget {
                   ),
                   child: Padding(
                     padding: EdgeInsets.symmetric(horizontal: w * 0.04),
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Text(
-                          '${table.broj}',
-                          maxLines: 1,
-                          style: TextStyle(
-                            color: fg,
-                            fontSize: w * 0.20,
-                            fontWeight: FontWeight.w700,
-                            height: 1,
-                          ),
-                        ),
-                        if (hasSecondLine) ...[
-                          SizedBox(height: w * 0.02),
-                          AutoSizeText(
-                            secondLine,
+                    // The text colour animates together with the fill, so a
+                    // status change reads as one recolour of the whole tile.
+                    child: AnimatedDefaultTextStyle(
+                      duration: _kTileAnimation,
+                      curve: Curves.easeInOut,
+                      style: DefaultTextStyle.of(context)
+                          .style
+                          .copyWith(color: fg),
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Text(
+                            '${table.broj}',
                             maxLines: 1,
-                            // Floor is proportional (80% of the intended size),
-                            // not a fixed 7pt: on a large tile that let text
-                            // shrink to less than half its size before
-                            // ellipsizing, which is unreadable rather than
-                            // helpful. Past this point, ellipsis is the honest
-                            // answer.
-                            //
-                            // MUST be a whole number: AutoSizeText asserts
-                            // minFontSize is a multiple of stepGranularity
-                            // (default 1), and a fractional value throws during
-                            // layout for every tile.
-                            minFontSize:
-                                (w * 0.068).clamp(6.0, 24.0).roundToDouble(),
-                            overflow: TextOverflow.ellipsis,
                             style: TextStyle(
-                              color: fg,
-                              fontSize: w * 0.085,
-                              fontWeight: FontWeight.w500,
+                              fontSize: w * 0.20,
+                              fontWeight: FontWeight.w700,
                               height: 1,
                             ),
                           ),
+                          // The name line comes and goes smoothly: it fades,
+                          // and the number glides to its new centre.
+                          AnimatedSize(
+                            duration: _kTileAnimation,
+                            curve: Curves.easeInOut,
+                            child: AnimatedSwitcher(
+                              duration: _kTileAnimation,
+                              child: hasSecondLine
+                                  ? Column(
+                                      key: ValueKey(secondLine),
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        SizedBox(height: w * 0.02),
+                                        AutoSizeText(
+                                          secondLine,
+                                          maxLines: 1,
+                                          // Floor is proportional (80% of the
+                                          // intended size), not a fixed 7pt: on
+                                          // a large tile that let text shrink
+                                          // to less than half its size before
+                                          // ellipsizing, which is unreadable
+                                          // rather than helpful. Past this
+                                          // point, ellipsis is the honest
+                                          // answer.
+                                          //
+                                          // MUST be a whole number:
+                                          // AutoSizeText asserts minFontSize is
+                                          // a multiple of stepGranularity
+                                          // (default 1), and a fractional value
+                                          // throws during layout for every
+                                          // tile.
+                                          minFontSize: (w * 0.068)
+                                              .clamp(6.0, 24.0)
+                                              .roundToDouble(),
+                                          overflow: TextOverflow.ellipsis,
+                                          style: TextStyle(
+                                            fontSize: w * 0.085,
+                                            fontWeight: FontWeight.w500,
+                                            height: 1,
+                                          ),
+                                        ),
+                                      ],
+                                    )
+                                  : const SizedBox.shrink(
+                                      key: ValueKey('no-second-line'),
+                                    ),
+                            ),
+                          ),
                         ],
-                      ],
+                      ),
                     ),
                   ),
                 ),
               ),
-              if (corner != null)
-                Positioned(
-                  top: w * 0.22,
-                  right: w * 0.22,
-                  child: Icon(corner, size: w * 0.11, color: fg),
+              // Swapped with a fade, never popped in or out.
+              Positioned(
+                top: w * 0.22,
+                right: w * 0.22,
+                child: AnimatedSwitcher(
+                  duration: _kTileAnimation,
+                  child: corner == null
+                      ? SizedBox(
+                          key: const ValueKey('no-corner'),
+                          width: w * 0.11,
+                          height: w * 0.11,
+                        )
+                      : Icon(
+                          corner,
+                          key: ValueKey(corner),
+                          size: w * 0.11,
+                          color: fg,
+                        ),
                 ),
+              ),
               // "Jesu li poslane sve narudžbe" — bottom-right, the corner the
               // status icon never uses, so the two never compete. Both badges
               // are ringed so they read against every status fill (red, teal,
               // blue, grey) — the green one especially, since it sits on a teal
               // tile whenever the table is yours.
-              if (mark != _SendMark.none)
-                Positioned(
-                  right: w * 0.17,
-                  bottom: w * 0.17,
-                  child: Container(
-                    width: w * 0.17,
-                    height: w * 0.17,
-                    alignment: Alignment.center,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      color: mark == _SendMark.pending
-                          ? (dark
-                              ? const Color(0xFFF4A83A)
-                              : const Color(0xFFE8890C))
-                          : (dark
-                              ? const Color(0xFF4FC98A)
-                              : const Color(0xFF2E9E5B)),
-                      border: Border.all(
-                        color: dark
-                            ? const Color(0xFF1B2430)
-                            : Colors.white,
-                        width: w * 0.018,
-                      ),
-                    ),
-                    child: Icon(
-                      // Arrow = still on its way up, check = landed. The shape
-                      // carries the meaning as well as the colour, so the two
-                      // states stay distinguishable in a glance — and for
-                      // anyone who reads amber and green as the same hue.
-                      mark == _SendMark.pending
-                          ? Icons.arrow_upward
-                          : Icons.check,
-                      size: mark == _SendMark.pending ? w * 0.10 : w * 0.11,
-                      color: dark
-                          ? (mark == _SendMark.pending
-                              ? const Color(0xFF3A2600)
-                              : const Color(0xFF063020))
-                          : Colors.white,
-                    ),
+              Positioned(
+                right: w * 0.17,
+                bottom: w * 0.17,
+                // A badge appearing, going, or turning from ↑ into ✓ scales and
+                // fades, so it visibly updates instead of blinking.
+                child: AnimatedSwitcher(
+                  duration: _kTileAnimation,
+                  transitionBuilder: (child, animation) => FadeTransition(
+                    opacity: animation,
+                    child: ScaleTransition(scale: animation, child: child),
                   ),
+                  child: mark == _SendMark.none
+                      ? SizedBox(
+                          key: const ValueKey(_SendMark.none),
+                          width: w * 0.17,
+                          height: w * 0.17,
+                        )
+                      : _badge(w, dark),
                 ),
+              ),
             ],
           );
         },
+      ),
+    );
+  }
+
+  /// The send-state badge: amber ↑ still arriving, green ✓ arrived.
+  Widget _badge(double w, bool dark) {
+    final pending = mark == _SendMark.pending;
+    return Container(
+      key: ValueKey(mark),
+      width: w * 0.17,
+      height: w * 0.17,
+      alignment: Alignment.center,
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        color: pending
+            ? (dark ? const Color(0xFFF4A83A) : const Color(0xFFE8890C))
+            : (dark ? const Color(0xFF4FC98A) : const Color(0xFF2E9E5B)),
+        border: Border.all(
+          color: dark ? const Color(0xFF1B2430) : Colors.white,
+          width: w * 0.018,
+        ),
+      ),
+      child: Icon(
+        // Arrow = still on its way up, check = landed. The shape carries the
+        // meaning as well as the colour, so the two states stay
+        // distinguishable at a glance — and for anyone who reads amber and
+        // green as the same hue.
+        pending ? Icons.arrow_upward : Icons.check,
+        size: pending ? w * 0.10 : w * 0.11,
+        color: dark
+            ? (pending ? const Color(0xFF3A2600) : const Color(0xFF063020))
+            : Colors.white,
       ),
     );
   }
