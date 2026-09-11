@@ -10,6 +10,7 @@ import '../../settings/state/settings_provider.dart';
 import '../../settings/presentation/settings_drawer.dart';
 import '../../mqtt/presentation/mqtt_table_select_screen.dart'
     show precacheTableSelectSvgs;
+import '../../mqtt/state/mqtt_outbox_provider.dart';
 
 /// The waiter's main hub after login: signed-in user and the entry points to
 /// ordering (over MQTT) and the table overview.
@@ -63,6 +64,15 @@ class _CashRegisterScreenState extends ConsumerState<CashRegisterScreen> {
   Widget build(BuildContext context) {
     final user = ref.watch(currentUserProvider);
     final businessName = ref.watch(settingsProvider).businessName;
+    // Unsent orders this waiter may see — their own, or all with pravo 008.
+    final unsentCount = ref
+        .watch(mqttOutboxProvider)
+        .where((o) => mqttOutboxVisibleTo(
+              o,
+              cuser: user?.code,
+              allTables: user?.allTablesOpenRight ?? false,
+            ))
+        .length;
 
     return PopScope(
       // The hub is the top of the logged-in area. Back must NOT close the app —
@@ -129,6 +139,12 @@ class _CashRegisterScreenState extends ConsumerState<CashRegisterScreen> {
                   label: 'Unos narudžbe',
                   onTap: () => context.push('/mqtt-tables'),
                 ),
+                _MenuButton(
+                  icon: Icons.cloud_upload_outlined,
+                  label: 'Neposlane narudžbe',
+                  count: unsentCount,
+                  onTap: () => context.push('/mqtt-outbox'),
+                ),
               ],
             ),
           ),
@@ -145,11 +161,15 @@ class _MenuButton extends StatelessWidget {
     required this.icon,
     required this.label,
     required this.onTap,
+    this.count = 0,
   });
 
   final IconData icon;
   final String label;
   final VoidCallback onTap;
+
+  /// Shown as a red pill when above zero.
+  final int count;
 
   @override
   Widget build(BuildContext context) {
@@ -162,7 +182,30 @@ class _MenuButton extends StatelessWidget {
         child: ListTile(
           leading: Icon(icon, color: color),
           title: Text(label, style: TextStyle(color: color)),
-          trailing: const Icon(Icons.chevron_right),
+          trailing: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (count > 0)
+                Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: scheme.error,
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Text(
+                    '$count',
+                    style: TextStyle(
+                      color: scheme.onError,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+              const SizedBox(width: 4),
+              const Icon(Icons.chevron_right),
+            ],
+          ),
           onTap: onTap,
         ),
       ),

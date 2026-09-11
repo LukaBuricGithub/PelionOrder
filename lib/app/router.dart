@@ -10,15 +10,16 @@ import '../features/cashregister/presentation/cash_register_screen.dart';
 import '../features/cashregister/presentation/table_details_screen.dart';
 import '../features/cashregister/presentation/tables_overview_screen.dart';
 import '../features/mqtt/presentation/mqtt_order_screen.dart';
+import '../features/mqtt/presentation/mqtt_outbox_screen.dart';
 import '../features/mqtt/presentation/mqtt_table_select_screen.dart';
 import '../features/settings/presentation/settings_screen.dart';
 
 /// App router with a redirect-based auth gate, mirroring ikasa's approach.
 ///
 /// Flow: `/splash` while the session restores → `/login` (with `/pin` and
-/// `/settings` reachable while logged out) → `/mqtt-tables` once a waiter is
-/// signed in. "Odabir stola" is the signed-in home: there is no menu screen,
-/// and back from it signs the waiter out.
+/// `/settings` reachable while logged out) → `/cash-register` once a waiter is
+/// signed in. The menu is the signed-in home ("Unos narudžbe", "Neposlane
+/// narudžbe"); back from it signs the waiter out.
 final routerProvider = Provider<GoRouter>((ref) {
   // Re-evaluate redirects whenever the session or bootstrap flag changes.
   final notifier = ValueNotifier(0);
@@ -43,9 +44,8 @@ final routerProvider = Provider<GoRouter>((ref) {
       final isSettings = path == '/settings';
 
       // Restore finished — leave the splash immediately. A signed-in waiter
-      // lands straight on the floor plan: "Odabir stola" IS the home screen,
-      // there is no menu in between.
-      if (isSplash) return loggedIn ? '/mqtt-tables' : '/login';
+      // lands on the menu.
+      if (isSplash) return loggedIn ? '/cash-register' : '/login';
 
       if (!loggedIn) {
         // Logged out: login, PIN entry and settings are reachable.
@@ -54,7 +54,7 @@ final routerProvider = Provider<GoRouter>((ref) {
       }
 
       // Logged in: keep the user out of the login flow.
-      if (isLogin || isPin) return '/mqtt-tables';
+      if (isLogin || isPin) return '/cash-register';
       return null;
     },
     errorBuilder: (context, state) => Scaffold(
@@ -122,6 +122,10 @@ final routerProvider = Provider<GoRouter>((ref) {
       GoRoute(
         path: '/mqtt-tables',
         builder: (context, state) => const MqttTableSelectScreen(),
+      ),
+      GoRoute(
+        path: '/mqtt-outbox',
+        builder: (context, state) => const MqttOutboxScreen(),
       ),
       GoRoute(
         path: '/mqtt-menu/:broj',

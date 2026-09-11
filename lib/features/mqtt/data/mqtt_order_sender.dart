@@ -84,7 +84,7 @@ enum MqttSendOutcome {
   ok, // booked (or already booked — repeated msg_id)
   odbijeno, // rejected by the kasa; `message` says why
   istekla, // expired — must be re-sent as a NEW order
-  kasaNedostupna, // no reply after all attempts; order stays saved
+  kasaNedostupna, // no answer (or no connection) — nothing is known yet
   neispravno, // failed our own pre-send validation
 }
 
@@ -94,29 +94,39 @@ class MqttSendResult {
     required this.msgId,
     required this.message,
     this.reply,
+    this.repeated = false,
   });
 
   final MqttSendOutcome outcome;
   final String msgId;
 
-  /// Text to show the waiter (the kasa's `poruka` when it answered).
+  /// Text to show the waiter (the kasa's `poruka` when it is meaningful).
   final String message;
   final MqttOrderReply? reply;
 
+  /// The kasa had already seen this msg_id and replayed its SAVED answer. The
+  /// text of such a reply is always "Nalog je već zaprimljen" whatever the
+  /// status, so for anything but ok [message] is our own wording — the real
+  /// reason is the one that came with the first answer.
+  final bool repeated;
+
   bool get isOk => outcome == MqttSendOutcome.ok;
 
-  /// True when the id must NOT be reused for the next send (expired orders and
-  /// orders we never actually sent).
-  bool get needsNewMsgId =>
-      outcome == MqttSendOutcome.istekla || outcome == MqttSendOutcome.neispravno;
+  /// The kasa gave a FINAL answer that booked nothing: this msg_id can never
+  /// be booked any more, so the items may only go out again as a new order.
+  bool get isFinalRefusal =>
+      outcome == MqttSendOutcome.odbijeno || outcome == MqttSendOutcome.istekla;
 }
 
 /// Sends orders to the kasa and waits for the matching reply.
 ///
 /// Idempotency (protocol doc, 3.5): the same order is retried with the SAME
 /// `msg_id` — the kasa remembers every id and simply replays its answer, so a
-/// retry can never double-book. A new id is only ever used for genuinely new or
-/// changed content.
+/// retry can never double-book. A new id is only ever used for genuinely new
+/// content, or after a final refusal (odbijeno / istekla), which booked nothing.
+///
+/// Orders are frozen and persisted by the outbox (`mqttOutboxProvider`) before
+/// they are sent; this class only validates, publishes and waits.
 class MqttOrderSender {
   MqttOrderSender._();
   static final MqttOrderSender instance = MqttOrderSender._();
@@ -124,49 +134,48 @@ class MqttOrderSender {
   /// How long to wait for a reply before resending the same payload.
   static const replyTimeout = Duration(seconds: 10);
 
-  /// Attempts before giving up with "kasa nedostupna".
+  /// Default attempts before reporting "no answer".
   static const maxAttempts = 5;
 
-  Future<MqttSendResult> send({
-    required int stol,
+  /// The kasa's text for a repeated msg_id (any status).
+  static const _repeatText = 'Nalog je već zaprimljen';
+
+  /// Checks that need nothing from the kasa. Returns the problem, or null when
+  /// an order with these values may be built and sent.
+  ///
+  /// A bad `od` makes the kasa drop the order silently (no reply at all), so it
+  /// is never even tried — see the protocol doc, 4.3.
+  MqttSendResult? precheck({
     required String cuser,
     required List<MqttCartLine> lines,
-    required String msgId,
-    required bool groupArticles,
-  }) async {
+  }) {
     final svc = MqttService.instance;
-
-    // Pre-send validation. A bad `od` makes the kasa drop the order silently
-    // (no reply at all), so we never even try — see the protocol doc, 4.3.
-    final od = svc.clientId;
-    if (od == null || !svc.isReplyIdValid) {
-      return _invalid(msgId,
+    if (svc.clientId == null || !svc.isReplyIdValid) {
+      return _invalid(
           'Neispravan identifikator uređaja — skenirajte QR kod ponovno.');
     }
-    if (cuser.trim().isEmpty) {
-      return _invalid(msgId, 'Nedostaje šifra konobara.');
-    }
-    if (lines.isEmpty) {
-      return _invalid(msgId, 'Nalog nema stavaka.');
-    }
+    if (cuser.trim().isEmpty) return _invalid('Nedostaje šifra konobara.');
+    if (lines.isEmpty) return _invalid('Nalog nema stavaka.');
+    return null;
+  }
+
+  /// Publishes an already-built order [payload] and waits for the kasa's
+  /// answer. Every attempt sends this identical payload — same msg_id, same
+  /// ts/istek — so the kasa can always recognise a repeat, and its expiry keeps
+  /// counting from when the order was first built.
+  Future<MqttSendResult> sendPayload({
+    required String msgId,
+    required String payload,
+    int attempts = maxAttempts,
+  }) async {
+    final svc = MqttService.instance;
     if (!svc.isConnected) {
       return MqttSendResult(
         outcome: MqttSendOutcome.kasaNedostupna,
         msgId: msgId,
-        message: 'Nema veze s kasom — narudžba je spremljena, '
-            'pokušajte ponovno.',
+        message: 'Nema veze s kasom.',
       );
     }
-
-    // Built ONCE: every retry resends this identical payload (same msg_id, and
-    // the same ts/istek, so the expiry is measured from the first send).
-    final payload = buildOrderJson(
-      msgId: msgId,
-      od: od,
-      stol: stol,
-      cuser: cuser,
-      lines: groupArticles ? groupCartLines(lines) : lines,
-    );
 
     // Listen BEFORE publishing so a fast reply can't be missed.
     final completer = Completer<MqttOrderReply>();
@@ -175,9 +184,8 @@ class MqttOrderSender {
     });
 
     try {
-      for (var attempt = 1; attempt <= maxAttempts; attempt++) {
-        debugPrint('MQTT ▸ order attempt $attempt/$maxAttempts '
-            '(msg_id=$msgId, stol=$stol)');
+      for (var attempt = 1; attempt <= attempts; attempt++) {
+        debugPrint('MQTT ▸ order attempt $attempt/$attempts (msg_id=$msgId)');
         svc.publishOrder(payload);
         try {
           final reply = await completer.future.timeout(replyTimeout);
@@ -190,17 +198,16 @@ class MqttOrderSender {
       return MqttSendResult(
         outcome: MqttSendOutcome.kasaNedostupna,
         msgId: msgId,
-        message: 'Kasa nedostupna — narudžba je spremljena, '
-            'pokušajte ponovno.',
+        message: 'Kasa ne odgovara.',
       );
     } finally {
       await sub.cancel();
     }
   }
 
-  MqttSendResult _invalid(String msgId, String message) => MqttSendResult(
+  MqttSendResult _invalid(String message) => MqttSendResult(
         outcome: MqttSendOutcome.neispravno,
-        msgId: msgId,
+        msgId: '',
         message: message,
       );
 
@@ -212,17 +219,23 @@ class MqttOrderSender {
       MqttOrderStatus.odbijeno || MqttOrderStatus.unknown =>
         MqttSendOutcome.odbijeno,
     };
+    final repeated = r.poruka.trim().startsWith(_repeatText);
+    // A replayed refusal still reads "Nalog je već zaprimljen" — never show
+    // that for an order that was NOT booked.
+    final useKasaText =
+        r.poruka.isNotEmpty && !(repeated && outcome != MqttSendOutcome.ok);
     return MqttSendResult(
       outcome: outcome,
       msgId: msgId,
-      message: r.poruka.isNotEmpty ? r.poruka : _defaultMessage(outcome),
+      message: useKasaText ? r.poruka : _defaultMessage(outcome),
       reply: r,
+      repeated: repeated,
     );
   }
 
   String _defaultMessage(MqttSendOutcome o) => switch (o) {
         MqttSendOutcome.ok => 'Nalog zaprimljen',
-        MqttSendOutcome.istekla => 'Nalog je istekao — pošaljite ponovno.',
-        _ => 'Nalog odbijen.',
+        MqttSendOutcome.istekla => 'Nalog je istekao.',
+        _ => 'Kasa je odbila nalog.',
       };
 }

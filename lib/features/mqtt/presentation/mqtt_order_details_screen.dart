@@ -8,6 +8,7 @@ import '../../shared/presentation/bottom_sheet_safe_area.dart';
 import '../data/mqtt_service.dart';
 import '../models/mqtt_menu.dart';
 import '../state/mqtt_cart.dart';
+import '../state/mqtt_outbox_provider.dart';
 import '../state/mqtt_pending_transfers_provider.dart';
 import '../state/mqtt_table_contents.dart';
 import '../state/mqtt_tables_provider.dart';
@@ -46,6 +47,7 @@ class MqttOrderDetailsScreen extends ConsumerStatefulWidget {
     this.onSend,
     this.onSent,
     this.contents,
+    this.sendingMsgId,
   });
 
   final MqttCart cart;
@@ -66,6 +68,10 @@ class MqttOrderDetailsScreen extends ConsumerStatefulWidget {
   /// Called after a successful send, once the ✓ has been shown. The order
   /// screen uses it to close both screens in one step and apply the send.
   final VoidCallback? onSent;
+
+  /// The msg_id of the order being sent right now (owned by the order screen).
+  /// Its lines are still this cart, so its outbox copy is not listed again.
+  final String? Function()? sendingMsgId;
 
   @override
   ConsumerState<MqttOrderDetailsScreen> createState() =>
@@ -184,6 +190,7 @@ class _MqttOrderDetailsScreenState
     // device, so Ukupno and the placeholder rows are right before the first
     // query answer arrives.
     final seed = broj == null ? null : ref.watch(mqttOccupiedProvider)[broj];
+    final outbox = ref.watch(mqttOutboxProvider);
 
     return MediaQuery(
       data: MediaQuery.of(context).copyWith(
@@ -207,6 +214,10 @@ class _MqttOrderDetailsScreenState
             od: MqttService.instance.clientId,
             seedTotal: seed?.iznos,
             seedLineCount: seed?.stavki,
+            unsent: [
+              for (final o in outbox)
+                if (o.stol == broj && o.msgId != widget.sendingMsgId?.call()) o,
+            ],
           );
           // The whole table: what is on it, what is travelling, and what is
           // about to be sent.
@@ -307,7 +318,9 @@ class _MqttOrderDetailsScreenState
           // Once the kasa has accepted, nothing may be tapped: the ✓ is showing
           // and the screen is about to leave.
           final scaffold = IgnorePointer(
-            ignoring: _confirmed,
+            // Also while sending: the cart IS the frozen order until the kasa
+            // answers, so it must not change underneath it.
+            ignoring: _confirmed || _sending,
             child: Scaffold(
             appBar: AppBar(
               titleSpacing: 0,

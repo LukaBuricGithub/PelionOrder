@@ -13,6 +13,7 @@ import 'app/router.dart';
 import 'features/auth/state/auth_controller.dart';
 import 'features/mqtt/data/mqtt_service.dart';
 import 'features/mqtt/state/mqtt_config_provider.dart';
+import 'features/mqtt/state/mqtt_outbox_provider.dart';
 import 'features/shared/state/shared_preferences_provider.dart';
 import 'features/theme/state/theme_mode_provider.dart';
 
@@ -74,6 +75,9 @@ class _OrdermanAppState extends ConsumerState<OrdermanApp>
       final config = ref.read(mqttConfigProvider);
       if (config != null) MqttService.instance.ensureConnected(config);
     });
+    // Start "Neposlane narudžbe" at launch: orders frozen before the app was
+    // closed must keep being resent even before anyone logs in.
+    Future.microtask(() => ref.read(mqttOutboxProvider));
     // Restore the persisted session (looks up the saved user in the cache),
     // then clear the bootstrapping flag so the router leaves the splash.
     Future.microtask(() async {

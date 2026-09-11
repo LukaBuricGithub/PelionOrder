@@ -6,13 +6,13 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:go_router/go_router.dart';
 
-import '../../auth/state/auth_controller.dart';
 import '../../auth/state/session_provider.dart';
 import '../../settings/models/table_view_size.dart';
 import '../../settings/presentation/settings_drawer.dart';
 import '../../settings/state/settings_provider.dart';
 import '../models/mqtt_tables.dart';
 import '../state/mqtt_orders_provider.dart';
+import '../state/mqtt_outbox_provider.dart';
 import '../state/mqtt_pending_transfers_provider.dart';
 import '../state/mqtt_tables_provider.dart';
 import '../state/mqtt_users_provider.dart';
@@ -77,6 +77,11 @@ enum _SendMark {
 
   /// Everything sent from this device has reached the table. Green ✓.
   sent,
+
+  /// An order frozen in "Neposlane narudžbe" — the kasa hasn't confirmed it.
+  /// Red !, and it wins over every other mark: it is the one a waiter must act
+  /// on or at least know about.
+  unsent,
 }
 
 /// MQTT floor plan: pick a zone (terasa), then a table to open its menu.
@@ -197,14 +202,6 @@ class _MqttTableSelectScreenState extends ConsumerState<MqttTableSelectScreen> {
     );
   }
 
-  /// Back here forgets the current waiter: this is the top of the signed-in
-  /// area, so back must NOT close the app — it clears the session and the
-  /// router's auth redirect drops us on the login screen. We must not navigate
-  /// ourselves as well, or the route change double-fires.
-  Future<void> _forgetSession() async {
-    await ref.read(authControllerProvider).logout();
-  }
-
   int _columns(TableViewSize s) => switch (s) {
         TableViewSize.small => 4,
         TableViewSize.medium => 3,
@@ -234,48 +231,41 @@ class _MqttTableSelectScreenState extends ConsumerState<MqttTableSelectScreen> {
     final myCuser = me?.code;
     // Our own short name as the kasa shows it (naziv), for a table whose order
     // is still arriving and so isn't in stolovi_stanje yet.
-    String? myName;
-    for (final u in ref.watch(mqttUsersProvider)) {
-      if (u.code == myCuser) {
-        myName = u.name;
-        break;
-      }
-    }
+    final userNames = {
+      for (final u in ref.watch(mqttUsersProvider)) u.code: u.name,
+    };
+    final myName = userNames[myCuser];
     // Pravo 008: may open a table held by another waiter.
     final canOpenAll = me?.allTablesOpenRight ?? false;
+    // Tables with an order in "Neposlane narudžbe" this waiter may see — their
+    // own, or all with pravo 008 — and who placed it.
+    final unsentBy = <int, String>{};
+    for (final o in ref.watch(mqttOutboxProvider)) {
+      if (mqttOutboxVisibleTo(o, cuser: myCuser, allTables: canOpenAll)) {
+        unsentBy.putIfAbsent(o.stol, () => o.cuser);
+      }
+    }
     final columns = _columns(ref.watch(settingsProvider).tableViewSize);
 
-    return PopScope(
-      canPop: false,
-      onPopInvokedWithResult: (didPop, _) {
-        if (didPop) return;
-        _forgetSession();
-      },
-      child: Scaffold(
-        key: _scaffoldKey,
-        endDrawer: const SettingsDrawer(),
-        appBar: AppBar(
-          // The top of the signed-in area has no route below it, so Flutter
-          // shows no back arrow by itself. This is the same arrow Stol X has,
-          // doing what system back does here: sign the waiter out, which the
-          // router's auth redirect turns into the first screen (Prijava /
-          // Postavke uređaja).
-          leading: BackButton(onPressed: _forgetSession),
-          title: const Text('Odabir stola'),
-          actions: [
-            IconButton(
-              icon: const Icon(Icons.settings_outlined),
-              tooltip: 'Postavke',
-              onPressed: () => _scaffoldKey.currentState?.openEndDrawer(),
-            ),
-          ],
-        ),
-        body: SafeArea(
-          child: zones.isEmpty
-              ? const _EmptyTables()
-              : _buildBody(zones, occupied, withOrders, pendingTransfer,
-                  landed, myCuser, myName, canOpenAll, columns),
-        ),
+    return Scaffold(
+      key: _scaffoldKey,
+      endDrawer: const SettingsDrawer(),
+      appBar: AppBar(
+        title: const Text('Odabir stola'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.settings_outlined),
+            tooltip: 'Postavke',
+            onPressed: () => _scaffoldKey.currentState?.openEndDrawer(),
+          ),
+        ],
+      ),
+      body: SafeArea(
+        child: zones.isEmpty
+            ? const _EmptyTables()
+            : _buildBody(zones, occupied, withOrders, pendingTransfer,
+                landed, unsentBy, userNames, myCuser, myName, canOpenAll,
+                columns),
       ),
     );
   }
@@ -286,6 +276,8 @@ class _MqttTableSelectScreenState extends ConsumerState<MqttTableSelectScreen> {
     Set<int> withOrders,
     Set<int> pendingTransfer,
     Set<int> landed,
+    Map<int, String> unsentBy,
+    Map<String, String> userNames,
     String? myCuser,
     String? myName,
     bool canOpenAll,
@@ -314,6 +306,8 @@ class _MqttTableSelectScreenState extends ConsumerState<MqttTableSelectScreen> {
                       withOrders: withOrders,
                       pendingTransfer: pendingTransfer,
                       landed: landed,
+                      unsentBy: unsentBy,
+                      userNames: userNames,
                       myCuser: myCuser,
                       myName: myName,
                       canOpenAll: canOpenAll,
@@ -380,6 +374,8 @@ class _PagedTableGrid extends StatelessWidget {
     required this.withOrders,
     required this.pendingTransfer,
     required this.landed,
+    required this.unsentBy,
+    required this.userNames,
     required this.myCuser,
     required this.myName,
     required this.canOpenAll,
@@ -398,6 +394,13 @@ class _PagedTableGrid extends StatelessWidget {
   /// Tables whose order has just landed but that stolovi_stanje doesn't list
   /// yet — drawn as ours with ✓, exactly as they will look once it does.
   final Set<int> landed;
+
+  /// Tables with an order in "Neposlane narudžbe", with the waiter who placed
+  /// it (only orders this waiter may see).
+  final Map<int, String> unsentBy;
+
+  /// Waiter name by user code, for an unsent order's table.
+  final Map<String, String> userNames;
   final String? myCuser;
 
   /// Our own naziv — shown on a table whose order is still arriving.
@@ -424,6 +427,14 @@ class _PagedTableGrid extends StatelessWidget {
     if (pendingTransfer.contains(table.broj) || landed.contains(table.broj)) {
       return _TileStatus.occupiedMine;
     }
+    // An unconfirmed order: the table belongs to whoever placed it, even though
+    // the kasa doesn't list it (yet).
+    final unsentCuser = unsentBy[table.broj];
+    if (unsentCuser != null) {
+      return unsentCuser == myCuser
+          ? _TileStatus.occupiedMine
+          : _TileStatus.occupiedOther;
+    }
     return withOrders.contains(table.broj)
         ? _TileStatus.order
         : _TileStatus.free;
@@ -438,6 +449,7 @@ class _PagedTableGrid extends StatelessWidget {
   /// stop an occupied table falling through to ✓, which would claim an unsent
   /// addition had arrived.
   _SendMark _markFor(MqttTable table) {
+    if (unsentBy.containsKey(table.broj)) return _SendMark.unsent;
     if (pendingTransfer.contains(table.broj)) return _SendMark.pending;
     if (withOrders.contains(table.broj)) return _SendMark.none;
     // Everything on the table has landed — but only mark a table that actually
@@ -495,7 +507,7 @@ class _PagedTableGrid extends StatelessWidget {
                       (pendingTransfer.contains(table.broj) ||
                               landed.contains(table.broj)
                           ? myName
-                          : null),
+                          : userNames[unsentBy[table.broj]]),
                   canOpenAll: canOpenAll,
                   mark: _markFor(table),
                   onTap: () =>
@@ -750,9 +762,30 @@ class _TableCell extends StatelessWidget {
     );
   }
 
-  /// The send-state badge: amber ↑ still arriving, green ✓ arrived.
+  /// The send-state badge: red ! not confirmed by the kasa, amber ↑ still
+  /// arriving, green ✓ arrived.
   Widget _badge(double w, bool dark) {
-    final pending = mark == _SendMark.pending;
+    final (Color fill, IconData icon, double size, Color darkFg) =
+        switch (mark) {
+      _SendMark.unsent => (
+          dark ? const Color(0xFFFF7B72) : const Color(0xFFD64541),
+          Icons.priority_high,
+          w * 0.11,
+          const Color(0xFF3A0B08),
+        ),
+      _SendMark.pending => (
+          dark ? const Color(0xFFF4A83A) : const Color(0xFFE8890C),
+          Icons.arrow_upward,
+          w * 0.10,
+          const Color(0xFF3A2600),
+        ),
+      _ => (
+          dark ? const Color(0xFF4FC98A) : const Color(0xFF2E9E5B),
+          Icons.check,
+          w * 0.11,
+          const Color(0xFF063020),
+        ),
+    };
     return Container(
       key: ValueKey(mark),
       width: w * 0.17,
@@ -760,25 +793,16 @@ class _TableCell extends StatelessWidget {
       alignment: Alignment.center,
       decoration: BoxDecoration(
         shape: BoxShape.circle,
-        color: pending
-            ? (dark ? const Color(0xFFF4A83A) : const Color(0xFFE8890C))
-            : (dark ? const Color(0xFF4FC98A) : const Color(0xFF2E9E5B)),
+        color: fill,
         border: Border.all(
           color: dark ? const Color(0xFF1B2430) : Colors.white,
           width: w * 0.018,
         ),
       ),
-      child: Icon(
-        // Arrow = still on its way up, check = landed. The shape carries the
-        // meaning as well as the colour, so the two states stay
-        // distinguishable at a glance — and for anyone who reads amber and
-        // green as the same hue.
-        pending ? Icons.arrow_upward : Icons.check,
-        size: pending ? w * 0.10 : w * 0.11,
-        color: dark
-            ? (pending ? const Color(0xFF3A2600) : const Color(0xFF063020))
-            : Colors.white,
-      ),
+      // The shape carries the meaning as well as the colour (! / ↑ / ✓), so the
+      // states stay distinguishable at a glance — and for anyone who reads the
+      // colours as similar hues.
+      child: Icon(icon, size: size, color: dark ? darkFg : Colors.white),
     );
   }
 }

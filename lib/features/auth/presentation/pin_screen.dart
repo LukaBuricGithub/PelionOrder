@@ -91,7 +91,7 @@ class _PinScreenState extends ConsumerState<PinScreen>
       }
     }
     // On success the router's auth redirect (refreshListenable on currentUser)
-    // moves us to /mqtt-tables ("Odabir stola") automatically; navigating here
+    // moves us to /cash-register (the menu) automatically; navigating here
     // too would double-trigger the route change and crash the shell route.
   }
 

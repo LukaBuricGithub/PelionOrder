@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart' show NumberFormat;
 
 import '../models/mqtt_menu.dart';
+import '../state/mqtt_outbox_provider.dart';
 import '../state/mqtt_pending_transfers_provider.dart';
 import '../state/mqtt_table_contents.dart';
 import 'mqtt_qty_pad.dart' show formatQtyWithUnit;
@@ -23,6 +24,16 @@ enum MqttExistingStatus {
   /// named `poslano`: on the kasa that word means "sent on to the kitchen/bar"
   /// (`MqttRacunStavka.poslano`), a different stage this tag does not show.
   zaprimljeno,
+
+  /// Frozen in "Neposlane narudžbe" with no answer from the kasa yet — resent
+  /// automatically. Shown as "Čeka potvrdu".
+  neposlano,
+
+  /// Refused by the kasa; waits for the waiter in "Neposlane narudžbe".
+  odbijeno,
+
+  /// Reached the kasa too late; waits for the waiter in "Neposlane narudžbe".
+  isteklo,
 }
 
 /// Colour, label and icon for [status] — exactly the floor plan's badges
@@ -45,6 +56,23 @@ enum MqttExistingStatus {
           dark ? const Color(0xFF4FC98A) : const Color(0xFF2E9E5B),
           'Poslano',
           Icons.check,
+        ),
+      // Red family: the kasa has NOT confirmed these — the one state a waiter
+      // must never mistake for sent.
+      MqttExistingStatus.neposlano => (
+          dark ? const Color(0xFFFF7B72) : const Color(0xFFD64541),
+          'Čeka potvrdu',
+          Icons.sync_problem,
+        ),
+      MqttExistingStatus.odbijeno => (
+          dark ? const Color(0xFFFF7B72) : const Color(0xFFB03A2E),
+          'Odbijeno',
+          Icons.block,
+        ),
+      MqttExistingStatus.isteklo => (
+          dark ? const Color(0xFFFF7B72) : const Color(0xFFB03A2E),
+          'Isteklo',
+          Icons.timer_off_outlined,
         ),
     };
 
@@ -165,8 +193,10 @@ class MqttExistingItems {
     // The table's line count from stolovi_stanje (`stavki`), used to size the
     // placeholder rows until the first query answer arrives.
     int? seedLineCount,
+    // Orders for this table frozen in "Neposlane narudžbe".
+    List<MqttOutboxOrder> unsent = const [],
   }) {
-    if (contents == null && inTransit.isEmpty) return none;
+    if (contents == null && inTransit.isEmpty && unsent.isEmpty) return none;
     final reply = contents?.reply;
 
     // If the latest answer already shows our lines on the table, the travelling
@@ -248,6 +278,32 @@ class MqttExistingItems {
           status: MqttExistingStatus.naPutu,
         ));
         total += amount;
+      }
+    }
+
+    // ...and what is frozen in "Neposlane narudžbe". Only a waiting order counts
+    // toward the total: a refused or expired one won't reach the table unless
+    // the waiter sends it again.
+    for (final order in unsent) {
+      final status = switch (order.status) {
+        MqttOutboxStatus.waiting => MqttExistingStatus.neposlano,
+        MqttOutboxStatus.rejected => MqttExistingStatus.odbijeno,
+        MqttOutboxStatus.expired => MqttExistingStatus.isteklo,
+      };
+      for (var j = 0; j < order.lines.length; j++) {
+        final l = order.lines[j];
+        final a = byCode[l.code];
+        final amount = (a?.price ?? 0) * l.qty;
+        rows.add(MqttExistingRow(
+          id: 'u${order.msgId}_$j',
+          name: a?.name ?? 'Artikl ${l.code}',
+          qty: l.qty,
+          unit: a?.unit ?? '',
+          napomene: [...l.remarkCodes.map(remarkName), ...l.customNotes],
+          amount: amount,
+          status: status,
+        ));
+        if (order.status == MqttOutboxStatus.waiting) total += amount;
       }
     }
 
