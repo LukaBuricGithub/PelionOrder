@@ -4,16 +4,14 @@ import 'package:go_router/go_router.dart';
 
 import '../../auth/state/auth_controller.dart';
 import '../../auth/state/session_provider.dart';
-import '../../master_data/state/heartbeat_provider.dart';
-import '../../master_data/state/master_data_providers.dart';
-import '../../settings/state/settings_provider.dart';
 import '../../settings/presentation/settings_drawer.dart';
 import '../../mqtt/presentation/mqtt_table_select_screen.dart'
     show precacheTableSelectSvgs;
 import '../../mqtt/state/mqtt_outbox_provider.dart';
 
-/// The waiter's main hub after login: signed-in user and the entry points to
-/// ordering (over MQTT) and the table overview.
+/// "Izbornik", the waiter's main hub after login: the signed-in user and the
+/// entry points to ordering and to "Neposlane narudžbe". Everything on it
+/// comes over MQTT — nothing here talks to the old REST server.
 class CashRegisterScreen extends ConsumerStatefulWidget {
   const CashRegisterScreen({super.key});
 
@@ -28,25 +26,9 @@ class _CashRegisterScreenState extends ConsumerState<CashRegisterScreen> {
   @override
   void initState() {
     super.initState();
-    Future.microtask(() {
-      ref.read(heartbeatProvider.notifier).start();
-      // Warm the floor-plan SVGs now so the first open of "Odabir stola" from
-      // the "Unos narudžbe" menu doesn't hitch while compiling them.
-      precacheTableSelectSvgs();
-    });
-  }
-
-  @override
-  void dispose() {
-    ref.read(heartbeatProvider.notifier).stop();
-    super.dispose();
-  }
-
-  /// Pull-to-refresh on the menu: refresh the Online/Offline state and
-  /// re-download master data (users, groups, articles, tables).
-  Future<void> _onRefresh() async {
-    await ref.read(heartbeatProvider.notifier).pingNow();
-    await ref.read(masterDataRepositoryProvider).syncAll();
+    // Warm the floor-plan SVGs now so the first open of "Odabir stola" from
+    // the "Unos narudžbe" menu doesn't hitch while compiling them.
+    Future.microtask(precacheTableSelectSvgs);
   }
 
   /// Back on the hub forgets the current waiter: clears the session (and the
@@ -63,7 +45,6 @@ class _CashRegisterScreenState extends ConsumerState<CashRegisterScreen> {
   @override
   Widget build(BuildContext context) {
     final user = ref.watch(currentUserProvider);
-    final businessName = ref.watch(settingsProvider).businessName;
     // Unsent orders this waiter may see — their own, or all with pravo 008.
     final unsentCount = ref
         .watch(mqttOutboxProvider)
@@ -87,17 +68,9 @@ class _CashRegisterScreenState extends ConsumerState<CashRegisterScreen> {
       key: _scaffoldKey,
       endDrawer: const SettingsDrawer(),
       appBar: AppBar(
-        // Online status moved to the user card, so the venue name gets the full
-        // title width and can wrap to up to 3 lines before ellipsizing.
-        toolbarHeight: 88,
-        title: Text(
-          (businessName != null && businessName.isNotEmpty)
-              ? businessName
-              : 'Blagajna',
-          maxLines: 3,
-          softWrap: true,
-          overflow: TextOverflow.ellipsis,
-        ),
+        // What the screen is: the list of things the waiter can do. (It used
+        // to show the venue name from the old REST server, else "Blagajna".)
+        title: const Text('Izbornik'),
         actions: [
           IconButton(
             icon: const Icon(Icons.settings_outlined),
@@ -107,15 +80,10 @@ class _CashRegisterScreenState extends ConsumerState<CashRegisterScreen> {
         ],
       ),
       body: SafeArea(
-        child: RefreshIndicator(
-          onRefresh: _onRefresh,
-          child: Center(
+        child: Center(
           child: ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 480),
             child: ListView(
-              // Always scrollable so the drag-down refresh works even when the
-              // menu doesn't fill the screen.
-              physics: const AlwaysScrollableScrollPhysics(),
               padding: const EdgeInsets.all(16),
               children: [
                 Card(
@@ -147,7 +115,6 @@ class _CashRegisterScreenState extends ConsumerState<CashRegisterScreen> {
                 ),
               ],
             ),
-          ),
           ),
         ),
       ),
