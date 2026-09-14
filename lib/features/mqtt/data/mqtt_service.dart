@@ -65,6 +65,12 @@ class MqttService {
   /// saved hash to skip re-parsing/re-storing unchanged sections.
   final ValueNotifier<String?> verzijaRawJson = ValueNotifier<String?>(null);
 
+  /// The state of THE connection, announced as it changes — true while the
+  /// phone is connected to the broker. Not a second connection: [isConnected]
+  /// can only be asked, while this also tells whoever listens (e.g. the
+  /// connection bubble in "Neposlane narudžbe") the moment it is lost or back.
+  final ValueNotifier<bool> connected = ValueNotifier<bool>(false);
+
   /// Replies from the kasa to our orders (`kasa/{LICENCA}/mob/{od}`). Broadcast
   /// so the send logic can await the one matching its `msg_id`.
   final _orderReplies = StreamController<MqttOrderReply>.broadcast();
@@ -201,6 +207,7 @@ class MqttService {
     if (isConnected) _publishStatus('offline');
     _client?.disconnect();
     _client = null;
+    connected.value = false;
   }
 
   /// The app returned to foreground: reconnect if we were connected before and
@@ -268,9 +275,21 @@ class MqttService {
           ..onBadCertificate = ((Object? cert) => true)
           ..onConnected = (() {
             debugPrint('MQTT ▸ connected as $clientId');
+            connected.value = true;
           })
           ..onDisconnected = (() {
             debugPrint('MQTT ▸ disconnected');
+            connected.value = false;
+          })
+          // A dropped connection being restored on its own (autoReconnect):
+          // offline while it tries, online again once it is back.
+          ..onAutoReconnect = (() {
+            debugPrint('MQTT ▸ connection lost — reconnecting');
+            connected.value = false;
+          })
+          ..onAutoReconnected = (() {
+            debugPrint('MQTT ▸ reconnected');
+            connected.value = true;
           })
           ..onSubscribed = ((String t) {
             debugPrint('MQTT ▸ subscribed: $t');
@@ -307,6 +326,7 @@ class MqttService {
         final rc = client.connectionStatus?.returnCode;
         debugPrint('MQTT ✗ not connected: $rc');
         _client = null;
+        connected.value = false;
         return 'MQTT: nije spojeno (${rc ?? 'nepoznato'}).';
       }
 
@@ -385,6 +405,7 @@ class MqttService {
       }
       _publishStatus('online');
       _publishDojava('Test veze iz mobilne aplikacije');
+      connected.value = isConnected;
 
       return 'MQTT: spojeno kao ${config.uredaj}; status "online" + dojava '
           'poslani (prati CMD / PelionAdmin).';
@@ -392,6 +413,7 @@ class MqttService {
       debugPrint('MQTT ✗ error: $e');
       _client?.disconnect();
       _client = null;
+      connected.value = false;
       return 'MQTT greška: $e';
     }
   }
@@ -433,6 +455,7 @@ class MqttService {
     if (_config != null && isConnected) _publishStatus('offline');
     _client?.disconnect();
     _client = null;
+    connected.value = false;
   }
 
   // ── JSON payloads (mirror the Java service), built from the active config ───

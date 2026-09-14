@@ -71,7 +71,13 @@ class MqttOutboxScreen extends ConsumerWidget {
           : ListView(
               padding: const EdgeInsets.fromLTRB(12, 8, 12, 24),
               children: [
-                _Intro(connected: MqttService.instance.isConnected),
+                // Only the bubble listens to the connection: when it drops or
+                // comes back, the bubble alone rebuilds.
+                ValueListenableBuilder<bool>(
+                  valueListenable: MqttService.instance.connected,
+                  builder: (context, connected, _) =>
+                      _Intro(connected: connected),
+                ),
                 for (final entry in byTable.entries)
                   _TableCard(
                     stol: entry.key,
@@ -461,6 +467,20 @@ class _TableCard extends StatelessWidget {
   }
 }
 
+/// When an order was placed: just the time for today, with the day and date
+/// otherwise — "pet 12.9. 13:52" — so an order from Friday can't pass for one
+/// from this morning. The year is added only when it isn't this year.
+String _placedAt(DateTime t, DateTime now) {
+  String two(int n) => n.toString().padLeft(2, '0');
+  final time = '${two(t.hour)}:${two(t.minute)}';
+  if (t.year == now.year && t.month == now.month && t.day == now.day) {
+    return time;
+  }
+  const days = ['pon', 'uto', 'sri', 'čet', 'pet', 'sub', 'ned'];
+  final year = t.year == now.year ? '' : '${t.year}.';
+  return '${days[t.weekday - 1]} ${t.day}.${t.month}.$year $time';
+}
+
 /// One frozen order: its state, when it was placed, the kasa's reason if it
 /// refused, and its lines.
 class _OrderBlock extends StatelessWidget {
@@ -485,10 +505,7 @@ class _OrderBlock extends StatelessWidget {
     };
     final (color, label, icon) = mqttExistingStatusStyle(status, dark);
     final tagFg = dark ? const Color(0xFF10151C) : Colors.white;
-    final t = order.createdAt;
-    final time =
-        '${t.hour.toString().padLeft(2, '0')}:'
-        '${t.minute.toString().padLeft(2, '0')}';
+    final time = _placedAt(order.createdAt, DateTime.now());
 
     return Container(
       margin: const EdgeInsets.only(top: 8),
