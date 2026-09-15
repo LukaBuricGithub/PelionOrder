@@ -4,7 +4,13 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../../shared/state/shared_preferences_provider.dart';
 import '../models/mqtt_connection_config.dart';
 
-const _kMqttQrCodeKey = 'mqtt_qr_code_v1';
+/// The raw QR code issued by the kasa (JSON: lic, id, naziv, grupa).
+///
+/// A new key on purpose: the old `mqtt_qr_code_v1` held a plain
+/// `<licenca>-ORDERMAN-<n>` string, which the kasa no longer activates. It is
+/// left untouched but ignored, so an updated device simply asks for its new
+/// code.
+const _kMqttQrCodeKey = 'mqtt_qr_code_v2';
 
 /// The device's MQTT provisioning, derived from the scanned QR code and
 /// **persisted**, so every launch can reconnect without scanning again.
@@ -13,26 +19,28 @@ const _kMqttQrCodeKey = 'mqtt_qr_code_v1';
 /// the broker defaults doesn't strand devices on stale values.
 class MqttConfigNotifier extends StateNotifier<MqttConnectionConfig?> {
   MqttConfigNotifier(this._prefs) : super(null) {
-    // No scan yet → no config: the app stays unprovisioned and never connects
-    // on its own.
+    // No (valid) scan yet → no config: the app stays unprovisioned and never
+    // connects on its own.
     final code = _prefs.getString(_kMqttQrCodeKey);
     if (code != null && code.isNotEmpty) {
-      state = MqttConnectionConfig.fromScannedCode(code);
+      state = MqttConnectionConfig.tryParseQr(code);
     }
   }
 
   final SharedPreferences _prefs;
 
-  /// The raw provisioning string (the whole scanned QR value). It's also the
-  /// device id (`uredaj`) we connect and send orders with.
+  /// The device id (client_id) from the scanned code, if provisioned.
   String? get scannedCode => state?.uredaj;
 
   /// Saves a freshly scanned QR code and adopts it as the active config.
-  Future<void> saveScanned(String code) async {
-    final trimmed = code.trim();
-    if (trimmed.isEmpty) return;
-    await _prefs.setString(_kMqttQrCodeKey, trimmed);
-    state = MqttConnectionConfig.fromScannedCode(trimmed);
+  /// Returns false — and changes nothing — when the code isn't a valid code
+  /// issued by the kasa, so a wrong scan can't replace a working provisioning.
+  Future<bool> saveScanned(String code) async {
+    final config = MqttConnectionConfig.tryParseQr(code);
+    if (config == null) return false;
+    await _prefs.setString(_kMqttQrCodeKey, code.trim());
+    state = config;
+    return true;
   }
 
   /// Forgets the provisioning (device must be re-scanned).

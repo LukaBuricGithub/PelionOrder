@@ -270,8 +270,8 @@ class _SettingsCard extends StatelessWidget {
   }
 }
 
-/// QR skener section: scan a code (`<licenca>-ORDERMAN-<n>`), parse the licenca
-/// out of it, and show the MQTT connection payload.
+/// QR skener section: scan the code issued by the kasa
+/// (`{"lic","id","naziv","grupa"}`) and connect with it.
 ///
 /// Scanning **provisions the device**: the code is persisted (see
 /// [mqttConfigProvider]) and the broker connection is established right away.
@@ -292,9 +292,32 @@ class _QrSkenerCardState extends ConsumerState<_QrSkenerCard> {
       MaterialPageRoute(builder: (_) => const QrScannerScreen()),
     );
     if (!mounted || code == null || code.isEmpty) return;
-    // Remember the provisioning, then connect with it immediately.
-    await ref.read(mqttConfigProvider.notifier).saveScanned(code);
+    // Remember the provisioning, then connect with it immediately. A code that
+    // isn't a valid orderman code from the kasa is refused and changes nothing,
+    // so a wrong scan can't replace a working provisioning.
+    final saved =
+        await ref.read(mqttConfigProvider.notifier).saveScanned(code);
     if (!mounted) return;
+    if (!saved) {
+      // A dialog, not a snackbar: it must be seen, on every device.
+      await showDialog<void>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Neispravan QR kod'),
+          content: const Text(
+            'Ovo nije QR kod za orderman. Na kasi otvorite „Novi orderman" i '
+            'skenirajte kod koji se prikaže.',
+          ),
+          actions: [
+            FilledButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('U redu'),
+            ),
+          ],
+        ),
+      );
+      return;
+    }
     final config = ref.read(mqttConfigProvider);
     if (config != null) await _connect(config, replacing: true);
   }
