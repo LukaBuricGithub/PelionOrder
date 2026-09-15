@@ -7,8 +7,6 @@ import '../features/auth/presentation/pin_screen.dart';
 import '../features/auth/presentation/splash_screen.dart';
 import '../features/auth/state/session_provider.dart';
 import '../features/cashregister/presentation/cash_register_screen.dart';
-import '../features/cashregister/presentation/table_details_screen.dart';
-import '../features/cashregister/presentation/tables_overview_screen.dart';
 import '../features/mqtt/presentation/mqtt_order_screen.dart';
 import '../features/mqtt/presentation/mqtt_outbox_screen.dart';
 import '../features/mqtt/presentation/mqtt_table_select_screen.dart';
@@ -105,19 +103,6 @@ final routerProvider = Provider<GoRouter>((ref) {
       GoRoute(
         path: '/cash-register',
         builder: (context, state) => const CashRegisterScreen(),
-      ),
-      GoRoute(
-        path: '/tables-overview',
-        builder: (context, state) => const TablesOverviewScreen(),
-      ),
-      GoRoute(
-        path: '/table-details/:tableCode/:userCode',
-        builder: (context, state) {
-          final code =
-              int.tryParse(state.pathParameters['tableCode'] ?? '') ?? 0;
-          final userCode = state.pathParameters['userCode'] ?? '';
-          return TableDetailsScreen(tableCode: code, userCode: userCode);
-        },
       ),
       GoRoute(
         path: '/mqtt-tables',
