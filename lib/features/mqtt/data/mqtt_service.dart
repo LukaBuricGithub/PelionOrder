@@ -7,6 +7,7 @@ import 'package:mqtt_client/mqtt_client.dart';
 import 'package:mqtt_client/mqtt_server_client.dart';
 
 import '../models/mqtt_connection_config.dart';
+import '../models/mqtt_device_status.dart';
 import '../models/mqtt_order_reply.dart';
 import '../models/mqtt_table_query.dart';
 
@@ -135,6 +136,18 @@ class MqttService {
   /// connection bubble in "Neposlane narudžbe") the moment it is lost or back.
   final ValueNotifier<bool> connected = ValueNotifier<bool>(false);
 
+  /// Every OTHER device's last status on our licence, by client_id (§11.2) —
+  /// what the send state is decided from. Emptied on every connect and
+  /// reconnect and filled again from the retained statuses the broker sends
+  /// with the new subscription.
+  final ValueNotifier<Map<String, MqttDeviceStatus>> devices =
+      ValueNotifier<Map<String, MqttDeviceStatus>>(const {});
+
+  /// The broker has confirmed our subscription to the devices' statuses on the
+  /// current connection. Until then [devices] can't be trusted to be complete,
+  /// so sending stays locked (§11.2, rule 3).
+  final ValueNotifier<bool> statusesReady = ValueNotifier<bool>(false);
+
   /// Replies from the kasa to our orders (`kasa/{LICENCA}/mob/{od}`). Broadcast
   /// so the send logic can await the one matching its `msg_id`.
   final _orderReplies = StreamController<MqttOrderReply>.broadcast();
@@ -200,6 +213,10 @@ class MqttService {
   String get _tVerzija =>
       'kasa/${_cfg.licenca}/podaci/verzija'; // per-section version hashes
 
+  /// Every device's status on the licence (kasa, webmaster, other phones…).
+  String get _tStatusAll => 'kasa/${_cfg.licenca}/status/+';
+  String get _statusPrefix => 'kasa/${_cfg.licenca}/status/';
+
   /// Where orders are published. Shared by every mobile under the licenca;
   /// only the kasa holding the DB processes them.
   String get _tNarudzbe => 'kasa/${_cfg.licenca}/narudzbe';
@@ -213,8 +230,15 @@ class MqttService {
   String get _tMob => 'kasa/${_cfg.licenca}/mob/${_cfg.uredaj}';
 
   /// Everything the phone subscribes to, every time it connects.
-  List<String> get _subscriptionTopics =>
-      [_tArtikli, _tKorisnici, _tStolovi, _tStanje, _tVerzija, _tMob];
+  List<String> get _subscriptionTopics => [
+        _tArtikli,
+        _tKorisnici,
+        _tStolovi,
+        _tStanje,
+        _tVerzija,
+        _tMob,
+        _tStatusAll,
+      ];
 
   /// Our MQTT client-id — this is the `od` field of an order, and the last
   /// segment of the reply topic.
@@ -239,6 +263,37 @@ class MqttService {
   bool publishOrder(String payload) {
     if (_config == null) return false;
     return _publish(_tNarudzbe, payload) != null;
+  }
+
+  /// Publishes an order like [publishOrder] and waits until the broker has
+  /// taken it (PUBACK), at most [timeout]. Returns null when it couldn't be
+  /// published at all, false when it went out but the broker didn't confirm
+  /// it in time, true when the broker has it.
+  ///
+  /// The broker having it does NOT mean the kasa printed it (§11.6, rule 2) —
+  /// only that it left the phone.
+  Future<bool?> publishOrderDelivered(
+    String payload, {
+    Duration timeout = const Duration(seconds: 5),
+  }) async {
+    final client = _client;
+    if (_config == null || client == null) return null;
+    final delivered = Completer<bool>();
+    int? id;
+    final sub = client.published?.listen((m) {
+      if (id != null &&
+          m.variableHeader?.messageIdentifier == id &&
+          !delivered.isCompleted) {
+        delivered.complete(true);
+      }
+    });
+    try {
+      id = _publish(_tNarudzbe, payload);
+      if (id == null) return null;
+      return await delivered.future.timeout(timeout, onTimeout: () => false);
+    } finally {
+      await sub?.cancel();
+    }
   }
 
   /// Publishes a query payload to `kasa/{LICENCA}/upiti`. QoS 1, retain false —
@@ -425,6 +480,7 @@ class MqttService {
         if (!current()) return;
         debugPrint('MQTT ▸ disconnected');
         connected.value = false;
+        _resetDevices();
       })
       ..onAutoReconnect = (() {
         if (!current()) return;
@@ -443,6 +499,9 @@ class MqttService {
       ..onSubscribed = ((String topic) {
         if (!current()) return;
         debugPrint('MQTT ▸ subscribed: $topic');
+        // The device table can be trusted from here: the broker now sends
+        // every retained status with this subscription.
+        if (topic == _tStatusAll) statusesReady.value = true;
         _subscriptionSettled(topic);
       })
       ..onSubscribeFail = ((String topic) {
@@ -544,6 +603,12 @@ class MqttService {
     final m = e.payload as MqttPublishMessage;
     final payload = MqttPublishPayload.bytesToStringAsString(m.payload.message);
     debugPrint('MQTT ◂ ${e.topic}: $payload');
+    // A device's status (§11.2). The id is read from the topic, not the
+    // content — an emptied status has no content to read it from.
+    if (e.topic.startsWith(_statusPrefix)) {
+      _onDeviceStatus(e.topic.substring(_statusPrefix.length), payload);
+      return;
+    }
     if (e.topic == _tArtikli) artikliRawJson.value = payload;
     if (e.topic == _tKorisnici) korisniciRawJson.value = payload;
     if (e.topic == _tStolovi) stoloviRawJson.value = payload;
@@ -583,10 +648,40 @@ class MqttService {
   }
 
   void _expectSubscriptionConfirmations() {
+    // Every (re)connection starts from an empty device table (§11.2, rule 3):
+    // statuses that changed while we were away may arrive late, out of order,
+    // or not at all — the retained ones sent with the new subscription are the
+    // only reliable picture.
+    _resetDevices();
     _pendingSubscriptions
       ..clear()
       ..addAll(_subscriptionTopics);
     _subscriptionsSettled = Completer<void>();
+  }
+
+  void _resetDevices() {
+    if (devices.value.isNotEmpty) devices.value = const {};
+    statusesReady.value = false;
+  }
+
+  /// One device status message into the device table, in the spec's order
+  /// (§11.2): our own status is skipped; an empty payload removes the device;
+  /// invalid JSON is ignored and the existing entry kept; otherwise the entry
+  /// is replaced (a status without `prima` counts as `prima: false`).
+  void _onDeviceStatus(String deviceId, String payload) {
+    if (deviceId.isEmpty || deviceId == _config?.uredaj) return;
+    final next = Map<String, MqttDeviceStatus>.of(devices.value);
+    if (payload.trim().isEmpty) {
+      if (next.remove(deviceId) != null) devices.value = next;
+      return;
+    }
+    final status = MqttDeviceStatus.tryParse(payload);
+    if (status == null) {
+      debugPrint('MQTT ✗ unusable status from $deviceId — ignored');
+      return;
+    }
+    next[deviceId] = status;
+    devices.value = next;
   }
 
   /// The broker answered a subscription (granted or denied) — denied ones
@@ -644,6 +739,7 @@ class MqttService {
     // and none of its callbacks change the service's state.
     _client = null;
     connected.value = false;
+    _resetDevices();
     if (client == null) return;
 
     if (config != null &&

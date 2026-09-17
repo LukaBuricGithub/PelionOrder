@@ -1,25 +1,33 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 
 import '../../auth/state/session_provider.dart';
 import '../../settings/state/settings_provider.dart';
-import '../data/mqtt_service.dart';
 import '../models/mqtt_menu.dart';
 import '../state/mqtt_cart.dart';
 import '../state/mqtt_menu_provider.dart';
+import '../state/mqtt_orders_provider.dart';
 import '../state/mqtt_outbox_provider.dart';
+import '../state/mqtt_send_gate_provider.dart';
+import '../state/mqtt_tables_provider.dart';
 import '../state/mqtt_users_provider.dart';
 import 'mqtt_existing_items.dart'
-    show MqttExistingStatus, mqttExistingStatusStyle;
+    show mqttExistingStatusForOutbox, mqttExistingStatusStyle;
+import 'mqtt_outbox_summary_bar.dart' show mqttDraftColor;
 import 'mqtt_qty_pad.dart' show formatQtyWithUnit;
 
-/// "Neposlane narudžbe": every order the kasa hasn't definitely answered,
-/// grouped by table.
+/// "Neposlane narudžbe": everything on its way to the kasa, grouped by table,
+/// in the same colours as the floor plan:
 ///
-/// A waiter sees their own orders; pravo 008 sees all. Waiting orders need
-/// nothing — they are resent automatically as themselves. Refused and expired
-/// orders wait here for the waiter, who sends them again (as new orders) or
-/// deletes them — per table, or all of them at once from the bottom bar.
+/// * blue — items added on this phone and not sent yet: they can be opened
+///   ("Otvori stol") or deleted;
+/// * amber — with the broker, waiting for the kasa (also "Nije potvrđena"):
+///   nothing to do, they can be neither sent again nor deleted;
+/// * red — didn't get through (not sent, refused, too old): "Pošalji
+///   ponovno" (per table, or all at once from the bottom bar) or delete.
+///
+/// A waiter sees their own; pravo 008 sees all.
 class MqttOutboxScreen extends ConsumerWidget {
   const MqttOutboxScreen({super.key});
 
@@ -42,18 +50,32 @@ class MqttOutboxScreen extends ConsumerWidget {
     final names = {
       for (final u in ref.watch(mqttUsersProvider)) u.code: u.name,
     };
+    final drafts = ref.watch(mqttVisibleDraftsProvider);
+    final tableNames = {
+      for (final z in ref.watch(mqttTablesProvider))
+        for (final t in z.tables) t.broj: t.naziv,
+    };
 
     // By table, in the order each table's oldest unsent order was placed.
     final byTable = <int, List<MqttOutboxOrder>>{};
     for (final o in orders) {
       byTable.putIfAbsent(o.stol, () => []).add(o);
     }
+    // Then tables that only have unsent items.
+    final tables = [
+      ...byTable.keys,
+      for (final stol in drafts.keys.toList()..sort())
+        if (!byTable.containsKey(stol)) stol,
+    ];
 
-    // Everything the waiter could send again right now, across all tables.
+    // Every red order the waiter could send again right now, across all
+    // tables.
     final resendable = [
       for (final o in orders)
-        if (o.needsWaiter) o,
+        if (o.canResend) o,
     ];
+    // §11.4: resending is only possible while the kasa takes orders.
+    final sendGate = ref.watch(mqttSendGateProvider);
 
     return Scaffold(
       appBar: AppBar(title: const Text('Neposlane narudžbe')),
@@ -63,32 +85,35 @@ class MqttOutboxScreen extends ConsumerWidget {
           ? null
           : _ResendAllBar(
               count: resendable.length,
-              onPressed: () =>
-                  _confirmResendAll(context, ref, resendable, allowed),
+              onPressed: sendGate.isOpen
+                  ? () => _confirmResendAll(context, ref, resendable, allowed)
+                  : null,
             ),
-      body: orders.isEmpty
+      body: tables.isEmpty
           ? const _Empty()
           : ListView(
               padding: const EdgeInsets.fromLTRB(12, 8, 12, 24),
               children: [
-                // Only the bubble listens to the connection: when it drops or
-                // comes back, the bubble alone rebuilds.
-                ValueListenableBuilder<bool>(
-                  valueListenable: MqttService.instance.connected,
-                  builder: (context, connected, _) =>
-                      _Intro(connected: connected),
-                ),
-                for (final entry in byTable.entries)
+                _Intro(gate: sendGate),
+                for (final stol in tables)
                   _TableCard(
-                    stol: entry.key,
-                    orders: entry.value,
+                    stol: stol,
+                    orders: byTable[stol] ?? const [],
+                    draft: drafts[stol],
                     byCode: byCode,
                     remarkName: menu.remarkName,
                     names: names,
+                    canSend: sendGate.isOpen,
                     onResend: () =>
-                        _confirmResend(context, ref, entry.key, allowed),
-                    onDelete: () =>
-                        _confirmDelete(context, ref, entry.key, entry.value),
+                        _confirmResend(context, ref, stol, allowed),
+                    onDelete: () => _confirmDelete(context, ref, stol, [
+                      for (final o in byTable[stol] ?? const <MqttOutboxOrder>[])
+                        if (o.isProblem) o,
+                    ]),
+                    onOpenTable: () =>
+                        _openTable(context, stol, tableNames[stol] ?? ''),
+                    onDeleteDraft: () =>
+                        _confirmDeleteDraft(context, ref, stol),
                   ),
               ],
             ),
@@ -106,8 +131,9 @@ class MqttOutboxScreen extends ConsumerWidget {
       builder: (ctx) => AlertDialog(
         title: Text('Stol $stol'),
         content: const Text(
-          'Kasa ove narudžbe nije zaprimila. Poslati ih ponovno kao nove '
-          'narudžbe?',
+          'Poslati ponovno narudžbe za ovaj stol? Glavni program ih '
+          'prepoznaje po broju, narudžba koja je već ispisana neće se '
+          'ispisati ponovno.',
         ),
         actions: [
           TextButton(
@@ -123,9 +149,16 @@ class MqttOutboxScreen extends ConsumerWidget {
       ),
     );
     if (ok != true || !context.mounted) return;
+    // §11.5: check again right before sending — the kasa may have left the
+    // sales screen while the dialog was open.
+    final gate = ref.read(mqttSendGateProvider);
+    if (!gate.isOpen) {
+      await _showLocked(context, gate);
+      return;
+    }
     ref
         .read(mqttOutboxProvider.notifier)
-        .resendAsNew(
+        .resend(
           stol: stol,
           allowed: allowed,
           groupArticles: ref.read(settingsProvider).shouldGroupArticles,
@@ -148,8 +181,9 @@ class MqttOutboxScreen extends ConsumerWidget {
       builder: (ctx) => AlertDialog(
         title: const Text('Pošalji sve ponovno'),
         content: Text(
-          'Kasa nije zaprimila $count ${_narudzbuForm(count)} ($where). '
-          'Poslati ih ponovno kao nove narudžbe?',
+          'Poslati ponovno $count ${_narudzbuForm(count)} ($where)? Glavni '
+          'program ih prepoznaje po broju, narudžba koja je već ispisana neće se '
+          'ispisati ponovno.',
         ),
         actions: [
           TextButton(
@@ -165,25 +199,94 @@ class MqttOutboxScreen extends ConsumerWidget {
       ),
     );
     if (ok != true || !context.mounted) return;
+    // §11.5: check again right before sending — the kasa may have left the
+    // sales screen while the dialog was open.
+    final gate = ref.read(mqttSendGateProvider);
+    if (!gate.isOpen) {
+      await _showLocked(context, gate);
+      return;
+    }
     ref
         .read(mqttOutboxProvider.notifier)
-        .resendAsNew(
+        .resend(
           allowed: allowed,
           groupArticles: ref.read(settingsProvider).shouldGroupArticles,
         );
   }
 
+  Future<void> _showLocked(BuildContext context, MqttSendGate gate) {
+    return showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Slanje je zaključano'),
+        content: Text(
+          '${gate.message}. Narudžbe su ostale na popisu, pošaljite ih kad se '
+          'slanje otključa.',
+        ),
+        actions: [
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('U redu'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Opens the table's order screen, where its unsent items are waiting.
+  void _openTable(BuildContext context, int stol, String naziv) {
+    final q = naziv.isEmpty ? '' : '?naziv=${Uri.encodeComponent(naziv)}';
+    context.push('/mqtt-menu/$stol$q');
+  }
+
+  Future<void> _confirmDeleteDraft(
+    BuildContext context,
+    WidgetRef ref,
+    int stol,
+  ) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) {
+        final scheme = Theme.of(ctx).colorScheme;
+        return AlertDialog(
+          title: Text('Obrisati neposlane stavke za stol $stol?'),
+          content: const Text(
+            'Ove stavke nisu poslane u glavni program. Bit će obrisane s '
+            'uređaja.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Odustani'),
+            ),
+            FilledButton.icon(
+              style: FilledButton.styleFrom(
+                backgroundColor: scheme.error,
+                foregroundColor: scheme.onError,
+              ),
+              onPressed: () => Navigator.pop(ctx, true),
+              icon: const Icon(Icons.delete_outline, size: 18),
+              label: const Text('Obriši'),
+            ),
+          ],
+        );
+      },
+    );
+    if (ok != true || !context.mounted) return;
+    ref.read(mqttOrdersProvider.notifier).clear(stol);
+  }
+
+  /// Deletes the table's red orders — amber ones are never deleted here.
   Future<void> _confirmDelete(
     BuildContext context,
     WidgetRef ref,
     int stol,
     List<MqttOutboxOrder> orders,
   ) async {
-    // A waiting order that has left the phone may already be booked: the kasa
-    // neither confirmed nor refused it. Deleting it here does not undo that.
-    final risky = orders.any(
-      (o) => o.status == MqttOutboxStatus.waiting && o.published,
-    );
+    if (orders.isEmpty) return;
+    // An order that may have reached the broker may already be printed.
+    // Deleting it here does not undo that.
+    final risky = orders.any((o) => o.mayBePrinted);
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) {
@@ -192,11 +295,12 @@ class MqttOutboxScreen extends ConsumerWidget {
           title: Text('Obrisati narudžbe za stol $stol?'),
           content: Text(
             risky
-                ? 'Kasa je možda već zaprimila neku od ovih narudžbi — nije je '
-                      'ni potvrdila ni odbila. Brisanjem se narudžba NE poništava '
-                      'na kasi.\n\nObrišite samo ako ste provjerili da je nema na '
-                      'stolu.'
-                : 'Kasa ove narudžbe nije zaprimila. Stavke će biti trajno '
+                ? 'Glavni program je možda već zaprimio neku od ovih narudžbi, '
+                      'nije je ni potvrdio ni odbio. Brisanjem se narudžba NE '
+                      'poništava u glavnom programu.\n\nObrišite samo ako ste '
+                      'provjerili da je nema na stolu.'
+                : 'Glavni program ove narudžbe nije zaprimio. Stavke će biti '
+                      'trajno '
                       'obrisane s uređaja.',
           ),
           actions: [
@@ -236,12 +340,15 @@ String _narudzbuForm(int n) {
   return 'narudžbi';
 }
 
-/// The bottom bar sending every refused / expired order again at once.
+/// The bottom bar sending every red order (not sent, refused, too old) again
+/// at once.
 class _ResendAllBar extends StatelessWidget {
   const _ResendAllBar({required this.count, required this.onPressed});
 
   final int count;
-  final VoidCallback onPressed;
+
+  /// Null while sending is locked — the button shows but can't be pressed.
+  final VoidCallback? onPressed;
 
   @override
   Widget build(BuildContext context) {
@@ -301,18 +408,20 @@ class _Empty extends StatelessWidget {
   }
 }
 
-/// The explanation at the top of the list, as an information bubble. Tinted
-/// amber while there is no connection: then it is news, not just a hint.
+/// The explanation at the top of the list, as an information bubble. While
+/// sending is locked (§11.4) it turns amber and says why — then it is news,
+/// not just a hint.
 class _Intro extends StatelessWidget {
-  const _Intro({required this.connected});
+  const _Intro({required this.gate});
 
-  final bool connected;
+  final MqttSendGate gate;
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final dark = Theme.of(context).brightness == Brightness.dark;
-    final accent = connected
+    final open = gate.isOpen;
+    final accent = open
         ? scheme.primary
         : (dark ? const Color(0xFFF4A83A) : const Color(0xFFE8890C));
     return Container(
@@ -327,18 +436,20 @@ class _Intro extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Icon(
-            connected ? Icons.info_outline : Icons.wifi_off_rounded,
+            open ? Icons.info_outline : Icons.lock_outline,
             size: 20,
             color: accent,
           ),
           const SizedBox(width: 10),
           Expanded(
             child: Text(
-              connected
-                  ? 'Narudžbe koje čekaju potvrdu šalju se automatski. '
-                        'Odbijene i istekle pošaljite ponovno ili obrišite.'
-                  : 'Nema veze s kasom. Narudžbe koje čekaju potvrdu poslat '
-                        'će se automatski kad se veza vrati.',
+              open
+                  ? 'Plavo: stavke koje još niste poslali. Narančasto: čeka '
+                        'potvrdu glavnog programa, ne treba ništa raditi. Crveno: '
+                        'nije stiglo do glavnog programa, pošaljite ponovno '
+                        'ili obrišite.'
+                  : '${gate.message}, slanje je zaključano. Crvene narudžbe '
+                        'možete poslati ponovno kad se slanje otključa.',
               style: TextStyle(
                 fontSize: 13.5,
                 height: 1.3,
@@ -352,33 +463,49 @@ class _Intro extends StatelessWidget {
   }
 }
 
-/// One table: its unsent orders, and the actions for all of them together.
+/// One table: its orders on their way, its unsent items, and the actions.
 class _TableCard extends StatelessWidget {
   const _TableCard({
     required this.stol,
     required this.orders,
+    required this.draft,
     required this.byCode,
     required this.remarkName,
     required this.names,
+    required this.canSend,
     required this.onResend,
     required this.onDelete,
+    required this.onOpenTable,
+    required this.onDeleteDraft,
   });
 
   final int stol;
   final List<MqttOutboxOrder> orders;
+
+  /// Items added on this phone and not sent yet (blue).
+  final MqttStoredOrder? draft;
   final Map<int, MqttArticle> byCode;
   final String Function(String cnap) remarkName;
   final Map<String, String> names;
+
+  /// Sending is open (§11.4) — otherwise "Pošalji ponovno" can't be pressed.
+  final bool canSend;
   final VoidCallback onResend;
   final VoidCallback onDelete;
+  final VoidCallback onOpenTable;
+  final VoidCallback onDeleteDraft;
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
+    final draftCuser = draft?.cuser;
     final waiters = {
       for (final o in orders) names[o.cuser] ?? o.cuser,
+      if (draftCuser != null) names[draftCuser] ?? draftCuser,
     }.join(', ');
-    final canResend = orders.any((o) => o.needsWaiter);
+    // Only red orders can be sent again or deleted; amber ones wait for the
+    // kasa and get no buttons at all.
+    final hasProblems = orders.any((o) => o.isProblem);
 
     return Card(
       margin: const EdgeInsets.only(bottom: 12),
@@ -411,25 +538,31 @@ class _TableCard extends StatelessWidget {
                     ),
                   ),
                 ),
-                // Delete: a small icon with a big invisible hit area filling
-                // the card's top-right corner — easy to hit, like the ✕ on a
-                // cart line in Stol X — and well away from "Pošalji ponovno".
-                Semantics(
-                  button: true,
-                  label: 'Obriši narudžbe za stol $stol',
-                  child: GestureDetector(
-                    onTap: onDelete,
-                    behavior: HitTestBehavior.opaque,
-                    child: Padding(
-                      padding: const EdgeInsets.fromLTRB(28, 12, 14, 12),
-                      child: Icon(
-                        Icons.delete_outline,
-                        size: 22,
-                        color: scheme.error,
+                // Delete (red orders only): a small icon with a big invisible
+                // hit area filling the card's top-right corner — easy to hit,
+                // like the ✕ on a cart line in Stol X — and well away from
+                // "Pošalji ponovno".
+                if (hasProblems)
+                  Semantics(
+                    button: true,
+                    label: 'Obriši narudžbe za stol $stol',
+                    child: GestureDetector(
+                      onTap: onDelete,
+                      behavior: HitTestBehavior.opaque,
+                      child: Padding(
+                        padding: const EdgeInsets.fromLTRB(28, 12, 14, 12),
+                        child: Icon(
+                          Icons.delete_outline,
+                          size: 22,
+                          color: scheme.error,
+                        ),
                       ),
                     ),
-                  ),
-                ),
+                  )
+                else
+                  // Same height as the delete target, so every card's header
+                  // lines up.
+                  const SizedBox(height: 46),
               ],
             ),
             Padding(
@@ -443,13 +576,21 @@ class _TableCard extends StatelessWidget {
                       byCode: byCode,
                       remarkName: remarkName,
                     ),
-                  if (canResend)
+                  if (draft case final d?)
+                    _DraftBlock(
+                      draft: d,
+                      byCode: byCode,
+                      remarkName: remarkName,
+                      onOpen: onOpenTable,
+                      onDelete: onDeleteDraft,
+                    ),
+                  if (hasProblems)
                     Padding(
                       padding: const EdgeInsets.only(top: 10, bottom: 4),
                       child: Align(
                         alignment: Alignment.centerRight,
                         child: FilledButton.icon(
-                          onPressed: onResend,
+                          onPressed: canSend ? onResend : null,
                           icon: const Icon(Icons.send, size: 18),
                           label: const Text('Pošalji ponovno'),
                         ),
@@ -498,12 +639,10 @@ class _OrderBlock extends StatelessWidget {
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final dark = Theme.of(context).brightness == Brightness.dark;
-    final status = switch (order.status) {
-      MqttOutboxStatus.waiting => MqttExistingStatus.neposlano,
-      MqttOutboxStatus.rejected => MqttExistingStatus.odbijeno,
-      MqttOutboxStatus.expired => MqttExistingStatus.isteklo,
-    };
-    final (color, label, icon) = mqttExistingStatusStyle(status, dark);
+    final (color, label, icon) = mqttExistingStatusStyle(
+      mqttExistingStatusForOutbox(order.status),
+      dark,
+    );
     final tagFg = dark ? const Color(0xFF10151C) : Colors.white;
     final time = _placedAt(order.createdAt, DateTime.now());
 
@@ -563,30 +702,128 @@ class _OrderBlock extends StatelessWidget {
     );
   }
 
-  Widget _line(MqttCartLine l, ColorScheme scheme) {
-    final a = byCode[l.code];
-    final notes = [...l.remarkCodes.map(remarkName), ...l.customNotes];
-    return Padding(
-      padding: const EdgeInsets.only(top: 3),
+  Widget _line(MqttCartLine l, ColorScheme scheme) =>
+      _lineTile(l, scheme, byCode, remarkName);
+}
+
+/// Items added on this phone and not sent yet — blue, like their table.
+class _DraftBlock extends StatelessWidget {
+  const _DraftBlock({
+    required this.draft,
+    required this.byCode,
+    required this.remarkName,
+    required this.onOpen,
+    required this.onDelete,
+  });
+
+  final MqttStoredOrder draft;
+  final Map<int, MqttArticle> byCode;
+  final String Function(String cnap) remarkName;
+  final VoidCallback onOpen;
+  final VoidCallback onDelete;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final dark = Theme.of(context).brightness == Brightness.dark;
+    final color = mqttDraftColor(dark);
+    final tagFg = dark ? const Color(0xFF10151C) : Colors.white;
+
+    return Container(
+      margin: const EdgeInsets.only(top: 8),
+      padding: const EdgeInsets.fromLTRB(10, 8, 10, 4),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: dark ? 0.16 : 0.09),
+        borderRadius: BorderRadius.circular(10),
+      ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(
-            '${formatQtyWithUnit(l.qty, a?.unit ?? '')}   '
-            '${a?.name ?? 'Artikl ${l.code}'}',
-            style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
-          ),
-          if (notes.isNotEmpty)
-            Text(
-              notes.join(', '),
-              style: TextStyle(
-                fontSize: 12,
-                fontStyle: FontStyle.italic,
-                color: scheme.onSurfaceVariant,
-              ),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+            decoration: BoxDecoration(
+              color: color,
+              borderRadius: BorderRadius.circular(6),
             ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Icons.edit_note, size: 12, color: tagFg),
+                const SizedBox(width: 3),
+                Text(
+                  'Neposlano',
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700,
+                    color: tagFg,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.only(top: 4),
+            child: Text(
+              'Stavke dodane na uređaju, još nisu poslane u glavni program.',
+              style: TextStyle(fontSize: 13, color: scheme.onSurface),
+            ),
+          ),
+          const SizedBox(height: 4),
+          for (final l in draft.lines)
+            _lineTile(l, scheme, byCode, remarkName),
+          const SizedBox(height: 4),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.end,
+            children: [
+              TextButton.icon(
+                style: TextButton.styleFrom(foregroundColor: scheme.error),
+                onPressed: onDelete,
+                icon: const Icon(Icons.delete_outline, size: 18),
+                label: const Text('Obriši'),
+              ),
+              const SizedBox(width: 4),
+              FilledButton.tonalIcon(
+                onPressed: onOpen,
+                icon: const Icon(Icons.open_in_new, size: 18),
+                label: const Text('Otvori stol'),
+              ),
+            ],
+          ),
         ],
       ),
     );
   }
+}
+
+/// One line of an order: quantity, article and its napomene.
+Widget _lineTile(
+  MqttCartLine l,
+  ColorScheme scheme,
+  Map<int, MqttArticle> byCode,
+  String Function(String cnap) remarkName,
+) {
+  final a = byCode[l.code];
+  final notes = [...l.remarkCodes.map(remarkName), ...l.customNotes];
+  return Padding(
+    padding: const EdgeInsets.only(top: 3),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          '${formatQtyWithUnit(l.qty, a?.unit ?? '')}   '
+          '${a?.name ?? 'Artikl ${l.code}'}',
+          style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+        ),
+        if (notes.isNotEmpty)
+          Text(
+            notes.join(', '),
+            style: TextStyle(
+              fontSize: 12,
+              fontStyle: FontStyle.italic,
+              color: scheme.onSurfaceVariant,
+            ),
+          ),
+      ],
+    ),
+  );
 }

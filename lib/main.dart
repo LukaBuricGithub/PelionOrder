@@ -75,8 +75,8 @@ class _OrdermanAppState extends ConsumerState<OrdermanApp>
       final config = ref.read(mqttConfigProvider);
       if (config != null) MqttService.instance.ensureConnected(config);
     });
-    // Start "Neposlane narudžbe" at launch: orders frozen before the app was
-    // closed must keep being resent even before anyone logs in.
+    // Start "Neposlane narudžbe" at launch, so a confirmation for an order sent
+    // before the app was closed is applied even before anyone logs in.
     Future.microtask(() => ref.read(mqttOutboxProvider));
     // Restore the persisted session (looks up the saved user in the cache),
     // then clear the bootstrapping flag so the router leaves the splash.
@@ -136,7 +136,12 @@ class _OrdermanAppState extends ConsumerState<OrdermanApp>
         return MediaQuery(
           data: MediaQuery.of(context)
               .copyWith(textScaler: const TextScaler.linear(1.0)),
-          child: child!,
+          // The app's background under every page, so a screen fading in
+          // or out shows this colour behind it rather than black.
+          child: ColoredBox(
+            color: Theme.of(context).scaffoldBackgroundColor,
+            child: child!,
+          ),
         );
       },
       routerConfig: router,

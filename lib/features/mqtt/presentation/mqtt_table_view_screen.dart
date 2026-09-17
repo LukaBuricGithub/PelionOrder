@@ -184,9 +184,9 @@ class _MqttTableViewScreenState extends ConsumerState<MqttTableViewScreen> {
     if (result == null || !result.isOk) {
       return _Message(
         icon: Icons.cloud_off,
-        title: result?.message ?? 'Kasa ne odgovara.',
-        detail: 'Kasa odgovara samo dok je Pelion Order uključen i dok je '
-            'povezana s bazom.',
+        title: result?.message ?? 'Glavni program ne odgovara.',
+        detail: 'Glavni program odgovara samo dok je uključen i dok je '
+            'povezan s bazom.',
         onRetry: () => _ask(),
       );
     }
@@ -197,7 +197,7 @@ class _MqttTableViewScreenState extends ConsumerState<MqttTableViewScreen> {
         icon: Icons.check_circle_outline,
         title: 'Stol je prazan.',
         detail: reply.naCekanju > 0
-            ? 'Kasa još prenosi ${reply.naCekanju} stavaka na stol…'
+            ? 'Glavni program još prenosi ${reply.naCekanju} stavaka na stol…'
             : 'Na stolu nema otvorenih računa.',
         onRetry: () => _ask(),
       );
@@ -276,9 +276,10 @@ class _StatusBanner extends StatelessWidget {
         icon: Icons.sync,
         color: const Color(0xFF4A78B4),
         text: mine
-            ? 'Vaša narudžba se prenosi na stol (${reply.naCekanju}) — '
+            ? 'Vaša narudžba se prenosi na stol (${reply.naCekanju}), '
                 'popis se još mijenja.'
-            : 'Kasa prenosi ${reply.naCekanju} stavaka na stol — popis se još '
+            : 'Glavni program prenosi ${reply.naCekanju} stavaka na stol, popis se '
+                'još '
                 'mijenja.',
       ));
     }
@@ -286,7 +287,7 @@ class _StatusBanner extends StatelessWidget {
       rows.add(_Chip(
         icon: Icons.lock_outline,
         color: const Color(0xFFD46A5A),
-        text: 'Stol je otvoren na kasi (${reply.otvorenNa}).',
+        text: 'Stol je otvoren u glavnom programu (${reply.otvorenNa}).',
       ));
     }
 

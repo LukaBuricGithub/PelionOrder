@@ -1,6 +1,7 @@
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 
@@ -10,11 +11,13 @@ import '../models/mqtt_menu.dart';
 import '../state/mqtt_cart.dart';
 import '../state/mqtt_outbox_provider.dart';
 import '../state/mqtt_pending_transfers_provider.dart';
+import '../state/mqtt_send_gate_provider.dart';
 import '../state/mqtt_table_contents.dart';
 import '../state/mqtt_tables_provider.dart';
 import 'mqtt_existing_items.dart';
 import 'mqtt_napomene.dart';
 import 'mqtt_qty_pad.dart';
+import 'mqtt_send_gate_bar.dart';
 
 double _screenScale(BuildContext context) {
   final size = MediaQuery.sizeOf(context);
@@ -63,7 +66,9 @@ class MqttOrderDetailsScreen extends ConsumerStatefulWidget {
 
   /// The table's existing order (owned by the order screen), shown read-only
   /// above the editable lines. Null when the table had no order.
-  final MqttTableContents? contents;
+  /// The table's existing order, as the order screen has it right now —
+  /// it may only start loading while this screen is open.
+  final MqttTableContents? Function()? contents;
 
   /// Called after a successful send, once the ✓ has been shown. The order
   /// screen uses it to close both screens in one step and apply the send.
@@ -191,23 +196,23 @@ class _MqttOrderDetailsScreenState
     // query answer arrives.
     final seed = broj == null ? null : ref.watch(mqttOccupiedProvider)[broj];
     final outbox = ref.watch(mqttOutboxProvider);
+    // §11.4: whether the kasa takes orders right now, and why not.
+    final sendGate = ref.watch(mqttSendGateProvider);
+    final contents = widget.contents?.call();
 
     return MediaQuery(
       data: MediaQuery.of(context).copyWith(
         textScaler: MediaQuery.textScalerOf(context).clamp(maxScaleFactor: 1.3),
       ),
       child: ListenableBuilder(
-        listenable: Listenable.merge([
-          cart,
-          if (widget.contents != null) widget.contents!,
-        ]),
+        listenable: Listenable.merge([cart, ?contents]),
         builder: (context, _) {
           // After a successful send this screen shows its ✓ frame until gone.
           final frozen = _frozen;
           if (frozen != null) return frozen;
           final lines = cart.lines;
           final existing = MqttExistingItems.compute(
-            contents: widget.contents,
+            contents: contents,
             inTransit: inTransit,
             byCode: byCode,
             remarkName: _remarkName,
@@ -267,9 +272,13 @@ class _MqttOrderDetailsScreenState
                         MqttExistingNoticeTile(
                           scale: s,
                           icon: Icons.cloud_off,
-                          text: 'Stavke sa stola nisu dostupne. '
-                              'Dodirnite za ponovni pokušaj.',
-                          onTap: () => widget.contents?.refresh(refill: true),
+                          text: existing.offline
+                              ? existing.error!
+                              : 'Stavke sa stola nisu dostupne. '
+                                    'Dodirnite za ponovni pokušaj.',
+                          onTap: existing.offline
+                              ? null
+                              : () => contents?.refresh(refill: true),
                         ),
                         s,
                       ),
@@ -324,6 +333,9 @@ class _MqttOrderDetailsScreenState
             child: Scaffold(
             appBar: AppBar(
               titleSpacing: 0,
+              // Why sending is locked, right under the title — only while it is.
+              bottom:
+                  sendGate.isOpen ? null : MqttSendGateBar(gate: sendGate),
               title: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 mainAxisSize: MainAxisSize.min,
@@ -373,11 +385,18 @@ class _MqttOrderDetailsScreenState
                   child: _reordering
                       ? ReorderableListView.builder(
                           padding: const EdgeInsets.fromLTRB(12, 12, 12, 8),
-                          // Drag only from the handle, so a vertical swipe
-                          // anywhere else still scrolls a long order.
+                          // The handle drags at once; the rest of a row after a
+                          // long press — so a plain vertical swipe on a row
+                          // still scrolls a long order.
                           buildDefaultDragHandles: false,
                           itemCount: lines.length,
+                          onReorderStart: (_) => HapticFeedback.selectionClick(),
                           onReorder: cart.moveLine,
+                          // The lifted row keeps its own rounded shape: the
+                          // default lift is a plain rectangle that also covers
+                          // the gap under the row.
+                          proxyDecorator: (child, index, animation) =>
+                              _ReorderProxy(animation: animation, child: child),
                           itemBuilder: (context, i) {
                             final line = lines[i];
                             return _ReorderTile(
@@ -434,7 +453,8 @@ class _MqttOrderDetailsScreenState
                     sending: _sending,
                     canSend: lines.isNotEmpty &&
                         !_sending &&
-                        widget.onSend != null,
+                        widget.onSend != null &&
+                        sendGate.isOpen,
                     onSend: _send,
                     confirmed: _confirmed,
                   ),
@@ -703,12 +723,64 @@ class _AddItemButton extends StatelessWidget {
   }
 }
 
+/// How a row looks while it is being dragged: lifted, with a soft shadow in
+/// the row's own rounded shape — not under the gap below it.
+class _ReorderProxy extends StatelessWidget {
+  const _ReorderProxy({required this.animation, required this.child});
+
+  final Animation<double> animation;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    final s = _screenScale(context);
+    return AnimatedBuilder(
+      animation: animation,
+      child: child,
+      builder: (context, child) {
+        final t = Curves.easeInOut.transform(animation.value);
+        return Material(
+          type: MaterialType.transparency,
+          child: Stack(
+            children: [
+              // The shadow, only behind the row (the tile's bottom padding
+              // is the gap to the next row).
+              Positioned.fill(
+                bottom: _kReorderGap * s,
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(12 * s),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withValues(alpha: 0.22 * t),
+                        blurRadius: 14 * t,
+                        offset: Offset(0, 5 * t),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              Transform.scale(scale: 1 + 0.02 * t, child: child),
+            ],
+          ),
+        );
+      },
+    );
+  }
+}
+
+/// Space under each row in reorder mode (unscaled).
+const double _kReorderGap = 8;
+
 /// One row in reorder mode: drag handle · name · ×qty · line total.
 ///
-/// Everything editable is deliberately absent — the handle is the only gesture
+/// Everything editable is deliberately absent — dragging is the only gesture
 /// on the row, so there is nothing for a drag to be confused with, and the rows
 /// stay short and uniform (more of the order on screen, predictable drop
 /// targets).
+///
+/// The handle is a wide strip over the row's full height (drags at once); the
+/// rest of the row drags after a long press.
 class _ReorderTile extends StatelessWidget {
   const _ReorderTile({
     super.key,
@@ -729,52 +801,83 @@ class _ReorderTile extends StatelessWidget {
     final s = _screenScale(context);
 
     return Padding(
-      padding: EdgeInsets.only(bottom: 8 * s),
+      padding: EdgeInsets.only(bottom: _kReorderGap * s),
       child: Material(
         color: scheme.surface,
         clipBehavior: Clip.antiAlias,
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(12 * s),
-          side:
-              BorderSide(color: scheme.outlineVariant.withValues(alpha: 0.5)),
+          side: BorderSide(
+            color: scheme.outlineVariant.withValues(alpha: 0.5),
+          ),
         ),
-        child: Padding(
-          padding: EdgeInsets.fromLTRB(4 * s, 10 * s, 12 * s, 10 * s),
-          child: Row(
-            children: [
-              ReorderableDragStartListener(
-                index: index,
-                child: Padding(
-                  padding: EdgeInsets.symmetric(horizontal: 8 * s),
-                  child: Icon(Icons.drag_handle,
-                      size: 24 * s, color: scheme.onSurfaceVariant),
+        child: ReorderableDelayedDragStartListener(
+          index: index,
+          child: IntrinsicHeight(
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                ReorderableDragStartListener(
+                  index: index,
+                  child: Container(
+                    width: 56 * s,
+                    color: scheme.primary.withValues(alpha: 0.08),
+                    alignment: Alignment.center,
+                    child: Icon(
+                      Icons.drag_handle,
+                      size: 26 * s,
+                      color: scheme.primary,
+                    ),
+                  ),
                 ),
-              ),
-              Expanded(
-                child: Text(
-                  name,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style:
-                      TextStyle(fontSize: 15 * s, fontWeight: FontWeight.w600),
+                Expanded(
+                  child: Padding(
+                    padding: EdgeInsets.fromLTRB(
+                      12 * s,
+                      14 * s,
+                      12 * s,
+                      14 * s,
+                    ),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            name,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              fontSize: 15 * s,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ),
+                        SizedBox(width: 8 * s),
+                        Text(
+                          '×${formatQty(qty)}',
+                          style: TextStyle(
+                            fontSize: 14 * s,
+                            color: scheme.onSurfaceVariant,
+                          ),
+                        ),
+                        SizedBox(width: 10 * s),
+                        SizedBox(
+                          width: _kAmountBaseWidth * s,
+                          child: Text(
+                            lineTotal,
+                            textAlign: TextAlign.right,
+                            maxLines: 1,
+                            style: TextStyle(
+                              fontSize: 14 * s,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
                 ),
-              ),
-              SizedBox(width: 8 * s),
-              Text('×${formatQty(qty)}',
-                  style: TextStyle(
-                      fontSize: 14 * s, color: scheme.onSurfaceVariant)),
-              SizedBox(width: 10 * s),
-              SizedBox(
-                width: _kAmountBaseWidth * s,
-                child: Text(
-                  lineTotal,
-                  textAlign: TextAlign.right,
-                  maxLines: 1,
-                  style:
-                      TextStyle(fontSize: 14 * s, fontWeight: FontWeight.w700),
-                ),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
       ),

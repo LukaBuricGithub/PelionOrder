@@ -4,7 +4,7 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 
 import '../models/mqtt_table_query.dart';
-import 'mqtt_order_sender.dart' show newMsgId;
+import 'mqtt_order_sender.dart' show newQueryId;
 import 'mqtt_service.dart';
 
 /// Builds the "what is on this table" query. `stol` goes out as a NUMBER; the
@@ -72,18 +72,18 @@ class MqttTableQuerySender {
     if (od == null || !svc.isReplyIdValid) {
       return const MqttTableQueryResult(
         outcome: MqttQueryOutcome.neispravno,
-        message: 'Neispravan identifikator uređaja — skenirajte QR kod ponovno.',
+        message: 'Neispravan identifikator uređaja, skenirajte QR kod ponovno.',
       );
     }
     if (!svc.isConnected) {
       return const MqttTableQueryResult(
         outcome: MqttQueryOutcome.kasaNedostupna,
-        message: 'Nema veze s kasom.',
+        message: 'Nema veze s glavnim programom.',
       );
     }
 
     for (var attempt = 1; attempt <= maxAttempts; attempt++) {
-      final msgId = newMsgId();
+      final msgId = newQueryId();
       final payload = buildTableQueryJson(msgId: msgId, od: od, stol: stol);
 
       // Listen BEFORE publishing so a fast answer can't be missed.
@@ -108,7 +108,7 @@ class MqttTableQuerySender {
         return MqttTableQueryResult(
           outcome: MqttQueryOutcome.odbijeno,
           message:
-              reply.poruka.isNotEmpty ? reply.poruka : 'Kasa je odbila upit.',
+              reply.poruka.isNotEmpty ? reply.poruka : 'Glavni program je odbio upit.',
           reply: reply,
         );
       } on TimeoutException {
@@ -120,7 +120,7 @@ class MqttTableQuerySender {
 
     return const MqttTableQueryResult(
       outcome: MqttQueryOutcome.kasaNedostupna,
-      message: 'Kasa ne odgovara.',
+      message: 'Glavni program ne odgovara.',
     );
   }
 }

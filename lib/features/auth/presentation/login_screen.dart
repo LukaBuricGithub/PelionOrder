@@ -102,16 +102,6 @@ class LoginScreen extends ConsumerWidget {
                           enabled: prijavaEnabled,
                           onTap: () => context.push('/pin'),
                         ),
-                        if (mqttUsers.isEmpty) ...[
-                          const SizedBox(height: 14),
-                          Text(
-                            'Spojite se na MQTT (Postavke uređaja) za popis '
-                            'korisnika',
-                            textAlign: TextAlign.center,
-                            style:
-                                TextStyle(color: palette.label, fontSize: 13),
-                          ),
-                        ],
                         const SizedBox(height: 22),
                         SizedBox(
                           width: double.infinity,

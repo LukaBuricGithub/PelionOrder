@@ -15,6 +15,7 @@ class SettingsStorage {
   static const _tableViewSizeKey = 'table_view_size_v1';
   static const _menuViewSizeKey = 'menu_view_size_v1';
   static const _shouldGroupArticlesKey = 'should_group_articles_v1';
+  static const _autoResendKey = 'auto_resend_orders_v1';
   static const _businessNameKey = 'business_name_v1';
   static const _currentUserCodeKey = 'current_user_code_v1';
 
@@ -43,6 +44,15 @@ class SettingsStorage {
 
   Future<void> saveShouldGroupArticles(bool value) async {
     await _prefs.setBool(_shouldGroupArticlesKey, value);
+  }
+
+  /// "Automatsko ponovno slanje": whether orders that didn't get through are
+  /// sent again on their own. Defaults to **false** — the spec's rule is a
+  /// manual resend.
+  bool loadShouldAutoResend() => _prefs.getBool(_autoResendKey) ?? false;
+
+  Future<void> saveShouldAutoResend(bool value) async {
+    await _prefs.setBool(_autoResendKey, value);
   }
 
   /// Venue/business name reported by the `/ping` heartbeat.

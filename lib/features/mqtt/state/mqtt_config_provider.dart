@@ -1,7 +1,9 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../shared/state/shared_preferences_provider.dart';
+import '../data/mqtt_service.dart';
 import '../models/mqtt_connection_config.dart';
 
 /// The raw QR code issued by the kasa (JSON: lic, id, naziv, grupa).
@@ -41,6 +43,18 @@ class MqttConfigNotifier extends StateNotifier<MqttConnectionConfig?> {
     await _prefs.setString(_kMqttQrCodeKey, code.trim());
     state = config;
     return true;
+  }
+
+  /// The kasa refused an order with "nije aktiviran" (§9, §11.6): this code is
+  /// no longer accepted there — never activated, cancelled, or the device was
+  /// deactivated. Disconnect and forget it, so the waiter is asked to scan a
+  /// new one ("Skeniraj kod na kasi"). Unsent orders stay on the phone.
+  Future<void> forgetDevice() async {
+    if (state == null) return;
+    debugPrint('MQTT ▸ the kasa says this orderman is not activated — '
+        'forgetting the code');
+    MqttService.instance.disconnect();
+    await clear();
   }
 
   /// Forgets the provisioning (device must be re-scanned).

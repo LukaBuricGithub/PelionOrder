@@ -38,6 +38,10 @@ class MqttTableContents extends ChangeNotifier {
   /// Why the kasa couldn't be asked — only set while there is no [reply] yet.
   String? error;
 
+  /// [error] is because the kasa can't be reached at all — see
+  /// [markUnreachable].
+  bool offline = false;
+
   Timer? _timer;
   bool _inFlight = false;
   bool _rerun = false;
@@ -49,9 +53,32 @@ class MqttTableContents extends ChangeNotifier {
   int _pendingAsks = 0;
   static const _maxPendingAsks = 20; // 20 × 3 s ≈ a minute without progress
 
+  /// The kasa can't be reached (it, or this phone, is offline): nothing is
+  /// asked — a query would only run into its timeout — and [message] says
+  /// why. An answer already on screen stays. The owner calls [refresh] once
+  /// the kasa is reachable again.
+  void markUnreachable(String message) {
+    if (_disposed) return;
+    _timer?.cancel();
+    if (reply != null) return;
+    error = message;
+    offline = true;
+    loading = false;
+    _slow = false;
+    _slowTimer?.cancel();
+    _slowTimer = null;
+    notifyListeners();
+  }
+
   Future<void> refresh({bool refill = false}) async {
     if (_disposed) return;
     if (refill) _pendingAsks = 0;
+    if (offline) {
+      // Reachable again: back to the placeholders while it is asked.
+      offline = false;
+      error = null;
+      notifyListeners();
+    }
     // One query at a time; a refresh requested meanwhile runs once afterwards.
     if (_inFlight) {
       _rerun = true;
@@ -79,7 +106,7 @@ class MqttTableContents extends ChangeNotifier {
         error = null;
       } else if (reply == null) {
         error =
-            result.message.isNotEmpty ? result.message : 'Kasa ne odgovara.';
+            result.message.isNotEmpty ? result.message : 'Glavni program ne odgovara.';
       }
       loading = false;
       _slow = false;

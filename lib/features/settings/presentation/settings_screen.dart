@@ -1,9 +1,12 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../master_data/state/master_data_providers.dart';
 import '../../mqtt/data/mqtt_service.dart';
 import '../../mqtt/models/mqtt_connection_config.dart';
+import '../../mqtt/models/mqtt_device_status.dart';
 import '../../mqtt/state/mqtt_config_provider.dart';
 import '../../profiles/models/api_entry.dart';
 import '../../profiles/state/profiles_provider.dart';
@@ -29,13 +32,18 @@ class SettingsScreen extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final profiles = ref.watch(profilesProvider);
     final settings = ref.watch(settingsProvider);
+    final config = ref.watch(mqttConfigProvider);
     final theme = Theme.of(context);
 
     return Scaffold(
       appBar: AppBar(title: const Text('Postavke uređaja')),
       body: ListView(
         padding: EdgeInsets.fromLTRB(
-            16, 12, 16, screenContentBottomPadding(context, extra: 24)),
+          16,
+          12,
+          16,
+          screenContentBottomPadding(context, extra: 24),
+        ),
         children: [
           // ── Podatci za prijavu (disabled: login now uses MQTT users) ──────
           if (_showProfileCard) ...[
@@ -45,8 +53,11 @@ class SettingsScreen extends ConsumerWidget {
                   ? _NoProfile(onAdd: () => _openEditor(context, ref))
                   : _ProfileRow(
                       entry: profiles.entries.first,
-                      onEdit: () => _openEditor(context, ref,
-                          entry: profiles.entries.first),
+                      onEdit: () => _openEditor(
+                        context,
+                        ref,
+                        entry: profiles.entries.first,
+                      ),
                       onDelete: () =>
                           _confirmDelete(context, ref, profiles.entries.first),
                     ),
@@ -60,8 +71,10 @@ class SettingsScreen extends ConsumerWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text('Veličina prikaza stolova',
-                    style: theme.textTheme.bodyLarge),
+                Text(
+                  'Veličina prikaza stolova',
+                  style: theme.textTheme.bodyLarge,
+                ),
                 const SizedBox(height: 12),
                 SizedBox(
                   width: double.infinity,
@@ -107,8 +120,10 @@ class SettingsScreen extends ConsumerWidget {
                   ),
                 ),
                 const SizedBox(height: 18),
-                Text('Veličina prikaza artikala',
-                    style: theme.textTheme.bodyLarge),
+                Text(
+                  'Veličina prikaza artikala',
+                  style: theme.textTheme.bodyLarge,
+                ),
                 const SizedBox(height: 12),
                 SizedBox(
                   width: double.infinity,
@@ -145,26 +160,72 @@ class SettingsScreen extends ConsumerWidget {
           // ── Slanje narudžbe ──────────────────────────────────────────────
           _SettingsCard(
             header: 'Slanje narudžbe',
-            child: Row(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Expanded(
-                  child: Text(
-                    'Grupiraj artikle pri slanju',
-                    style: theme.textTheme.bodyLarge
-                        ?.copyWith(fontWeight: FontWeight.w600),
-                  ),
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        'Grupiraj artikle pri slanju',
+                        style: theme.textTheme.bodyLarge?.copyWith(
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Switch(
+                      value: settings.shouldGroupArticles,
+                      onChanged: (v) => ref
+                          .read(settingsProvider.notifier)
+                          .setShouldGroupArticles(v),
+                    ),
+                  ],
                 ),
-                const SizedBox(width: 12),
-                Switch(
-                  value: settings.shouldGroupArticles,
-                  onChanged: (v) => ref
-                      .read(settingsProvider.notifier)
-                      .setShouldGroupArticles(v),
+                const SizedBox(height: 12),
+                Row(
+                  children: [
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Automatsko ponovno slanje',
+                            style: theme.textTheme.bodyLarge?.copyWith(
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            'Neposlane narudžbe šalju se same kad glavni '
+                            'program ponovno prima narudžbe, najkasnije 9 minuta '
+                            'od prvog slanja.',
+                            style: theme.textTheme.bodySmall?.copyWith(
+                              color: theme.colorScheme.onSurfaceVariant,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Switch(
+                      value: settings.shouldAutoResend,
+                      onChanged: (v) => ref
+                          .read(settingsProvider.notifier)
+                          .setShouldAutoResend(v),
+                    ),
+                  ],
                 ),
               ],
             ),
           ),
           const SizedBox(height: 16),
+
+          // ── Veza (once the device has a code) ─────────────────────────────
+          if (config != null) ...[
+            _ConnectionCard(config: config),
+            const SizedBox(height: 16),
+          ],
 
           // ── QR skener ────────────────────────────────────────────────────
           const _QrSkenerCard(),
@@ -174,7 +235,10 @@ class SettingsScreen extends ConsumerWidget {
   }
 
   Future<void> _confirmDelete(
-      BuildContext context, WidgetRef ref, ApiEntry entry) async {
+    BuildContext context,
+    WidgetRef ref,
+    ApiEntry entry,
+  ) async {
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) {
@@ -214,8 +278,11 @@ class SettingsScreen extends ConsumerWidget {
     }
   }
 
-  Future<void> _openEditor(BuildContext context, WidgetRef ref,
-      {ApiEntry? entry}) async {
+  Future<void> _openEditor(
+    BuildContext context,
+    WidgetRef ref, {
+    ApiEntry? entry,
+  }) async {
     final result = await showAppBottomSheet<ApiEntry>(
       context: context,
       sheetBuilder: (ctx) => _ProfileEditorSheet(entry: entry),
@@ -257,10 +324,10 @@ class _SettingsCard extends StatelessWidget {
           Text(
             header.toUpperCase(),
             style: Theme.of(context).textTheme.labelMedium?.copyWith(
-                  color: scheme.primary,
-                  fontWeight: FontWeight.w700,
-                  letterSpacing: 0.5,
-                ),
+              color: scheme.primary,
+              fontWeight: FontWeight.w700,
+              letterSpacing: 0.5,
+            ),
           ),
           const SizedBox(height: 12),
           child,
@@ -270,13 +337,289 @@ class _SettingsCard extends StatelessWidget {
   }
 }
 
+/// "Veza": who this phone is, which kasa it talks to, and whether the
+/// connection is up — live, from the connection and the devices' statuses.
+class _ConnectionCard extends StatelessWidget {
+  const _ConnectionCard({required this.config});
+
+  final MqttConnectionConfig config;
+
+  static const duration = Duration(milliseconds: 250);
+
+  /// "53B5…-PELIONORDER-3" → "PELIONORDER-3"; "53B5…-POS-5" → "POS-5".
+  static String _suffix(String id, String licenca) =>
+      id.startsWith('$licenca-') ? id.substring(licenca.length + 1) : id;
+
+  @override
+  Widget build(BuildContext context) {
+    final svc = MqttService.instance;
+    return _SettingsCard(
+      header: 'Veza',
+      child: ListenableBuilder(
+        listenable: Listenable.merge([
+          svc.connected,
+          svc.statusesReady,
+          svc.devices,
+        ]),
+        builder: (context, _) {
+          final connected = svc.connected.value;
+          final known = connected && svc.statusesReady.value;
+          final kase = [
+            for (final e in svc.devices.value.entries)
+              if (e.value.isKasa) e,
+          ]..sort((a, b) => a.key.compareTo(b.key));
+          // The device's id from the QR code without the licence, as issued
+          // by the kasa: "PELIONORDER-10".
+          final ownName = _suffix(config.uredaj, config.licenca);
+
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              _StatusLine(
+                state: connected ? _Dot.ok : _Dot.bad,
+                text: connected
+                    ? 'Spojeno'
+                    : 'Nije spojeno, pokušava se ponovno…',
+              ),
+              const SizedBox(height: 14),
+              _InfoRow(
+                icon: Icons.smartphone,
+                label: 'Ovaj uređaj',
+                title: ownName,
+                subtitle: '',
+              ),
+              const SizedBox(height: 12),
+              AnimatedSize(
+                duration: duration,
+                curve: Curves.easeInOut,
+                alignment: Alignment.topCenter,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    if (!known)
+                      const _InfoRow(
+                        icon: Icons.point_of_sale,
+                        label: 'Glavni program',
+                        title: 'Nepoznato stanje',
+                        subtitle: '',
+                        dot: _Dot.unknown,
+                      )
+                    else if (kase.isEmpty)
+                      const _InfoRow(
+                        icon: Icons.point_of_sale,
+                        label: 'Glavni program',
+                        title: 'Glavni program nije pronađen',
+                        subtitle: '',
+                        dot: _Dot.bad,
+                      )
+                    else
+                      for (final (i, e) in kase.indexed) ...[
+                        if (i > 0) const SizedBox(height: 10),
+                        _kasaRow(
+                          _suffix(e.key, config.licenca),
+                          e.value,
+                          first: i == 0,
+                        ),
+                      ],
+                  ],
+                ),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _kasaRow(String id, MqttDeviceStatus kasa, {required bool first}) {
+    final (dot, state) = !kasa.isOnline
+        ? (_Dot.bad, 'Nije spojen')
+        : kasa.prima
+        ? (_Dot.ok, 'Spojen, u blagajni')
+        : (_Dot.warn, 'Spojen, nije u blagajni');
+    return _InfoRow(
+      icon: Icons.point_of_sale,
+      label: first ? 'Glavni program' : '',
+      title: kasa.naziv.isEmpty ? id : kasa.naziv,
+      subtitle: '$id · $state',
+      dot: dot,
+    );
+  }
+}
+
+/// ok — green, warn — amber, bad — red, unknown — grey (the phone can't
+/// tell: it isn't connected itself).
+enum _Dot { ok, warn, bad, unknown }
+
+Color _dotColor(_Dot dot, bool dark) => switch (dot) {
+  _Dot.ok => dark ? const Color(0xFF4FC98A) : const Color(0xFF2E9E5B),
+  _Dot.warn => dark ? const Color(0xFFF4A83A) : const Color(0xFFE8890C),
+  _Dot.bad => dark ? const Color(0xFFFF7B72) : const Color(0xFFD64541),
+  _Dot.unknown => dark ? const Color(0xFF9AA6B8) : const Color(0xFF8A94A3),
+};
+
+/// A coloured dot with a soft halo; its colour changes smoothly.
+class _StatusDot extends StatelessWidget {
+  const _StatusDot({required this.state, this.size = 10});
+
+  final _Dot state;
+  final double size;
+
+  @override
+  Widget build(BuildContext context) {
+    final dark = Theme.of(context).brightness == Brightness.dark;
+    final color = _dotColor(state, dark);
+    return AnimatedContainer(
+      duration: _ConnectionCard.duration,
+      width: size,
+      height: size,
+      decoration: BoxDecoration(
+        color: color,
+        shape: BoxShape.circle,
+        boxShadow: [
+          BoxShadow(color: color.withValues(alpha: 0.35), blurRadius: 6),
+        ],
+      ),
+    );
+  }
+}
+
+/// The connection's own state: a dot and a word, both changing smoothly.
+class _StatusLine extends StatelessWidget {
+  const _StatusLine({required this.state, required this.text});
+
+  final _Dot state;
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Row(
+      children: [
+        _StatusDot(state: state, size: 12),
+        const SizedBox(width: 10),
+        Expanded(
+          child: AnimatedSwitcher(
+            duration: _ConnectionCard.duration,
+            layoutBuilder: (current, previous) => Stack(
+              alignment: Alignment.centerLeft,
+              children: [...previous, ?current],
+            ),
+            child: Text(
+              text,
+              key: ValueKey(text),
+              style: theme.textTheme.bodyLarge?.copyWith(
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+/// One line of the "Veza" card: an icon, a small label, a name and details —
+/// with a state dot in front of the details for a kasa.
+class _InfoRow extends StatelessWidget {
+  const _InfoRow({
+    required this.icon,
+    required this.label,
+    required this.title,
+    required this.subtitle,
+    this.dot,
+  });
+
+  final IconData icon;
+  final String label;
+  final String title;
+  final String subtitle;
+  final _Dot? dot;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final dot = this.dot;
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Container(
+          width: 38,
+          height: 38,
+          decoration: BoxDecoration(
+            color: scheme.primary.withValues(alpha: 0.10),
+            borderRadius: BorderRadius.circular(10),
+          ),
+          child: Icon(icon, size: 20, color: scheme.primary),
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              if (label.isNotEmpty)
+                Text(
+                  label,
+                  style: theme.textTheme.labelSmall?.copyWith(
+                    color: scheme.onSurfaceVariant,
+                  ),
+                ),
+              Row(
+                children: [
+                  // No details line: the state dot goes before the name.
+                  if (dot != null && subtitle.isEmpty) ...[
+                    _StatusDot(state: dot, size: 8),
+                    const SizedBox(width: 8),
+                  ],
+                  Expanded(
+                    child: Text(
+                      title,
+                      style: theme.textTheme.bodyLarge?.copyWith(
+                        fontWeight: FontWeight.w600,
+                        color: dot == _Dot.unknown
+                            ? _dotColor(
+                                _Dot.unknown,
+                                theme.brightness == Brightness.dark,
+                              )
+                            : null,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              if (subtitle.isNotEmpty)
+                Row(
+                  children: [
+                    if (dot != null) ...[
+                      _StatusDot(state: dot, size: 8),
+                      const SizedBox(width: 6),
+                    ],
+                    Expanded(
+                      child: Text(
+                        subtitle,
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: scheme.onSurfaceVariant,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+}
+
 /// QR skener section: scan the code issued by the kasa
 /// (`{"lic","id","naziv","grupa"}`) and connect with it.
 ///
 /// Scanning **provisions the device**: the code is persisted (see
 /// [mqttConfigProvider]) and the broker connection is established right away.
-/// From then on the app reconnects on its own at every launch and on resume, so
-/// the button below is only ever needed as a manual retry.
+/// From then on the app connects on its own at every launch and on resume, and
+/// keeps retrying in the background — there is no manual connect button.
 class _QrSkenerCard extends ConsumerStatefulWidget {
   const _QrSkenerCard();
 
@@ -285,18 +628,15 @@ class _QrSkenerCard extends ConsumerStatefulWidget {
 }
 
 class _QrSkenerCardState extends ConsumerState<_QrSkenerCard> {
-  bool _connecting = false;
-
   Future<void> _scan() async {
-    final code = await Navigator.of(context).push<String>(
-      MaterialPageRoute(builder: (_) => const QrScannerScreen()),
-    );
+    final code = await Navigator.of(
+      context,
+    ).push<String>(QrScannerScreen.route());
     if (!mounted || code == null || code.isEmpty) return;
     // Remember the provisioning, then connect with it immediately. A code that
     // isn't a valid orderman code from the kasa is refused and changes nothing,
     // so a wrong scan can't replace a working provisioning.
-    final saved =
-        await ref.read(mqttConfigProvider.notifier).saveScanned(code);
+    final saved = await ref.read(mqttConfigProvider.notifier).saveScanned(code);
     if (!mounted) return;
     if (!saved) {
       // A dialog, not a snackbar: it must be seen, on every device.
@@ -304,10 +644,7 @@ class _QrSkenerCardState extends ConsumerState<_QrSkenerCard> {
         context: context,
         builder: (ctx) => AlertDialog(
           title: const Text('Neispravan QR kod'),
-          content: const Text(
-            'Ovo nije QR kod za orderman. Na kasi otvorite „Novi orderman" i '
-            'skenirajte kod koji se prikaže.',
-          ),
+          content: const Text('Ovo nije QR kod za Pelion Order.'),
           actions: [
             FilledButton(
               onPressed: () => Navigator.pop(ctx),
@@ -319,27 +656,42 @@ class _QrSkenerCardState extends ConsumerState<_QrSkenerCard> {
       return;
     }
     final config = ref.read(mqttConfigProvider);
-    if (config != null) await _connect(config, replacing: true);
+    if (config != null) await _connect(config);
   }
 
-  Future<void> _connect(
-    MqttConnectionConfig config, {
-    bool replacing = false,
-  }) async {
-    final messenger = ScaffoldMessenger.of(context);
-    setState(() => _connecting = true);
-    messenger.showSnackBar(const SnackBar(content: Text('MQTT: spajanje…')));
+  /// Connects with a freshly scanned code, in a small card that shows the
+  /// attempt: moving dots while it runs, then a green check or a red X. If
+  /// this first attempt fails, the service keeps retrying on its own.
+  ///
+  /// The service's own lines ("MQTT: …") only go to the debug console.
+  Future<void> _connect(MqttConnectionConfig config) async {
+    debugPrint('MQTT: spajanje…');
     // A new QR replaces the old provisioning — drop the live session first, or
     // connectAndSend would keep the previous licenca ("already connected").
-    if (replacing && MqttService.instance.isConnected) {
-      MqttService.instance.disconnect();
-    }
-    final result = await MqttService.instance.connectAndSend(config);
+    if (MqttService.instance.isConnected) MqttService.instance.disconnect();
+    final attempt = MqttService.instance.connectAndSend(config).then((result) {
+      debugPrint(result);
+      if (MqttService.instance.isConnected) return _ConnectOutcome.connected;
+      if (result.startsWith('MQTT: broker je odbio')) {
+        return _ConnectOutcome.refused;
+      }
+      if (result.startsWith('MQTT: nije spojeno')) {
+        return _ConnectOutcome.failed;
+      }
+      // Already in progress, interrupted, not provisioned: nothing to show.
+      return _ConnectOutcome.none;
+    });
     if (!mounted) return;
-    setState(() => _connecting = false);
-    messenger
-      ..hideCurrentSnackBar()
-      ..showSnackBar(SnackBar(content: Text(result)));
+    await showGeneralDialog<void>(
+      context: context,
+      barrierDismissible: true,
+      barrierLabel: 'Spajanje',
+      barrierColor: Colors.black.withValues(alpha: 0.35),
+      transitionDuration: const Duration(milliseconds: 200),
+      pageBuilder: (context, _, _) => _ConnectCard(attempt: attempt),
+      transitionBuilder: (context, animation, _, child) =>
+          FadeTransition(opacity: animation, child: child),
+    );
   }
 
   @override
@@ -361,28 +713,6 @@ class _QrSkenerCardState extends ConsumerState<_QrSkenerCard> {
               ),
             ),
           ),
-          if (config != null) ...[
-            // Nothing about the provisioning is shown: not the scanned code,
-            // not the licenca, and not the connection payload (broker, port,
-            // password…). All of it was a development aid; the waiter only
-            // needs the two buttons. `config.toPrettyJson()` still builds the
-            // payload if it's ever wanted for diagnostics.
-            const SizedBox(height: 12),
-            SizedBox(
-              width: double.infinity,
-              child: FilledButton.icon(
-                onPressed: _connecting ? null : () => _connect(config),
-                icon: _connecting
-                    ? const SizedBox(
-                        width: 18,
-                        height: 18,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : const Icon(Icons.wifi_tethering),
-                label: Text(_connecting ? 'Spajanje…' : 'Spoji se na MQTT'),
-              ),
-            ),
-          ],
         ],
       ),
     );
@@ -483,12 +813,15 @@ class _ProfileEditorSheet extends StatefulWidget {
 }
 
 class _ProfileEditorSheetState extends State<_ProfileEditorSheet> {
-  late final TextEditingController _name =
-      TextEditingController(text: widget.entry?.name ?? '');
-  late final TextEditingController _ip =
-      TextEditingController(text: widget.entry?.ip ?? '');
-  late final TextEditingController _apiKey =
-      TextEditingController(text: widget.entry?.apiKey ?? '');
+  late final TextEditingController _name = TextEditingController(
+    text: widget.entry?.name ?? '',
+  );
+  late final TextEditingController _ip = TextEditingController(
+    text: widget.entry?.ip ?? '',
+  );
+  late final TextEditingController _apiKey = TextEditingController(
+    text: widget.entry?.apiKey ?? '',
+  );
 
   final _formKey = GlobalKey<FormState>();
 
@@ -502,13 +835,13 @@ class _ProfileEditorSheetState extends State<_ProfileEditorSheet> {
 
   void _save() {
     if (!_formKey.currentState!.validate()) return;
-    final result = (widget.entry ??
-            const ApiEntry(id: 0, name: '', ip: '', apiKey: ''))
-        .copyWith(
-      name: _name.text.trim(),
-      ip: _ip.text.trim(),
-      apiKey: _apiKey.text.trim(),
-    );
+    final result =
+        (widget.entry ?? const ApiEntry(id: 0, name: '', ip: '', apiKey: ''))
+            .copyWith(
+              name: _name.text.trim(),
+              ip: _ip.text.trim(),
+              apiKey: _apiKey.text.trim(),
+            );
     Navigator.pop(context, result);
   }
 
@@ -568,13 +901,322 @@ class _ProfileEditorSheetState extends State<_ProfileEditorSheet> {
           ),
           const SizedBox(width: 12),
           Expanded(
-            child: FilledButton(
-              onPressed: _save,
-              child: const Text('Spremi'),
-            ),
+            child: FilledButton(onPressed: _save, child: const Text('Spremi')),
           ),
         ],
       ),
     );
   }
+}
+
+/// How a connection attempt from the QR card ended.
+enum _ConnectOutcome { connected, refused, failed, none }
+
+/// The connection attempt after a scan, in one card that changes in place:
+/// blue moving dots with "Spajanje…" → a green check with "Spojeno", or a red
+/// X with "Prijava odbijena" / "Pogreška pri spajanju". It closes on its own.
+///
+/// The dots only fade in once the attempt has taken a moment, so a quick
+/// connection goes straight to the check without a flash of "Spajanje…".
+class _ConnectCard extends StatefulWidget {
+  const _ConnectCard({required this.attempt});
+
+  final Future<_ConnectOutcome> attempt;
+
+  @override
+  State<_ConnectCard> createState() => _ConnectCardState();
+}
+
+class _ConnectCardState extends State<_ConnectCard>
+    with SingleTickerProviderStateMixin {
+  /// Null while the attempt runs.
+  _ConnectOutcome? _outcome;
+
+  /// The attempt has taken long enough to show "Spajanje…".
+  bool _slow = false;
+
+  late final AnimationController _mark = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 900),
+  );
+  late final _circle = CurvedAnimation(
+    parent: _mark,
+    curve: const Interval(0.0, 0.5, curve: Curves.easeOutBack),
+  );
+  late final _stroke = CurvedAnimation(
+    parent: _mark,
+    curve: const Interval(0.35, 0.8, curve: Curves.easeOutCubic),
+  );
+  late final _text = CurvedAnimation(
+    parent: _mark,
+    curve: const Interval(0.55, 1.0, curve: Curves.easeOut),
+  );
+
+  static const _slowAfter = Duration(milliseconds: 300);
+  static const _holdConnected = Duration(milliseconds: 1800);
+  static const _holdError = Duration(milliseconds: 2600);
+
+  @override
+  void initState() {
+    super.initState();
+    Future<void>.delayed(_slowAfter, () {
+      if (mounted && _outcome == null) setState(() => _slow = true);
+    });
+    widget.attempt.then((outcome) {
+      if (!mounted) return;
+      if (outcome == _ConnectOutcome.none) {
+        Navigator.of(context).maybePop();
+        return;
+      }
+      setState(() => _outcome = outcome);
+      _mark.forward();
+      Future<void>.delayed(
+        outcome == _ConnectOutcome.connected ? _holdConnected : _holdError,
+        () {
+          if (mounted) Navigator.of(context).maybePop();
+        },
+      );
+    });
+  }
+
+  @override
+  void dispose() {
+    _mark.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final dark = theme.brightness == Brightness.dark;
+    final outcome = _outcome;
+    final ok = outcome == _ConnectOutcome.connected;
+    final color = ok
+        ? (dark ? const Color(0xFF4FC98A) : const Color(0xFF2E9E5B))
+        : (dark ? const Color(0xFFFF7B72) : const Color(0xFFD64541));
+    final title = switch (outcome) {
+      _ConnectOutcome.connected => 'Spojeno',
+      _ConnectOutcome.refused =>
+        'Prijava odbijena, skenirajte novi kod u glavnom programu',
+      _ => 'Pogreška pri spajanju',
+    };
+
+    final Widget body = outcome == null
+        ? AnimatedOpacity(
+            key: const ValueKey('waiting'),
+            opacity: _slow ? 1 : 0,
+            duration: const Duration(milliseconds: 200),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                SizedBox(
+                  width: 96,
+                  height: 96,
+                  child: Center(
+                    child: _LoadingDots(color: theme.colorScheme.primary),
+                  ),
+                ),
+                const SizedBox(height: 20),
+                Text(
+                  'Spajanje…',
+                  style: theme.textTheme.titleLarge?.copyWith(
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ],
+            ),
+          )
+        : Column(
+            key: const ValueKey('result'),
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              ScaleTransition(
+                scale: _circle,
+                child: Container(
+                  width: 96,
+                  height: 96,
+                  decoration: BoxDecoration(
+                    color: color,
+                    shape: BoxShape.circle,
+                    boxShadow: [
+                      BoxShadow(
+                        color: color.withValues(alpha: 0.35),
+                        blurRadius: 24,
+                        offset: const Offset(0, 8),
+                      ),
+                    ],
+                  ),
+                  child: AnimatedBuilder(
+                    animation: _stroke,
+                    builder: (context, _) => CustomPaint(
+                      painter: ok
+                          ? _CheckPainter(progress: _stroke.value)
+                          : _CrossPainter(progress: _stroke.value),
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 20),
+              FadeTransition(
+                opacity: _text,
+                child: Text(
+                  title,
+                  textAlign: TextAlign.center,
+                  style: theme.textTheme.titleLarge?.copyWith(
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
+            ],
+          );
+
+    // The whole card waits too: a quick connection shows only the check.
+    return Center(
+      child: AnimatedOpacity(
+        opacity: _slow || outcome != null ? 1 : 0,
+        duration: const Duration(milliseconds: 150),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 32),
+          child: Material(
+            color: theme.colorScheme.surface,
+            borderRadius: BorderRadius.circular(24),
+            elevation: 8,
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(minWidth: 220, maxWidth: 320),
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(32, 32, 32, 28),
+                child: AnimatedSize(
+                  duration: const Duration(milliseconds: 200),
+                  curve: Curves.easeOut,
+                  child: AnimatedSwitcher(
+                    duration: const Duration(milliseconds: 150),
+                    child: body,
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Three dots rising and falling one after another.
+class _LoadingDots extends StatefulWidget {
+  const _LoadingDots({required this.color});
+
+  final Color color;
+
+  @override
+  State<_LoadingDots> createState() => _LoadingDotsState();
+}
+
+class _LoadingDotsState extends State<_LoadingDots>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _c = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 1100),
+  )..repeat();
+
+  @override
+  void dispose() {
+    _c.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _c,
+      builder: (context, _) => Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [for (var i = 0; i < 3; i++) _dot(i)],
+      ),
+    );
+  }
+
+  Widget _dot(int i) {
+    // Each dot runs the same bump, a third of a cycle after the previous one.
+    final t = (_c.value - i * 0.18) % 1.0;
+    final bump = t < 0.5 ? math.sin(t / 0.5 * math.pi) : 0.0;
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 5),
+      child: Transform.translate(
+        offset: Offset(0, -10 * bump),
+        child: Opacity(
+          opacity: 0.45 + 0.55 * bump,
+          child: Container(
+            width: 14,
+            height: 14,
+            decoration: BoxDecoration(
+              color: widget.color,
+              shape: BoxShape.circle,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+Paint _markPaint(Size size) => Paint()
+  ..color = Colors.white
+  ..style = PaintingStyle.stroke
+  ..strokeWidth = size.width * 0.085
+  ..strokeCap = StrokeCap.round
+  ..strokeJoin = StrokeJoin.round;
+
+/// Draws [path] up to [progress] (0–1) of its length, contour by contour.
+void _drawPartial(Canvas canvas, Path path, double progress, Paint paint) {
+  final metrics = path.computeMetrics().toList();
+  final total = metrics.fold<double>(0, (sum, m) => sum + m.length);
+  var left = total * progress;
+  for (final m in metrics) {
+    if (left <= 0) break;
+    canvas.drawPath(m.extractPath(0, math.min(left, m.length)), paint);
+    left -= m.length;
+  }
+}
+
+/// A white check mark drawn from its short stroke to its long one.
+class _CheckPainter extends CustomPainter {
+  _CheckPainter({required this.progress});
+
+  final double progress;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (progress <= 0) return;
+    final path = Path()
+      ..moveTo(size.width * 0.28, size.height * 0.52)
+      ..lineTo(size.width * 0.44, size.height * 0.67)
+      ..lineTo(size.width * 0.73, size.height * 0.36);
+    _drawPartial(canvas, path, progress, _markPaint(size));
+  }
+
+  @override
+  bool shouldRepaint(_CheckPainter old) => old.progress != progress;
+}
+
+/// A white X drawn one stroke after the other.
+class _CrossPainter extends CustomPainter {
+  _CrossPainter({required this.progress});
+
+  final double progress;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (progress <= 0) return;
+    const a = 0.33, b = 0.67;
+    final path = Path()
+      ..moveTo(size.width * a, size.height * a)
+      ..lineTo(size.width * b, size.height * b)
+      ..moveTo(size.width * b, size.height * a)
+      ..lineTo(size.width * a, size.height * b);
+    _drawPartial(canvas, path, progress, _markPaint(size));
+  }
+
+  @override
+  bool shouldRepaint(_CrossPainter old) => old.progress != progress;
 }

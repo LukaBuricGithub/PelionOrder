@@ -7,6 +7,8 @@ import '../../auth/state/session_provider.dart';
 import '../../settings/presentation/settings_drawer.dart';
 import '../../mqtt/presentation/mqtt_table_select_screen.dart'
     show precacheTableSelectSvgs;
+import '../../mqtt/state/mqtt_config_provider.dart';
+import '../../mqtt/state/mqtt_orders_provider.dart';
 import '../../mqtt/state/mqtt_outbox_provider.dart';
 
 /// "Izbornik", the waiter's main hub after login: the signed-in user and the
@@ -16,8 +18,7 @@ class CashRegisterScreen extends ConsumerStatefulWidget {
   const CashRegisterScreen({super.key});
 
   @override
-  ConsumerState<CashRegisterScreen> createState() =>
-      _CashRegisterScreenState();
+  ConsumerState<CashRegisterScreen> createState() => _CashRegisterScreenState();
 }
 
 class _CashRegisterScreenState extends ConsumerState<CashRegisterScreen> {
@@ -45,15 +46,22 @@ class _CashRegisterScreenState extends ConsumerState<CashRegisterScreen> {
   @override
   Widget build(BuildContext context) {
     final user = ref.watch(currentUserProvider);
+    final venue = ref.watch(mqttConfigProvider)?.naziv.trim() ?? '';
+    final theme = Theme.of(context);
     // Unsent orders this waiter may see — their own, or all with pravo 008.
-    final unsentCount = ref
-        .watch(mqttOutboxProvider)
-        .where((o) => mqttOutboxVisibleTo(
-              o,
-              cuser: user?.code,
-              allTables: user?.allTablesOpenRight ?? false,
-            ))
-        .length;
+    final unsentCount =
+        ref
+            .watch(mqttOutboxProvider)
+            .where(
+              (o) => mqttOutboxVisibleTo(
+                o,
+                cuser: user?.code,
+                allTables: user?.allTablesOpenRight ?? false,
+              ),
+            )
+            .length +
+        // Plus tables with items added on this phone and not sent yet.
+        ref.watch(mqttVisibleDraftsProvider).length;
 
     return PopScope(
       // The hub is the top of the logged-in area. Back must NOT close the app —
@@ -65,59 +73,82 @@ class _CashRegisterScreenState extends ConsumerState<CashRegisterScreen> {
         _forgetSession();
       },
       child: Scaffold(
-      key: _scaffoldKey,
-      endDrawer: const SettingsDrawer(),
-      appBar: AppBar(
-        // What the screen is: the list of things the waiter can do. (It used
-        // to show the venue name from the old REST server, else "Blagajna".)
-        title: const Text('Izbornik'),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.settings_outlined),
-            tooltip: 'Postavke',
-            onPressed: () => _scaffoldKey.currentState?.openEndDrawer(),
-          ),
-        ],
-      ),
-      body: SafeArea(
-        child: Center(
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 480),
-            child: ListView(
-              padding: const EdgeInsets.all(16),
-              children: [
-                Card(
-                  child: ListTile(
-                    leading: CircleAvatar(
-                      child: Text(
-                        (user?.username.isNotEmpty ?? false)
-                            ? user!.username.characters.first.toUpperCase()
-                            : '?',
-                      ),
+        key: _scaffoldKey,
+        endDrawer: const SettingsDrawer(),
+        appBar: AppBar(
+          // What the screen is: the list of things the waiter can do. (It used
+          // to show the venue name from the old REST server, else "Blagajna".)
+          title: const Text('Izbornik'),
+          actions: [
+            IconButton(
+              icon: const Icon(Icons.settings_outlined),
+              tooltip: 'Postavke',
+              onPressed: () => _scaffoldKey.currentState?.openEndDrawer(),
+            ),
+          ],
+        ),
+        body: SafeArea(
+          child: Center(
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 480),
+              child: ListView(
+                padding: const EdgeInsets.all(16),
+                children: [
+                  Card(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        // The venue this phone belongs to — the name from the
+                        // kasa's QR code — above the signed-in waiter.
+                        if (venue.isNotEmpty) ...[
+                          Padding(
+                            padding: const EdgeInsets.fromLTRB(16, 14, 16, 10),
+                            child: Text(
+                              venue,
+                              style: theme.textTheme.titleMedium?.copyWith(
+                                fontWeight: FontWeight.w700,
+                                color: theme.colorScheme.primary,
+                              ),
+                            ),
+                          ),
+                          const Divider(height: 1, indent: 16, endIndent: 16),
+                        ],
+                        ListTile(
+                          leading: CircleAvatar(
+                            child: Text(
+                              (user?.username.isNotEmpty ?? false)
+                                  ? user!.username.characters.first
+                                        .toUpperCase()
+                                  : '?',
+                            ),
+                          ),
+                          title: Text(user?.username ?? 'Nepoznat korisnik'),
+                          subtitle: Text(
+                            user?.superuser == true
+                                ? 'Voditelj (superuser)'
+                                : 'Konobar',
+                          ),
+                        ),
+                      ],
                     ),
-                    title: Text(user?.username ?? 'Nepoznat korisnik'),
-                    subtitle: Text(user?.superuser == true
-                        ? 'Voditelj (superuser)'
-                        : 'Konobar'),
                   ),
-                ),
-                const SizedBox(height: 8),
-                _MenuButton(
-                  icon: Icons.fastfood,
-                  label: 'Unos narudžbe',
-                  onTap: () => context.push('/mqtt-tables'),
-                ),
-                _MenuButton(
-                  icon: Icons.schedule_send_outlined,
-                  label: 'Neposlane narudžbe',
-                  count: unsentCount,
-                  onTap: () => context.push('/mqtt-outbox'),
-                ),
-              ],
+                  const SizedBox(height: 8),
+                  _MenuButton(
+                    icon: Icons.fastfood,
+                    label: 'Unos narudžbe',
+                    onTap: () => context.push('/mqtt-tables'),
+                  ),
+                  _MenuButton(
+                    icon: Icons.schedule_send_outlined,
+                    label: 'Neposlane narudžbe',
+                    count: unsentCount,
+                    onTap: () => context.push('/mqtt-outbox'),
+                  ),
+                ],
+              ),
             ),
           ),
         ),
-      ),
       ),
     );
   }
@@ -154,8 +185,10 @@ class _MenuButton extends StatelessWidget {
             children: [
               if (count > 0)
                 Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 8,
+                    vertical: 2,
+                  ),
                   decoration: BoxDecoration(
                     color: scheme.error,
                     borderRadius: BorderRadius.circular(10),

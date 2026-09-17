@@ -66,7 +66,7 @@ class _PinScreenState extends ConsumerState<PinScreen>
     if (_checking || _wrong) return;
     HapticFeedback.selectionClick();
     if (_digits.isEmpty) {
-      setState(() => _error = 'Unesite PIN.');
+      setState(() => _error = 'Unesite PIN');
       return;
     }
     setState(() {
@@ -83,8 +83,7 @@ class _PinScreenState extends ConsumerState<PinScreen>
         setState(() {
           _checking = false;
           _digits.clear();
-          _error = 'Nema popisa korisnika. Spojite se na MQTT '
-              '(Postavke uređaja).';
+          _error = 'Popis korisnika nije učitan';
         });
       } else {
         await _rejectPin();
@@ -135,7 +134,29 @@ class _PinScreenState extends ConsumerState<PinScreen>
                     mainAxisSize: MainAxisSize.min,
                     children: [
                   Text('Unesite PIN', style: theme.textTheme.titleLarge),
-                  const SizedBox(height: 20),
+                  // A reserved slot for the red message, right under the
+                  // title: it fades in and out without moving anything.
+                  SizedBox(
+                    height: 44,
+                    width: double.infinity,
+                    child: Center(
+                      child: AnimatedSwitcher(
+                        duration: const Duration(milliseconds: 160),
+                        child: _error == null
+                            ? const SizedBox.shrink()
+                            : Text(
+                                _error!,
+                                key: ValueKey(_error),
+                                textAlign: TextAlign.center,
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(
+                                  color: theme.colorScheme.error,
+                                ),
+                              ),
+                      ),
+                    ),
+                  ),
                   AnimatedBuilder(
                     animation: _shake,
                     builder: (context, child) {
@@ -151,24 +172,7 @@ class _PinScreenState extends ConsumerState<PinScreen>
                     },
                     child: _PinDots(length: _digits.length, error: _wrong),
                   ),
-                  // No reserved slot: the message is the exception now, so the
-                  // gap only exists when there is something in it.
-                  AnimatedSize(
-                    duration: const Duration(milliseconds: 160),
-                    curve: Curves.easeOut,
-                    child: _error == null
-                        ? const SizedBox(width: double.infinity)
-                        : Padding(
-                            padding: const EdgeInsets.only(top: 12),
-                            child: Text(
-                              _error!,
-                              textAlign: TextAlign.center,
-                              style:
-                                  TextStyle(color: theme.colorScheme.error),
-                            ),
-                          ),
-                  ),
-                  const SizedBox(height: 12),
+                  const SizedBox(height: 16),
                   _Keypad(
                     onDigit: _onDigit,
                     onDelete: _onDelete,

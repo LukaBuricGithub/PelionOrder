@@ -25,14 +25,23 @@ enum MqttExistingStatus {
   /// (`MqttRacunStavka.poslano`), a different stage this tag does not show.
   zaprimljeno,
 
-  /// Frozen in "Neposlane narudžbe" with no answer from the kasa yet — resent
-  /// automatically. Shown as "Čeka potvrdu".
+  /// In "Neposlane narudžbe", being sent right now (waiting at most 10 s for
+  /// the kasa). Shown as "Čeka potvrdu".
   neposlano,
 
-  /// Refused by the kasa; waits for the waiter in "Neposlane narudžbe".
+  /// In "Neposlane narudžbe": sent, but the kasa didn't confirm it — it may
+  /// have been printed. Shown as "Nije potvrđena".
+  nepotvrdena,
+
+  /// In "Neposlane narudžbe": it never left the phone. Shown as "Nije poslana".
+  neposlana,
+
+  /// Refused by the kasa; waits for the waiter in "Neposlane narudžbe". Shown
+  /// as "Nije primljena".
   odbijeno,
 
-  /// Reached the kasa too late; waits for the waiter in "Neposlane narudžbe".
+  /// Refused by the kasa as "zastarjela"; waits for the waiter in "Neposlane
+  /// narudžbe".
   isteklo,
 }
 
@@ -57,23 +66,43 @@ enum MqttExistingStatus {
           'Poslano',
           Icons.check,
         ),
-      // Red family: the kasa has NOT confirmed these — the one state a waiter
-      // must never mistake for sent.
+      // Amber: with the broker, waiting for the kasa — nothing to do yet.
       MqttExistingStatus.neposlano => (
-          dark ? const Color(0xFFFF7B72) : const Color(0xFFD64541),
+          dark ? const Color(0xFFF4A83A) : const Color(0xFFE8890C),
           'Čeka potvrdu',
-          Icons.sync_problem,
+          Icons.hourglass_top_rounded,
+        ),
+      MqttExistingStatus.nepotvrdena => (
+          dark ? const Color(0xFFF4A83A) : const Color(0xFFE8890C),
+          'Nije potvrđena',
+          Icons.help_outline,
+        ),
+      // Red: didn't get through — to be sent again or deleted.
+      MqttExistingStatus.neposlana => (
+          dark ? const Color(0xFFFF7B72) : const Color(0xFFB03A2E),
+          'Nije poslana',
+          Icons.cloud_off_outlined,
         ),
       MqttExistingStatus.odbijeno => (
           dark ? const Color(0xFFFF7B72) : const Color(0xFFB03A2E),
-          'Odbijeno',
+          'Nije primljena',
           Icons.block,
         ),
       MqttExistingStatus.isteklo => (
           dark ? const Color(0xFFFF7B72) : const Color(0xFFB03A2E),
-          'Isteklo',
+          'Zastarjela',
           Icons.timer_off_outlined,
         ),
+    };
+
+/// The tag for an order in "Neposlane narudžbe".
+MqttExistingStatus mqttExistingStatusForOutbox(MqttOutboxStatus status) =>
+    switch (status) {
+      MqttOutboxStatus.sending => MqttExistingStatus.neposlano,
+      MqttOutboxStatus.unconfirmed => MqttExistingStatus.nepotvrdena,
+      MqttOutboxStatus.notSent => MqttExistingStatus.neposlana,
+      MqttOutboxStatus.refused => MqttExistingStatus.odbijeno,
+      MqttOutboxStatus.stale => MqttExistingStatus.isteklo,
     };
 
 /// The notice for lines another device is still sending — the kasa reports
@@ -132,6 +161,7 @@ class MqttExistingItems {
     required this.awaiting,
     required this.placeholders,
     required this.error,
+    this.offline = false,
   });
 
   static const none = MqttExistingItems(
@@ -173,6 +203,11 @@ class MqttExistingItems {
 
   /// The kasa couldn't be asked and there is no earlier answer to show.
   final String? error;
+
+  /// [error] is because the kasa can't be reached right now (it, or this
+  /// phone, is offline): nothing was asked, and the lines load by themselves
+  /// once it can be — [error] says why, and there is nothing to retry by hand.
+  final bool offline;
 
   bool get hasContent =>
       rows.isNotEmpty ||
@@ -281,15 +316,12 @@ class MqttExistingItems {
       }
     }
 
-    // ...and what is frozen in "Neposlane narudžbe". Only a waiting order counts
-    // toward the total: a refused or expired one won't reach the table unless
-    // the waiter sends it again.
+    // ...and what is frozen in "Neposlane narudžbe". Only an order being sent
+    // right now counts toward the total: any other won't reach the table unless
+    // the waiter sends it again (and an unconfirmed one that was printed after
+    // all is already in the kasa's total).
     for (final order in unsent) {
-      final status = switch (order.status) {
-        MqttOutboxStatus.waiting => MqttExistingStatus.neposlano,
-        MqttOutboxStatus.rejected => MqttExistingStatus.odbijeno,
-        MqttOutboxStatus.expired => MqttExistingStatus.isteklo,
-      };
+      final status = mqttExistingStatusForOutbox(order.status);
       for (var j = 0; j < order.lines.length; j++) {
         final l = order.lines[j];
         final a = byCode[l.code];
@@ -303,7 +335,7 @@ class MqttExistingItems {
           amount: amount,
           status: status,
         ));
-        if (order.status == MqttOutboxStatus.waiting) total += amount;
+        if (order.status == MqttOutboxStatus.sending) total += amount;
       }
     }
 
@@ -317,6 +349,7 @@ class MqttExistingItems {
       awaiting: awaiting,
       placeholders: placeholders,
       error: reply == null ? contents?.error : null,
+      offline: reply == null && (contents?.offline ?? false),
     );
   }
 }

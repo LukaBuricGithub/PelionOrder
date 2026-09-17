@@ -16,24 +16,28 @@ class SettingsState {
     this.tableViewSize = TableViewSize.medium,
     this.menuViewSize = MenuViewSize.small,
     this.shouldGroupArticles = false,
+    this.shouldAutoResend = false,
     this.businessName,
   });
 
   final TableViewSize tableViewSize;
   final MenuViewSize menuViewSize;
   final bool shouldGroupArticles;
+  final bool shouldAutoResend;
   final String? businessName;
 
   SettingsState copyWith({
     TableViewSize? tableViewSize,
     MenuViewSize? menuViewSize,
     bool? shouldGroupArticles,
+    bool? shouldAutoResend,
     String? businessName,
   }) {
     return SettingsState(
       tableViewSize: tableViewSize ?? this.tableViewSize,
       menuViewSize: menuViewSize ?? this.menuViewSize,
       shouldGroupArticles: shouldGroupArticles ?? this.shouldGroupArticles,
+      shouldAutoResend: shouldAutoResend ?? this.shouldAutoResend,
       businessName: businessName ?? this.businessName,
     );
   }
@@ -46,6 +50,7 @@ class SettingsController extends StateNotifier<SettingsState> {
           tableViewSize: _storage.loadTableViewSize(),
           menuViewSize: _storage.loadMenuViewSize(),
           shouldGroupArticles: _storage.loadShouldGroupArticles(),
+          shouldAutoResend: _storage.loadShouldAutoResend(),
           businessName: _storage.loadBusinessName(),
         ));
 
@@ -64,6 +69,11 @@ class SettingsController extends StateNotifier<SettingsState> {
   Future<void> setShouldGroupArticles(bool value) async {
     await _storage.saveShouldGroupArticles(value);
     state = state.copyWith(shouldGroupArticles: value);
+  }
+
+  Future<void> setShouldAutoResend(bool value) async {
+    await _storage.saveShouldAutoResend(value);
+    state = state.copyWith(shouldAutoResend: value);
   }
 
   Future<void> setBusinessName(String? name) async {

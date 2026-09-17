@@ -8,7 +8,7 @@ import 'package:intl/intl.dart';
 import '../../auth/state/session_provider.dart';
 import '../../settings/models/menu_view_size.dart';
 import '../../settings/state/settings_provider.dart';
-import '../data/mqtt_order_sender.dart';
+import '../../shared/presentation/system_bars.dart';
 import '../data/mqtt_service.dart';
 import '../models/mqtt_menu.dart';
 import '../models/mqtt_tables.dart';
@@ -17,12 +17,14 @@ import '../state/mqtt_menu_provider.dart';
 import '../state/mqtt_orders_provider.dart';
 import '../state/mqtt_outbox_provider.dart';
 import '../state/mqtt_pending_transfers_provider.dart';
+import '../state/mqtt_send_gate_provider.dart';
 import '../state/mqtt_table_contents.dart';
 import '../state/mqtt_tables_provider.dart';
 import 'mqtt_existing_items.dart';
 import 'mqtt_napomene.dart';
 import 'mqtt_order_details_screen.dart';
 import 'mqtt_qty_pad.dart';
+import 'mqtt_send_gate_bar.dart';
 
 /// Tile label size derived from the tile's ACTUAL width.
 ///
@@ -69,15 +71,15 @@ class _MqttOrderScreenState extends ConsumerState<MqttOrderScreen> {
   String _query = '';
   bool _searching = false;
 
-  /// True while an order is in flight (publish + up to 5 reply waits).
+  /// True while an order is being published — until it has left the phone.
   bool _sending = false;
 
   /// What is already on this table, from the kasa. Null for a table with no
   /// existing order — then there is nothing to load and nothing to show.
   MqttTableContents? _contents;
 
-  /// The kasa accepted the order and the ✓ is showing. From here the screen is
-  /// on its way out: input is ignored and it no longer changes.
+  /// The order has left the phone and the ✓ is showing. From here the screen
+  /// is on its way out: input is ignored and it no longer changes.
   bool _confirmed = false;
 
   /// The first frame built after [_confirmed], returned as-is by every later
@@ -88,24 +90,28 @@ class _MqttOrderScreenState extends ConsumerState<MqttOrderScreen> {
   /// Leaving after a send has started — guards against leaving twice.
   bool _leaving = false;
 
-  /// What a successful send still has to apply once the screen is leaving.
-  _SendCommit? _pendingCommit;
-
   /// The order this screen froze and is sending. Its lines are still the cart
   /// on screen, so its outbox copy is left out of the existing list.
   String? _submittedMsgId;
 
-  /// The kasa didn't answer: the order is in "Neposlane narudžbe" and this
+  /// The order couldn't be published: it is in "Neposlane narudžbe" and this
   /// screen is on its way out — frozen, exactly like after ✓.
   bool _queued = false;
 
   /// The details screen is open on top: it shows its own ✓ and closes both.
   bool _detailsOpen = false;
 
-  // Captured in initState: the send is applied while the screen is leaving,
-  // when `ref` may no longer be used.
+  /// The table holds another waiter's unsent items this waiter can't see:
+  /// the first edit here replaces them with this waiter's own.
+  bool _takeOverDraft = false;
+
+  /// This screen is freezing its own order into the outbox right now — that
+  /// order is not a reason to start loading the table.
+  bool _freezing = false;
+
+  // Captured in initState: used while the screen is leaving, when `ref` may
+  // no longer be used.
   late final MqttOrdersNotifier _ordersNotifier;
-  late final MqttPendingTransfersNotifier _transfersNotifier;
   late final MqttOutboxNotifier _outboxNotifier;
 
   // Rebuilt each build from the current menu — maps article code → article.
@@ -123,34 +129,51 @@ class _MqttOrderScreenState extends ConsumerState<MqttOrderScreen> {
   void initState() {
     super.initState();
     _ordersNotifier = ref.read(mqttOrdersProvider.notifier);
-    _transfersNotifier = ref.read(mqttPendingTransfersProvider.notifier);
     _outboxNotifier = ref.read(mqttOutboxProvider.notifier);
     // Restore any in-progress order for this table (kept for the session), then
-    // start listening so subsequent edits are saved back.
+    // start listening so subsequent edits are saved back. Only items this
+    // waiter may see are restored; another waiter's starts from an empty cart.
     final broj = widget.tableBroj;
     if (broj != null) {
       final orders = ref.read(mqttOrdersProvider.notifier);
-      final stored = orders.linesFor(broj);
-      if (stored.isNotEmpty) _cart.loadFrom(stored);
-      // Restore the pending msg_id AFTER loadFrom (which clears it), so a retry
-      // of an already-sent order reuses the same id instead of duplicating it.
-      _cart.pendingMsgId = orders.msgIdFor(broj);
+      if (ref.read(mqttVisibleDraftsProvider).containsKey(broj)) {
+        final stored = orders.linesFor(broj);
+        if (stored.isNotEmpty) _cart.loadFrom(stored);
+        // Restore the pending msg_id AFTER loadFrom (which clears it), so a
+        // retry of an already-sent order reuses the same id instead of
+        // duplicating it.
+        _cart.pendingMsgId = orders.msgIdFor(broj);
+      } else {
+        _takeOverDraft = ref.read(mqttOrdersProvider).containsKey(broj);
+      }
     }
-    // A table that already has an order — or one this phone just sent to —
+    // A table that already has an order — or one an order is on its way to —
     // shows its existing lines above the new ones, read-only.
-    if (broj != null &&
-        (ref.read(mqttOccupiedProvider).containsKey(broj) ||
-            ref.read(mqttPendingTransfersProvider).containsKey(broj))) {
-      _contents = MqttTableContents(broj)..addListener(_onContents);
-      Future.microtask(() => _contents?.refresh());
+    //
+    // Not decided only once: a table opened while its first order is still
+    // waiting for the kasa isn't occupied yet, and once that order lands its
+    // lines must come from the kasa. So the table is watched while the screen
+    // is open, and loading starts the moment there is something to load.
+    if (broj != null) {
+      _ensureContents(initial: true);
+      ref.listenManual(mqttOccupiedProvider, (_, _) => _ensureContents());
+      ref.listenManual(
+        mqttPendingTransfersProvider,
+        (_, _) => _ensureContents(),
+      );
+      ref.listenManual(mqttOutboxProvider, (_, _) => _ensureContents());
+      // Items can be added while the kasa is offline; what is already on the
+      // table is loaded once it can be asked.
+      ref.listenManual<MqttSendGate>(mqttSendGateProvider, (prev, next) {
+        if (next.canReachKasa != (prev?.canReachKasa ?? false)) {
+          _loadContents();
+        }
+      });
     }
     _cart.addListener(_onCart);
-    // Match the New Order screen: hide the Android nav bar (keep the status
-    // bar) and lock to portrait while ordering.
-    SystemChrome.setEnabledSystemUIMode(
-      SystemUiMode.manual,
-      overlays: [SystemUiOverlay.top],
-    );
+    // Hide the Android nav bar (keep the status bar) and lock to portrait
+    // while ordering.
+    SystemBars.hideNavigation();
     SystemChrome.setPreferredOrientations([
       DeviceOrientation.portraitUp,
       DeviceOrientation.portraitDown,
@@ -159,32 +182,11 @@ class _MqttOrderScreenState extends ConsumerState<MqttOrderScreen> {
 
   @override
   void dispose() {
-    // Left some other way during the ✓ hold (e.g. back): the send still stands,
-    // so apply it — after this frame, since providers must not change while the
-    // widget tree is being torn down.
-    final commit = _pendingCommit;
-    if (commit != null) {
-      _pendingCommit = null;
-      final orders = _ordersNotifier;
-      final transfers = _transfersNotifier;
-      Future.microtask(() {
-        orders.clear(commit.broj);
-        transfers.watchTable(commit.broj, commit.sent);
-      });
-    }
-    // Closed while its own send was still waiting (e.g. back during the
-    // spinner): the outbox takes the order over and finishes it — also a ✓
-    // that arrives after this screen is gone.
-    final submitted = _submittedMsgId;
-    if (submitted != null) {
-      final outbox = _outboxNotifier;
-      Future.microtask(() => outbox.release(submitted));
-    }
     _contents?.removeListener(_onContents);
     _contents?.dispose();
     _cart.removeListener(_onCart);
     _cart.dispose();
-    SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+    SystemBars.releaseNavigation();
     SystemChrome.setPreferredOrientations(DeviceOrientation.values);
     _searchController.dispose();
     super.dispose();
@@ -195,11 +197,53 @@ class _MqttOrderScreenState extends ConsumerState<MqttOrderScreen> {
     // colours the table in the floor plan.
     final broj = widget.tableBroj;
     if (broj != null) {
-      ref
-          .read(mqttOrdersProvider.notifier)
-          .save(broj, _cart.lines, _cart.pendingMsgId);
+      ref.read(mqttOrdersProvider.notifier).save(
+            broj,
+            _cart.lines,
+            _cart.pendingMsgId,
+            cuser: ref.read(currentUserProvider)?.code,
+            takeOver: _takeOverDraft,
+          );
+      _takeOverDraft = false;
     }
     if (mounted) setState(() {});
+  }
+
+  /// Whether the table has anything to load from the kasa: it is occupied,
+  /// an accepted order is travelling to it, or an order for it is on its way
+  /// (other than the one this screen is sending).
+  bool _tableHasOrder(int broj) =>
+      ref.read(mqttOccupiedProvider).containsKey(broj) ||
+      ref.read(mqttPendingTransfersProvider).containsKey(broj) ||
+      ref
+          .read(mqttOutboxProvider)
+          .any((o) => o.stol == broj && o.msgId != _submittedMsgId);
+
+  /// Starts loading the table's existing order as soon as it has one — once.
+  void _ensureContents({bool initial = false}) {
+    final broj = widget.tableBroj;
+    if (broj == null || _contents != null) return;
+    if (_freezing) return;
+    if (!initial && (!mounted || _leaving || _confirmed || _queued)) return;
+    if (!_tableHasOrder(broj)) return;
+    _contents = MqttTableContents(broj)..addListener(_onContents);
+    Future.microtask(_loadContents);
+    if (!initial) setState(() {});
+  }
+
+  /// Asks the kasa what is on the table — or, while it can't be reached, says
+  /// so instead of waiting for a query that can't be answered.
+  void _loadContents() {
+    final contents = _contents;
+    if (!mounted || contents == null) return;
+    final gate = ref.read(mqttSendGateProvider);
+    if (gate.canReachKasa) {
+      contents.refresh(refill: true);
+    } else {
+      contents.markUnreachable(
+        'Stavke sa stola učitat će se kad glavni program bude dostupan',
+      );
+    }
   }
 
   void _onContents() {
@@ -230,14 +274,17 @@ class _MqttOrderScreenState extends ConsumerState<MqttOrderScreen> {
     });
   }
 
-  /// Sends the cart as an order. Returns true when the kasa accepted it.
-  /// Shared by the Send button and the details screen.
+  /// Sends the cart as an order. Returns true once it has left the phone —
+  /// the kasa's confirmation is NOT waited for here: the outbox waits for it in
+  /// the background, and its outcome shows on the floor plan and in "Neposlane
+  /// narudžbe". Shared by the Send button and the details screen.
   ///
   /// The order is FROZEN into "Neposlane narudžbe" before anything is
   /// published, and the table's draft is dropped: from here these items ARE
-  /// that order, never an editable draft again — unless the kasa definitely
-  /// refuses it. Editing a sent-but-unconfirmed order and sending it again was
-  /// exactly how items got booked twice.
+  /// that order, never an editable draft again. If it isn't printed, it waits
+  /// in "Neposlane narudžbe" and is sent again from there, with the same
+  /// number (§11.6) — entering the same items again would give them a new
+  /// number and could print them twice (§11.7).
   Future<bool> _sendOrder() async {
     if (_sending || _confirmed || _queued) return false;
     final broj = widget.tableBroj;
@@ -249,7 +296,20 @@ class _MqttOrderScreenState extends ConsumerState<MqttOrderScreen> {
       );
       return false;
     }
+    // §11.5: check the send state again right before sending — it may have
+    // changed since the button was drawn (the kasa left the sales screen, the
+    // connection dropped). Nothing is frozen or sent then; the cart stays.
+    final sendGate = ref.read(mqttSendGateProvider);
+    if (!sendGate.isOpen) {
+      await _showSendProblem(
+        'Slanje je zaključano',
+        '${sendGate.message}. Narudžba nije poslana, stavke su ostale u '
+            'narudžbi.',
+      );
+      return false;
+    }
 
+    _freezing = true;
     final frozen = _outboxNotifier.freeze(
       stol: broj,
       cuser: user.code,
@@ -257,6 +317,7 @@ class _MqttOrderScreenState extends ConsumerState<MqttOrderScreen> {
       groupArticles: ref.read(settingsProvider).shouldGroupArticles,
     );
     final order = frozen.order;
+    _freezing = false;
     if (order == null) {
       // Failed our own checks — nothing was saved or sent.
       await _showSendProblem(
@@ -267,27 +328,13 @@ class _MqttOrderScreenState extends ConsumerState<MqttOrderScreen> {
     }
     _submittedMsgId = order.msgId;
     _ordersNotifier.clear(broj);
-    final wasConnected = MqttService.instance.isConnected;
     setState(() => _sending = true);
 
-    final result = await _outboxNotifier.sendNow(order);
-    // Closed meanwhile: dispose() handed the order to the outbox.
-    if (!mounted) return result.isOk;
+    final delivered = await _outboxNotifier.sendNow(order);
+    // Closed meanwhile: the outbox carries on with the order regardless.
+    if (!mounted) return delivered;
 
-    if (result.isOk) {
-      _outboxNotifier.finish(order.msgId);
-      _submittedMsgId = null;
-      // Keep what was sent: until the kasa moves these lines onto the table its
-      // query reply only COUNTS them, so this copy is the only way to show them
-      // as "šalje se". Applied only once the screen is leaving.
-      _pendingCommit = _SendCommit(
-        broj,
-        MqttInTransitOrder(
-          msgId: order.msgId,
-          lines: order.lines,
-          sentLineCount: order.sentLineCount,
-        ),
-      );
+    if (delivered) {
       setState(() {
         _sending = false;
         // The ✓ replaces the spinner in the same frame; this also freezes the
@@ -308,36 +355,24 @@ class _MqttOrderScreenState extends ConsumerState<MqttOrderScreen> {
       return true;
     }
 
-    if (result.isFinalRefusal) {
-      // Definitely NOT booked, and final for that msg_id: the items become an
-      // editable draft again, and the next send is a new order.
-      _outboxNotifier.finish(order.msgId);
-      _submittedMsgId = null;
-      _ordersNotifier.save(broj, _cart.lines, null);
-      setState(() => _sending = false);
-      await _showSendProblem(
-        result.outcome == MqttSendOutcome.istekla
-            ? 'Narudžba je istekla'
-            : 'Kasa je odbila narudžbu',
-        '${result.message}\n\nStavke su ostale u narudžbi — možete ih '
-        'ispraviti i poslati ponovno.',
-      );
-      return false;
-    }
-
-    // No answer. The order may still reach the kasa (held by the broker, or
-    // booked with its reply lost), so it stays frozen in the outbox and keeps
-    // being resent as itself. This screen freezes too, so the same cart can't
-    // go out again, says so, and leaves.
-    _outboxNotifier.release(order.msgId);
+    // It didn't reach the broker. The order stays frozen in "Neposlane
+    // narudžbe" and only goes out from there, under the same number; this
+    // screen freezes too, so the same items can't be sent again as a new
+    // order.
+    final auto = ref.read(settingsProvider).shouldAutoResend;
     setState(() {
       _sending = false;
       _queued = true;
     });
     await _showSendProblem(
-      wasConnected ? 'Kasa nije potvrdila narudžbu' : 'Nema veze s kasom',
-      'Narudžba je spremljena u „Neposlane narudžbe" i šalje se automatski '
-      'dok je kasa ne potvrdi.\n\nNe unosite iste stavke ponovno.',
+      'Nije poslana',
+      auto
+          ? 'Narudžba nije stigla do poslužitelja (veza je loša ili '
+                'prekinuta). Spremljena je u „Neposlane narudžbe" i poslat '
+                'će se sama kad veza i glavni program budu dostupni.'
+          : 'Narudžba nije stigla do poslužitelja (veza je loša ili '
+                'prekinuta). Pošaljite je ponovno iz „Neposlane narudžbe" '
+                'kad se veza vrati. Ne unosite iste stavke ponovno.',
     );
     if (mounted) _leave();
     return false;
@@ -364,8 +399,7 @@ class _MqttOrderScreenState extends ConsumerState<MqttOrderScreen> {
   }
 
   /// Returns to the floor plan in ONE step — closing the details screen too if
-  /// it is open, instead of two pops in a row — and only then applies the send.
-  /// Both screens are frozen by now, so the change is never seen on them.
+  /// it is open, instead of two pops in a row.
   void _leave() {
     if (_leaving) return;
     _leaving = true;
@@ -376,26 +410,12 @@ class _MqttOrderScreenState extends ConsumerState<MqttOrderScreen> {
     final self = ModalRoute.of(context);
     navigator.popUntil((route) => route == self);
     navigator.pop();
-    _commitSend();
-  }
-
-  /// Applies a successful send: drops the table's draft and starts watching the
-  /// transfer. Deliberately deferred until the screen is leaving — doing it at
-  /// the moment of success is what made the lines jump into the existing
-  /// section and turn amber before the screen left.
-  void _commitSend() {
-    final commit = _pendingCommit;
-    if (commit == null) return;
-    _pendingCommit = null;
-    _ordersNotifier.clear(commit.broj);
-    _transfersNotifier.watchTable(commit.broj, commit.sent);
   }
 
   /// Opens the details screen on the same cart (edit quantities/remarks/delete).
   void _openDetails() {
-    // Details is a normal screen: restore the nav bar while it's shown, re-hide
-    // it on return (this screen hides it).
-    SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+    // Details is a normal screen: the nav bar shows while it is open.
+    SystemBars.showNavigation();
     _detailsOpen = true;
     Navigator.of(context)
         .push(
@@ -409,15 +429,16 @@ class _MqttOrderScreenState extends ConsumerState<MqttOrderScreen> {
               tableNaziv: widget.tableNaziv,
               onSend: _sendOrder,
               onSent: _leave,
-              contents: _contents,
+              // Read on every build: the table may only start loading
+              // while details is open.
+              contents: () => _contents,
               sendingMsgId: () => _submittedMsgId,
             ),
           ),
         )
         .then((result) {
           _detailsOpen = false;
-          // Already leaving after a send from details: both screens close
-          // together, so leave the nav bar alone on the way out.
+          SystemBars.releaseShowNavigation();
           if (!mounted || _leaving) return;
           // Sent from details but closed before the ✓ finished (e.g. back): the
           // send stands, so finish leaving from here rather than sit on a
@@ -426,10 +447,6 @@ class _MqttOrderScreenState extends ConsumerState<MqttOrderScreen> {
             _leave();
             return;
           }
-          SystemChrome.setEnabledSystemUIMode(
-            SystemUiMode.manual,
-            overlays: [SystemUiOverlay.top],
-          );
         });
   }
 
@@ -549,6 +566,8 @@ class _MqttOrderScreenState extends ConsumerState<MqttOrderScreen> {
               : 'Stol $broj');
 
     final hasItems = _cart.isNotEmpty;
+    // §11.4: whether the kasa takes orders right now, and why not.
+    final sendGate = ref.watch(mqttSendGateProvider);
     final selectedId =
         _selectedGroupId ?? (groups.isEmpty ? null : groups.first.id);
     final articles = _visibleArticles(groups);
@@ -564,7 +583,11 @@ class _MqttOrderScreenState extends ConsumerState<MqttOrderScreen> {
         // kasa answers, so it must not change underneath it.
         ignoring: _confirmed || _sending || _queued,
         child: Scaffold(
-          appBar: AppBar(title: Text(title)),
+          appBar: AppBar(
+            title: Text(title),
+            // Why sending is locked, right under the title — only while it is.
+            bottom: sendGate.isOpen ? null : MqttSendGateBar(gate: sendGate),
+          ),
           body: groups.isEmpty
               ? const _EmptyMenu()
               : SafeArea(
@@ -603,7 +626,9 @@ class _MqttOrderScreenState extends ConsumerState<MqttOrderScreen> {
                                         !_sending
                                     ? _openDetails
                                     : null,
-                                onSend: hasItems && !_sending ? _send : null,
+                                onSend: hasItems && !_sending && sendGate.isOpen
+                                    ? _send
+                                    : null,
                               ),
                             ],
                           ),
@@ -812,9 +837,11 @@ class _CartCardState extends State<_CartCard>
           MqttExistingNoticeTile(
             scale: s,
             icon: Icons.cloud_off,
-            text:
-                'Stavke sa stola nisu dostupne. Dodirnite za ponovni pokušaj.',
-            onTap: widget.onRetryExisting,
+            text: existing.offline
+                ? existing.error!
+                : 'Stavke sa stola nisu dostupne. Dodirnite za ponovni '
+                      'pokušaj.',
+            onTap: existing.offline ? null : widget.onRetryExisting,
           ),
         ),
       for (final row in existing.rows)
@@ -1621,7 +1648,7 @@ class _EmptyMenu extends StatelessWidget {
             ),
             const SizedBox(height: 12),
             const Text(
-              'Nema artikala. Spojite se na MQTT u "Postavke uređaja".',
+              'Cjenik nije učitan',
               textAlign: TextAlign.center,
             ),
           ],
@@ -1629,13 +1656,4 @@ class _EmptyMenu extends StatelessWidget {
       ),
     );
   }
-}
-
-/// The part of a successful send that is applied only once the order screen is
-/// leaving: drop the table's draft and start watching the transfer.
-class _SendCommit {
-  const _SendCommit(this.broj, this.sent);
-
-  final int broj;
-  final MqttInTransitOrder sent;
 }

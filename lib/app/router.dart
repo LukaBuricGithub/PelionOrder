@@ -69,9 +69,9 @@ final routerProvider = Provider<GoRouter>((ref) {
         path: '/splash',
         builder: (context, state) => const SplashScreen(),
       ),
-      // Login + PIN paint the same hero background and use NO page transition,
-      // so switching between them is an instant, seamless swap (no fade / no
-      // background re-render animation).
+      // Login + PIN paint the same hero background and appear with NO page
+      // transition. On logout the menu slides away and reveals the login
+      // already in place underneath.
       GoRoute(
         path: '/login',
         pageBuilder: (context, state) =>
@@ -79,8 +79,16 @@ final routerProvider = Provider<GoRouter>((ref) {
       ),
       GoRoute(
         path: '/pin',
-        pageBuilder: (context, state) =>
-            const NoTransitionPage(child: PinScreen()),
+        // Appears instantly over login; leaves with a short fade — so when the
+        // menu slides in over it after a correct PIN, nothing blinks away.
+        pageBuilder: (context, state) => CustomTransitionPage<void>(
+          key: state.pageKey,
+          transitionDuration: Duration.zero,
+          reverseTransitionDuration: const Duration(milliseconds: 180),
+          transitionsBuilder: (context, animation, secondaryAnimation, child) =>
+              FadeTransition(opacity: animation, child: child),
+          child: const PinScreen(),
+        ),
       ),
       GoRoute(
         path: '/settings',
@@ -94,15 +102,39 @@ final routerProvider = Provider<GoRouter>((ref) {
           reverseTransitionDuration: const Duration(milliseconds: 220),
           transitionsBuilder: (context, animation, secondaryAnimation, child) =>
               FadeTransition(
-            opacity: CurvedAnimation(parent: animation, curve: Curves.easeInOut),
-            child: child,
-          ),
+                opacity: CurvedAnimation(
+                  parent: animation,
+                  curve: Curves.easeInOut,
+                ),
+                child: child,
+              ),
           child: const SettingsScreen(),
         ),
       ),
       GoRoute(
         path: '/cash-register',
-        builder: (context, state) => const CashRegisterScreen(),
+        // Reached by REPLACING login + PIN once the waiter signs in: it slides
+        // in from the right, fully opaque, covering the PIN screen — its title
+        // travels with it instead of appearing next to where "Prijava" was.
+        // On logout it slides back out to the right, revealing the login.
+        pageBuilder: (context, state) => CustomTransitionPage<void>(
+          key: state.pageKey,
+          transitionDuration: const Duration(milliseconds: 280),
+          reverseTransitionDuration: const Duration(milliseconds: 260),
+          transitionsBuilder: (context, animation, secondaryAnimation, child) =>
+              SlideTransition(
+                position: Tween(begin: const Offset(1, 0), end: Offset.zero)
+                    .animate(
+                      CurvedAnimation(
+                        parent: animation,
+                        curve: Curves.easeOutCubic,
+                        reverseCurve: Curves.easeInCubic,
+                      ),
+                    ),
+                child: child,
+              ),
+          child: const CashRegisterScreen(),
+        ),
       ),
       GoRoute(
         path: '/mqtt-tables',

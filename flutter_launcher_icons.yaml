@@ -1,0 +1,28 @@
+# App icon configuration (flutter_launcher_icons).
+#
+# Source images live in assets/icon/ (1254×1254 PNG):
+#   icon_iOS.png         full icon, no transparency — iOS, and Android < 8
+#   icon_background.png  Android adaptive icon background (plain blue)
+#   icon_foreground.png  Android adaptive icon foreground (white logo, transparent)
+#   icon_monochrome.png  Android 13+ themed icon (logo shape, transparent)
+#
+# Regenerate after changing anything here or in assets/icon/:
+#   dart run flutter_launcher_icons
+# v0.14.4 also rewrites ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS
+# in ios/Runner.xcodeproj/project.pbxproj from YES to "AppIcon" (a bug) —
+# discard that change afterwards:
+#   git checkout -- ios/Runner.xcodeproj/project.pbxproj
+flutter_launcher_icons:
+  image_path: "assets/icon/icon_iOS.png"
+
+  android: "ic_launcher"
+  min_sdk_android: 21
+  adaptive_icon_background: "assets/icon/icon_background.png"
+  adaptive_icon_foreground: "assets/icon/icon_foreground.png"
+  adaptive_icon_monochrome: "assets/icon/icon_monochrome.png"
+  # Margin around the foreground (percent per side) so the whole logo — the
+  # arrow tip included — stays inside the round/squircle launcher masks.
+  adaptive_icon_foreground_inset: 22
+
+  ios: true
+  remove_alpha_ios: true
