@@ -8,8 +8,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-import 'package:orderman/features/auth/presentation/splash_screen.dart';
-import 'package:orderman/features/shared/state/shared_preferences_provider.dart';
+import 'package:pelion_order/features/auth/presentation/splash_screen.dart';
+import 'package:pelion_order/features/shared/state/shared_preferences_provider.dart';
 
 void main() {
   testWidgets('Splash screen renders the app name', (tester) async {

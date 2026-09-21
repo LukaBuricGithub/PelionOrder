@@ -126,15 +126,15 @@ class MqttOutboxScreen extends ConsumerWidget {
     int stol,
     bool Function(MqttOutboxOrder) allowed,
   ) async {
+    debugPrint(
+      'Outbox ▸ resend stol $stol; glavni program ih prepoznaje po broju, '
+      'narudžba koja je već ispisana neće se ispisati ponovno.',
+    );
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
         title: Text('Stol $stol'),
-        content: const Text(
-          'Poslati ponovno narudžbe za ovaj stol? Glavni program ih '
-          'prepoznaje po broju, narudžba koja je već ispisana neće se '
-          'ispisati ponovno.',
-        ),
+        content: const Text('Poslati ponovno narudžbe za ovaj stol?'),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx, false),
@@ -173,18 +173,19 @@ class MqttOutboxScreen extends ConsumerWidget {
   ) async {
     final count = resendable.length;
     final tables = {for (final o in resendable) o.stol}.toList()..sort();
-    final where = tables.length == 1
-        ? 'stol ${tables.first}'
-        : 'stolovi ${tables.join(', ')}';
+    // The tables and the why are only in the log now — the dialog says the
+    // short version.
+    debugPrint(
+      'Outbox ▸ resend all: $count ${_narudzbuForm(count)} '
+      '(${tables.length == 1 ? 'stol' : 'stolovi'} ${tables.join(', ')}); '
+      'glavni program ih prepoznaje po broju, narudžba koja je već ispisana '
+      'neće se ispisati ponovno.',
+    );
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('Pošalji sve ponovno'),
-        content: Text(
-          'Poslati ponovno $count ${_narudzbuForm(count)} ($where)? Glavni '
-          'program ih prepoznaje po broju, narudžba koja je već ispisana neće se '
-          'ispisati ponovno.',
-        ),
+        content: Text('Poslati ponovno $count ${_narudzbuForm(count)}?'),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx, false),
@@ -215,14 +216,15 @@ class MqttOutboxScreen extends ConsumerWidget {
   }
 
   Future<void> _showLocked(BuildContext context, MqttSendGate gate) {
+    debugPrint(
+      'Outbox ▸ locked: ${gate.message}. Narudžbe su ostale na popisu, '
+      'pošaljite ih kad se slanje otključa.',
+    );
     return showDialog<void>(
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('Slanje je zaključano'),
-        content: Text(
-          '${gate.message}. Narudžbe su ostale na popisu, pošaljite ih kad se '
-          'slanje otključa.',
-        ),
+        content: Text('${gate.message}.'),
         actions: [
           FilledButton(
             onPressed: () => Navigator.pop(ctx),
@@ -287,6 +289,13 @@ class MqttOutboxScreen extends ConsumerWidget {
     // An order that may have reached the broker may already be printed.
     // Deleting it here does not undo that.
     final risky = orders.any((o) => o.mayBePrinted);
+    if (risky) {
+      debugPrint(
+        'Outbox ▸ delete stol $stol: glavni program je možda već zaprimio '
+        'neku od ovih narudžbi, nije je ni potvrdio ni odbio. Brisanjem se '
+        'narudžba NE poništava u glavnom programu.',
+      );
+    }
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) {
@@ -295,10 +304,9 @@ class MqttOutboxScreen extends ConsumerWidget {
           title: Text('Obrisati narudžbe za stol $stol?'),
           content: Text(
             risky
-                ? 'Glavni program je možda već zaprimio neku od ovih narudžbi, '
-                      'nije je ni potvrdio ni odbio. Brisanjem se narudžba NE '
-                      'poništava u glavnom programu.\n\nObrišite samo ako ste '
-                      'provjerili da je nema na stolu.'
+                ? 'Glavni program je možda već ispisao neku od ovih '
+                      'narudžbi. Brisanje je ne poništava, provjerite prije '
+                      'brisanja.'
                 : 'Glavni program ove narudžbe nije zaprimio. Stavke će biti '
                       'trajno '
                       'obrisane s uređaja.',
@@ -398,7 +406,7 @@ class _Empty extends StatelessWidget {
             Icon(Icons.cloud_done_outlined, size: 56, color: scheme.outline),
             const SizedBox(height: 12),
             const Text(
-              'Nema neposlanih narudžbi.',
+              'Sve je poslano',
               textAlign: TextAlign.center,
             ),
           ],
@@ -444,10 +452,8 @@ class _Intro extends StatelessWidget {
           Expanded(
             child: Text(
               open
-                  ? 'Plavo: stavke koje još niste poslali. Narančasto: čeka '
-                        'potvrdu glavnog programa, ne treba ništa raditi. Crveno: '
-                        'nije stiglo do glavnog programa, pošaljite ponovno '
-                        'ili obrišite.'
+                  ? 'Plavo: niste poslali. Narančasto: čeka glavni program. '
+                        'Crveno: pošaljite ponovno ili obrišite.'
                   : '${gate.message}, slanje je zaključano. Crvene narudžbe '
                         'možete poslati ponovno kad se slanje otključa.',
               style: TextStyle(

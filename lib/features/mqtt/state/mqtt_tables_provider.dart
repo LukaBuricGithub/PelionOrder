@@ -104,3 +104,35 @@ final mqttOccupiedProvider =
     StateNotifierProvider<MqttOccupiedNotifier, Map<int, MqttTableState>>((ref) {
   return MqttOccupiedNotifier(ref.watch(sharedPreferencesProvider));
 });
+
+/// Tables the kasa has LOCKED (`zakljucani` in `stolovi_stanje`): table number
+/// → who holds it (`CORD3` = orderman 3, otherwise a kasa's tag).
+///
+/// Not persisted, unlike the occupancy above: a lock is only true while the
+/// kasa says so, and showing yesterday's lock would block a free table.
+class MqttLockedNotifier extends StateNotifier<Map<int, String>> {
+  MqttLockedNotifier() : super(const {}) {
+    _apply();
+    MqttService.instance.stanjeRawJson.addListener(_apply);
+  }
+
+  void _apply() {
+    final raw = MqttService.instance.stanjeRawJson.value;
+    if (raw == null || raw.isEmpty) return;
+    try {
+      state = tableLocksFromStanje(raw);
+    } catch (e) {
+      debugPrint('MQTT zakljucani parse failed: $e');
+    }
+  }
+
+  @override
+  void dispose() {
+    MqttService.instance.stanjeRawJson.removeListener(_apply);
+    super.dispose();
+  }
+}
+
+final mqttLockedProvider =
+    StateNotifierProvider<MqttLockedNotifier, Map<int, String>>(
+        (ref) => MqttLockedNotifier());

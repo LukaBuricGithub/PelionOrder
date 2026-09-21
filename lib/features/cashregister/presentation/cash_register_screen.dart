@@ -32,7 +32,8 @@ class _CashRegisterScreenState extends ConsumerState<CashRegisterScreen> {
     Future.microtask(precacheTableSelectSvgs);
   }
 
-  /// Back on the hub forgets the current waiter: clears the session (and the
+  /// Back on the hub — or the Odjava row at the bottom of the user card —
+  /// forgets the current waiter: clears the session (and the
   /// saved user code), which returns the user to the login screen rather than
   /// closing the app. The router's auth redirect (refreshListenable on
   /// currentUser) does the navigation — we must NOT navigate here as well, or
@@ -95,6 +96,8 @@ class _CashRegisterScreenState extends ConsumerState<CashRegisterScreen> {
                 padding: const EdgeInsets.all(16),
                 children: [
                   Card(
+                    // Clips the Odjava row's ripple to the rounded corners.
+                    clipBehavior: Clip.antiAlias,
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
@@ -122,11 +125,51 @@ class _CashRegisterScreenState extends ConsumerState<CashRegisterScreen> {
                                   : '?',
                             ),
                           ),
-                          title: Text(user?.username ?? 'Nepoznat korisnik'),
+                          // A long name wraps onto a second line rather than
+                          // being cut; only past two lines does it end in "…".
+                          title: Text(
+                            user?.username ?? 'Nepoznat korisnik',
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                          ),
                           subtitle: Text(
                             user?.superuser == true
                                 ? 'Voditelj (superuser)'
                                 : 'Konobar',
+                          ),
+                        ),
+                        const Divider(height: 1, indent: 16, endIndent: 16),
+                        // Odjava as a quiet footer row: the whole row is the
+                        // tap target, and it never takes width from the name.
+                        // Same as the system back button — forgets the waiter
+                        // and returns to Prijava. The phone stays activated
+                        // and connected to MQTT; only the person changes.
+                        InkWell(
+                          onTap: _forgetSession,
+                          child: ConstrainedBox(
+                            constraints: const BoxConstraints(minHeight: 48),
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 16,
+                                vertical: 12,
+                              ),
+                              child: Row(
+                                children: [
+                                  Icon(
+                                    Icons.logout,
+                                    size: 18,
+                                    color: theme.colorScheme.onSurfaceVariant,
+                                  ),
+                                  const SizedBox(width: 10),
+                                  Text(
+                                    'Odjava',
+                                    style: theme.textTheme.bodyMedium?.copyWith(
+                                      color: theme.colorScheme.onSurfaceVariant,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
                           ),
                         ),
                       ],

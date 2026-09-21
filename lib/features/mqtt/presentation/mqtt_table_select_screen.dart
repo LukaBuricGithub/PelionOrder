@@ -17,6 +17,10 @@ import '../models/mqtt_tables.dart';
 import '../state/mqtt_orders_provider.dart';
 import '../state/mqtt_outbox_provider.dart';
 import '../state/mqtt_pending_transfers_provider.dart';
+import '../data/mqtt_service.dart';
+import '../data/mqtt_table_lock_sender.dart';
+import '../models/mqtt_table_lock.dart';
+import '../state/mqtt_table_lock_keeper.dart';
 import '../state/mqtt_tables_provider.dart';
 import '../state/mqtt_users_provider.dart';
 import 'mqtt_outbox_summary_bar.dart';
@@ -130,6 +134,11 @@ class _MqttTableSelectScreenState extends ConsumerState<MqttTableSelectScreen> {
 
   /// Bumped per table to make its tile shake once.
   final _shakes = <int, int>{};
+
+  /// The table whose lock we are asking the kasa for right now — its tile
+  /// shows a spinner and nothing else can be opened meanwhile. Usually well
+  /// under a second.
+  int? _opening;
 
   static const _goneGrace = Duration(seconds: 3);
   static const _landedGrace = Duration(seconds: 10);
@@ -270,6 +279,16 @@ class _MqttTableSelectScreenState extends ConsumerState<MqttTableSelectScreen> {
       (o.isProblem ? unsentBy : sendingBy).putIfAbsent(o.stol, () => o.cuser);
     }
     final summary = MqttOutboxSummary.of(visibleOutbox, drafts: drafts.length);
+    // Tables the kasa has locked ("brave stolova") — a cashier inside a table,
+    // or another orderman. Our own lock is left out: we hold it, so the table
+    // must keep looking the way it otherwise would.
+    final ourTag = MqttService.instance.clientId == null
+        ? ''
+        : lockTagFor(MqttService.instance.clientId!);
+    final lockedBy = {
+      for (final e in ref.watch(mqttLockedProvider).entries)
+        if (e.value != ourTag) e.key: e.value,
+    };
     final columns = _columns(ref.watch(settingsProvider).tableViewSize);
 
     return Scaffold(
@@ -302,7 +321,8 @@ class _MqttTableSelectScreenState extends ConsumerState<MqttTableSelectScreen> {
                         ? const _EmptyTables()
                         : _buildBody(zones, occupied, withOrders,
                             pendingTransfer, landed, unsentBy, sendingBy,
-                            userNames, myCuser, myName, canOpenAll, columns),
+                            userNames, myCuser, myName, canOpenAll, columns,
+                            lockedBy),
                   ),
                 ],
               ),
@@ -332,6 +352,7 @@ class _MqttTableSelectScreenState extends ConsumerState<MqttTableSelectScreen> {
     String? myName,
     bool canOpenAll,
     int columns,
+    Map<int, String> lockedBy,
   ) {
     final selected = _selectedZone.clamp(0, zones.length - 1);
     final tables = zones[selected].tables;
@@ -365,6 +386,8 @@ class _MqttTableSelectScreenState extends ConsumerState<MqttTableSelectScreen> {
                       columns: columns,
                       showName: columns < 4, // drop naziv at "small"
                       shakes: _shakes,
+                      opening: _opening,
+                      lockedBy: lockedBy,
                       onTapTable: _onTap,
                     ),
             ),
@@ -380,6 +403,16 @@ class _MqttTableSelectScreenState extends ConsumerState<MqttTableSelectScreen> {
           : const Color(0xFFF4F6F8);
 
   void _onTap(MqttTable table, _TileStatus status, String? occupant) {
+    // Locked by the kasa or another orderman: `ulaz` would refuse it anyway,
+    // and the waiter is better off seeing that before the wait.
+    final lock = ref.read(mqttLockedProvider)[table.broj];
+    final ourTag = MqttService.instance.clientId == null
+        ? ''
+        : lockTagFor(MqttService.instance.clientId!);
+    if (lock != null && lock != ourTag) {
+      _refuse(table, '', message: mqttLockHolderText(lock));
+      return;
+    }
     switch (status) {
       case _TileStatus.occupiedOther:
         // Pravo 008 turns a colleague's table from blocked into openable —
@@ -399,28 +432,46 @@ class _MqttTableSelectScreenState extends ConsumerState<MqttTableSelectScreen> {
   /// A colleague's table without pravo 008: the tile shakes, the phone
   /// thumps, and a message names who has the table — the moment the waiter
   /// actually asks, with room the tile doesn't have.
-  void _refuse(MqttTable table, String konobar) {
+  void _refuse(MqttTable table, String konobar, {String? message}) {
     HapticFeedback.heavyImpact();
     _noticeTimer?.cancel();
     setState(() {
       _shakes[table.broj] = (_shakes[table.broj] ?? 0) + 1;
-      _notice = konobar.isEmpty
-          ? 'Stol je zauzet od drugog konobara.'
-          : 'Stol je zauzet — $konobar.';
+      _notice =
+          message ??
+          (konobar.isEmpty
+              ? 'Stol je zauzet od drugog konobara.'
+              : 'Stol je zauzet — $konobar.');
     });
     _noticeTimer = Timer(_noticeFor, () {
       if (mounted) setState(() => _notice = null);
     });
   }
 
-  /// Every openable table goes straight into the order screen. For a table that
-  /// already has an order, that screen loads and shows the existing lines above
-  /// the new ones — there is no separate "Sadržaj stola" step any more.
-  void _openOrder(MqttTable table) {
+  /// Every openable table goes straight into the order screen — but only
+  /// after the kasa has given us its lock ("brave stolova"): the kasa and a
+  /// phone must never work on the same table at once.
+  ///
+  /// Without an answer (kasa off, no connection) the table opens anyway: the
+  /// waiter can still add items, and the order screen keeps announcing `ulaz`,
+  /// so the table is claimed as soon as the kasa is back.
+  Future<void> _openOrder(MqttTable table) async {
+    if (_opening != null) return;
+    setState(() => _opening = table.broj);
+    final result = await MqttTableLockSender.instance.enter(table.broj);
+    if (!mounted) return;
+    setState(() => _opening = null);
+
+    if (result.outcome == MqttLockOutcome.zauzeto) {
+      _refuse(table, '', message: result.message);
+      return;
+    }
+    if (result.isOk) MqttTableLockKeeper.noteGranted(table.broj);
+
     final q = table.naziv.isEmpty
         ? ''
         : '?naziv=${Uri.encodeComponent(table.naziv)}';
-    context.push('/mqtt-menu/${table.broj}$q');
+    if (mounted) context.push('/mqtt-menu/${table.broj}$q');
   }
 }
 
@@ -441,6 +492,8 @@ class _PagedTableGrid extends StatelessWidget {
     required this.columns,
     required this.showName,
     required this.shakes,
+    required this.opening,
+    required this.lockedBy,
     required this.onTapTable,
   });
 
@@ -478,10 +531,21 @@ class _PagedTableGrid extends StatelessWidget {
 
   /// Per table, a counter that shakes its tile once whenever it grows.
   final Map<int, int> shakes;
+
+  /// The table whose lock is being asked for right now, if any.
+  final int? opening;
+
+  /// Tables the kasa has locked for someone ELSE, and who holds them
+  /// (`CORD3`, or a kasa's tag). Our own lock is not in here.
+  final Map<int, String> lockedBy;
   final void Function(MqttTable table, _TileStatus status, String? occupant)
       onTapTable;
 
   _TileStatus _statusFor(MqttTable table) {
+    // Locked by the kasa or another orderman: shown as taken and not
+    // openable, even when it holds nothing — a cashier standing in an empty
+    // table is exactly the case that isn't in `zauzeti` at all.
+    if (lockedBy.containsKey(table.broj)) return _TileStatus.occupiedOther;
     // Items added on this phone and not sent yet: blue, whatever else the
     // table is — also an occupied one, ours or (with pravo 008) a colleague's.
     // Once they are sent or removed, the table shows its usual colour again.
@@ -587,7 +651,11 @@ class _PagedTableGrid extends StatelessWidget {
                 // While our order is still arriving the table isn't in
                 // stolovi_stanje yet, so show our own name — the one the kasa
                 // will show once it lands, so nothing changes then.
-                final occupant = occupied[table.broj]?.konobar ??
+                final lockedTag = lockedBy[table.broj];
+                // A locked table says only "Zauzeto" — who holds it is in the
+                // message shown when it is tapped, where there is room for it.
+                final occupant = (lockedTag != null ? 'Zauzeto' : null) ??
+                    occupied[table.broj]?.konobar ??
                     (pendingTransfer.contains(table.broj) ||
                             landed.contains(table.broj)
                         ? myName
@@ -605,7 +673,13 @@ class _PagedTableGrid extends StatelessWidget {
                     occupantName: occupant,
                     canOpenAll: canOpenAll,
                     mark: _markFor(table),
-                    onTap: () => onTapTable(table, status, occupant),
+                    opening: opening == table.broj,
+                    locked: lockedTag != null,
+                    // One table at a time: while the kasa is being asked, the
+                    // others don't react either.
+                    onTap: opening != null
+                        ? null
+                        : () => onTapTable(table, status, occupant),
                   ),
                 );
               },
@@ -645,6 +719,8 @@ class _TableCell extends StatelessWidget {
     required this.occupantName,
     required this.canOpenAll,
     required this.mark,
+    required this.opening,
+    required this.locked,
     required this.onTap,
   });
 
@@ -666,7 +742,15 @@ class _TableCell extends StatelessWidget {
   /// hue: it has to be visible on a free table and on an occupied one alike,
   /// and red/teal already carry a different meaning.
   final _SendMark mark;
-  final VoidCallback onTap;
+
+  /// The kasa is being asked for this table's lock right now.
+  final bool opening;
+
+  /// The kasa has this table locked for someone else.
+  final bool locked;
+
+  /// Null while another table is being opened — then nothing reacts.
+  final VoidCallback? onTap;
 
   @override
   Widget build(BuildContext context) {
@@ -681,7 +765,9 @@ class _TableCell extends StatelessWidget {
       _TileStatus.occupiedOther => (
           const Color(0xFFD46A5A),
           Colors.white,
-          canOpenAll ? Icons.visibility : Icons.lock,
+          // A locked table can't be entered by anyone on a phone, not even
+          // with pravo 008 — the kasa refuses the `ulaz`.
+          locked || !canOpenAll ? Icons.lock : Icons.visibility,
         ),
       _TileStatus.occupiedMine =>
         (const Color(0xFF3E8E7E), Colors.white, Icons.visibility),
@@ -799,6 +885,37 @@ class _TableCell extends StatelessWidget {
                             ),
                           ),
                         ],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+              // While the kasa is asked for this table's lock: the tile dims
+              // and shows a spinner, so the wait (usually well under a
+              // second) is visible and the tap clearly registered.
+              Positioned(
+                left: w * 0.2,
+                top: w * 0.2,
+                width: w * 0.6,
+                height: w * 0.6,
+                child: IgnorePointer(
+                  child: AnimatedOpacity(
+                    opacity: opening ? 1 : 0,
+                    duration: _kTileAnimation,
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(
+                        color: Colors.black.withValues(alpha: 0.35),
+                        borderRadius: BorderRadius.circular(w * 0.075),
+                      ),
+                      child: Center(
+                        child: SizedBox(
+                          width: w * 0.22,
+                          height: w * 0.22,
+                          child: CircularProgressIndicator(
+                            strokeWidth: w * 0.03,
+                            color: Colors.white,
+                          ),
+                        ),
                       ),
                     ),
                   ),

@@ -12,6 +12,7 @@ import 'app/app_theme.dart';
 import 'app/router.dart';
 import 'features/auth/state/auth_controller.dart';
 import 'features/mqtt/data/mqtt_service.dart';
+import 'features/mqtt/state/mqtt_table_lock_keeper.dart';
 import 'features/mqtt/state/mqtt_config_provider.dart';
 import 'features/mqtt/state/mqtt_outbox_provider.dart';
 import 'features/shared/state/shared_preferences_provider.dart';
@@ -102,8 +103,14 @@ class _OrdermanAppState extends ConsumerState<OrdermanApp>
     switch (state) {
       case AppLifecycleState.resumed:
         MqttService.instance.onAppResumed();
+        // Claim the open table again (the `izlaz` below gave it up).
+        MqttTableLockKeeper.refreshAfterResume();
       case AppLifecycleState.paused:
       case AppLifecycleState.detached:
+        // Free the open table BEFORE disconnecting: a clean disconnect means
+        // the broker never publishes our last will, so the kasa would keep
+        // the lock until it expires (10 min).
+        MqttTableLockKeeper.releaseForBackground();
         MqttService.instance.onAppPaused();
       case AppLifecycleState.inactive:
       case AppLifecycleState.hidden:

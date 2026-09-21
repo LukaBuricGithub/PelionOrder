@@ -2,15 +2,18 @@ import 'package:flutter/material.dart';
 
 import '../state/mqtt_send_gate_provider.dart';
 
-/// A thin strip under an app bar saying why sending is locked
-/// ("Kasa nije u prodaji, slanje je zaključano"). Put it in `AppBar.bottom`
-/// only while the gate is closed, so it takes no space when sending is open.
+/// A strip under an app bar saying why sending is locked ("Glavni program
+/// nije u blagajni, slanje je zaključano"). Put it in `AppBar.bottom` only
+/// while the gate is closed, so it takes no space when sending is open.
+///
+/// Two lines tall: the longest reason doesn't fit one line on a narrow phone,
+/// and the waiter must read the whole reason, not an ellipsis.
 class MqttSendGateBar extends StatelessWidget implements PreferredSizeWidget {
   const MqttSendGateBar({super.key, required this.gate});
 
   final MqttSendGate gate;
 
-  static const double height = 34;
+  static const double height = 50;
 
   @override
   Size get preferredSize => const Size.fromHeight(height);
@@ -44,9 +47,9 @@ class MqttSendGateBar extends StatelessWidget implements PreferredSizeWidget {
           Expanded(
             child: Text(
               '${gate.message}, slanje je zaključano',
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
+              maxLines: 2,
               style: TextStyle(
+                height: 1.15,
                 color: fg,
                 fontSize: 13.5,
                 fontWeight: FontWeight.w600,

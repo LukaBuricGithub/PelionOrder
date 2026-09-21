@@ -1,4 +1,4 @@
-package hr.pelion.orderman
+package hr.pelion.order
 
 import io.flutter.embedding.android.FlutterActivity
 

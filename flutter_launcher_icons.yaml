@@ -2,9 +2,18 @@
 #
 # Source images live in assets/icon/ (1254×1254 PNG):
 #   icon_iOS.png         full icon, no transparency — iOS, and Android < 8
-#   icon_background.png  Android adaptive icon background (plain blue)
-#   icon_foreground.png  Android adaptive icon foreground (white logo, transparent)
+#   icon_background.png  Android adaptive icon background (plain navy #012045,
+#                        the same navy as icon_iOS.png so both platforms match)
+#   icon_foreground.png  Android adaptive icon foreground (white + cyan logo,
+#                        transparent)
 #   icon_monochrome.png  Android 13+ themed icon (logo shape, transparent)
+#   icon_background_blue.png  unused alternative background (vivid blue
+#                        #0062fe); swap it into adaptive_icon_background below
+#                        for a blue Android icon instead of the navy one
+#
+# The foreground and monochrome images already carry their margin: the logo is
+# cropped and re-padded to 50% of the canvas width, which is what fits inside
+# Android's round/squircle masks. That is why the inset below is 0.
 #
 # Regenerate after changing anything here or in assets/icon/:
 #   dart run flutter_launcher_icons
@@ -20,9 +29,8 @@ flutter_launcher_icons:
   adaptive_icon_background: "assets/icon/icon_background.png"
   adaptive_icon_foreground: "assets/icon/icon_foreground.png"
   adaptive_icon_monochrome: "assets/icon/icon_monochrome.png"
-  # Margin around the foreground (percent per side) so the whole logo — the
-  # arrow tip included — stays inside the round/squircle launcher masks.
-  adaptive_icon_foreground_inset: 22
+  # The margin is baked into the source images (see above), so no extra inset.
+  adaptive_icon_foreground_inset: 0
 
   ios: true
   remove_alpha_ios: true

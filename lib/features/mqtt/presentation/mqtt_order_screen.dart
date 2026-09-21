@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
@@ -11,6 +12,7 @@ import '../../settings/state/settings_provider.dart';
 import '../../shared/presentation/system_bars.dart';
 import '../data/mqtt_service.dart';
 import '../models/mqtt_menu.dart';
+import '../models/mqtt_table_lock.dart';
 import '../models/mqtt_tables.dart';
 import '../state/mqtt_cart.dart';
 import '../state/mqtt_menu_provider.dart';
@@ -19,6 +21,7 @@ import '../state/mqtt_outbox_provider.dart';
 import '../state/mqtt_pending_transfers_provider.dart';
 import '../state/mqtt_send_gate_provider.dart';
 import '../state/mqtt_table_contents.dart';
+import '../state/mqtt_table_lock_keeper.dart';
 import '../state/mqtt_tables_provider.dart';
 import 'mqtt_existing_items.dart';
 import 'mqtt_napomene.dart';
@@ -109,6 +112,20 @@ class _MqttOrderScreenState extends ConsumerState<MqttOrderScreen> {
   /// order is not a reason to start loading the table.
   bool _freezing = false;
 
+  /// Holds this table's lock while the screen is open (§"Brave stolova"):
+  /// announces `ulaz` every two minutes and releases it with `izlaz`.
+  MqttTableLockKeeper? _lock;
+
+  /// False from the moment the screen leaves the tree. `mounted` is still
+  /// true then, but reading a provider through `ref` throws ("deactivated
+  /// widget's ancestor") — and that exception broke the teardown, so
+  /// `dispose()`, and with it the table's `izlaz`, never ran.
+  bool _inTree = true;
+
+  /// The kasa took the table away (a cashier entered it) — the screen closes
+  /// with its message; guarded so it happens once.
+  bool _lockLost = false;
+
   // Captured in initState: used while the screen is leaving, when `ref` may
   // no longer be used.
   late final MqttOrdersNotifier _ordersNotifier;
@@ -156,19 +173,45 @@ class _MqttOrderScreenState extends ConsumerState<MqttOrderScreen> {
     // is open, and loading starts the moment there is something to load.
     if (broj != null) {
       _ensureContents(initial: true);
-      ref.listenManual(mqttOccupiedProvider, (_, _) => _ensureContents());
-      ref.listenManual(
-        mqttPendingTransfersProvider,
-        (_, _) => _ensureContents(),
-      );
-      ref.listenManual(mqttOutboxProvider, (_, _) => _ensureContents());
+      ref.listenManual(mqttOccupiedProvider, (_, _) {
+        if (_inTree) _ensureContents();
+      });
+      ref.listenManual(mqttPendingTransfersProvider, (_, _) {
+        if (_inTree) _ensureContents();
+      });
+      ref.listenManual(mqttOutboxProvider, (_, _) {
+        if (_inTree) _ensureContents();
+      });
       // Items can be added while the kasa is offline; what is already on the
       // table is loaded once it can be asked.
       ref.listenManual<MqttSendGate>(mqttSendGateProvider, (prev, next) {
+        if (!_inTree) return;
         if (next.canReachKasa != (prev?.canReachKasa ?? false)) {
           _loadContents();
+          // The kasa is reachable again: claim the table now rather than
+          // waiting for the next refresh.
+          if (next.canReachKasa) _lock?.refreshNow();
         }
       });
+      // The kasa republishes `stolovi_stanje` the moment a lock changes, so
+      // a cashier entering this table is seen at once — no waiting for the
+      // next `ulaz`.
+      ref.listenManual<Map<int, String>>(mqttLockedProvider, (_, next) {
+        if (!_inTree) return;
+        final tag = next[broj];
+        if (tag == null || tag.isEmpty) return;
+        final ours = MqttService.instance.clientId;
+        if (ours != null && tag == lockTagFor(ours)) return;
+        _onLockLost(mqttLockHolderText(tag));
+      });
+      // Hold the table while this screen is open. The floor plan already
+      // announced `ulaz` before opening it; opening from elsewhere ("Otvori
+      // stol") announces it here.
+      _lock = MqttTableLockKeeper(
+        stol: broj,
+        alreadyGranted: MqttTableLockKeeper.grantedRecently(broj),
+        onLost: _onLockLost,
+      );
     }
     _cart.addListener(_onCart);
     // Hide the Android nav bar (keep the status bar) and lock to portrait
@@ -181,7 +224,16 @@ class _MqttOrderScreenState extends ConsumerState<MqttOrderScreen> {
   }
 
   @override
+  void deactivate() {
+    _inTree = false;
+    super.deactivate();
+  }
+
+  @override
   void dispose() {
+    _inTree = false;
+    // Leaving the table: `izlaz` frees it for the kasa and the other phones.
+    _lock?.release();
     _contents?.removeListener(_onContents);
     _contents?.dispose();
     _cart.removeListener(_onCart);
@@ -197,7 +249,9 @@ class _MqttOrderScreenState extends ConsumerState<MqttOrderScreen> {
     // colours the table in the floor plan.
     final broj = widget.tableBroj;
     if (broj != null) {
-      ref.read(mqttOrdersProvider.notifier).save(
+      ref
+          .read(mqttOrdersProvider.notifier)
+          .save(
             broj,
             _cart.lines,
             _cart.pendingMsgId,
@@ -207,6 +261,19 @@ class _MqttOrderScreenState extends ConsumerState<MqttOrderScreen> {
       _takeOverDraft = false;
     }
     if (mounted) setState(() {});
+  }
+
+  /// The kasa gave the table to someone else while this screen was open. The
+  /// waiter's items stay saved on the table (blue), but the screen closes —
+  /// working on a table held by the cashier is exactly what the lock prevents.
+  Future<void> _onLockLost(String message) async {
+    if (!_inTree || !mounted || _lockLost || _leaving) return;
+    _lockLost = true;
+    await _showSendProblem(
+      'Stol je zauzet',
+      message.isEmpty ? 'Stol je otvoren na drugom uređaju.' : message,
+    );
+    if (mounted) _leave();
   }
 
   /// Whether the table has anything to load from the kasa: it is occupied,
@@ -224,7 +291,10 @@ class _MqttOrderScreenState extends ConsumerState<MqttOrderScreen> {
     final broj = widget.tableBroj;
     if (broj == null || _contents != null) return;
     if (_freezing) return;
-    if (!initial && (!mounted || _leaving || _confirmed || _queued)) return;
+    if (!initial &&
+        (!_inTree || !mounted || _leaving || _confirmed || _queued)) {
+      return;
+    }
     if (!_tableHasOrder(broj)) return;
     _contents = MqttTableContents(broj)..addListener(_onContents);
     Future.microtask(_loadContents);
@@ -235,7 +305,7 @@ class _MqttOrderScreenState extends ConsumerState<MqttOrderScreen> {
   /// so instead of waiting for a query that can't be answered.
   void _loadContents() {
     final contents = _contents;
-    if (!mounted || contents == null) return;
+    if (!_inTree || !mounted || contents == null) return;
     final gate = ref.read(mqttSendGateProvider);
     if (gate.canReachKasa) {
       contents.refresh(refill: true);
@@ -715,10 +785,36 @@ class _CartCardState extends State<_CartCard>
   int _lastCount = 0;
 
   /// Keep the end of the order in view — where the newest lines are. On from
-  /// the start, so opening a table lists its order all the way down; switched
+  /// the start, so opening a table lands on the end of its order; switched
   /// off the moment the waiter touches the list, and on again when they add a
   /// line.
   bool _followEnd = true;
+
+  /// The table's order has been shown once. Its first arrival is not listed:
+  /// the list is placed straight at its end (see [_land]). Later changes — a
+  /// colleague's line landing, ours turning "Poslano" — still fade in.
+  bool _landed = false;
+
+  /// The list is hidden while it is being placed at its end — the frame or
+  /// two it takes the list to learn its true length — and fades in there.
+  bool _landing = false;
+
+  /// Lines already in the cart when the table was opened — this phone's
+  /// unsent items, restored. They belong to the load: hidden behind the
+  /// loader with the kasa's order, and shown together with it at the end.
+  late final int _restoredLines;
+
+  /// The waiter added a line while the table was still loading. From then on
+  /// the list is shown (with a loading row on top), so what they tap never
+  /// disappears behind the loader.
+  bool _addedWhileLoading = false;
+
+  /// When the loader first showed.
+  DateTime? _loaderSince;
+
+  /// The order is in, but the loader is still finishing its [_minLoader].
+  bool _holdingLoader = false;
+  Timer? _loaderTimer;
 
   /// Drives every automatic scroll of this list.
   ///
@@ -727,20 +823,35 @@ class _CartCardState extends State<_CartCard>
   /// grows while its rows cascade in — so a fixed target is reached too early
   /// and has to be chased again, which is exactly the stop-and-go this avoids.
   /// Instead every frame moves toward wherever the end is NOW, in one motion.
-  late final AnimationController _glide = AnimationController(vsync: this)
-    ..addListener(_onGlideTick)
-    ..addStatusListener((status) {
-      if (status == AnimationStatus.completed) {
-        WidgetsBinding.instance.addPostFrameCallback((_) => _catchUp());
-      }
-    });
+  ///
+  /// Built in [initState], NOT as a `late final`: on a table where nothing
+  /// ever scrolled, the first access would be `dispose()` itself — and
+  /// creating an AnimationController while the widget is leaving the tree
+  /// throws ("deactivated widget's ancestor"). That exception broke the whole
+  /// teardown, so the order screen's `dispose()` never ran and the table's
+  /// `izlaz` was never sent: the kasa kept the table locked.
+  late final AnimationController _glide;
   double _glideFrom = 0;
   Curve _glideCurve = Curves.easeOutCubic;
 
-  bool _hadPlaceholders = false;
+  @override
+  void initState() {
+    super.initState();
+    _restoredLines = widget.cart.lines.length;
+    // Restored lines are not "new": they don't count as added while loading.
+    _lastCount = _restoredLines;
+    _glide = AnimationController(vsync: this)
+      ..addListener(_onGlideTick)
+      ..addStatusListener((status) {
+        if (status == AnimationStatus.completed) {
+          WidgetsBinding.instance.addPostFrameCallback((_) => _catchUp());
+        }
+      });
+  }
 
   @override
   void dispose() {
+    _loaderTimer?.cancel();
     _glide.dispose();
     _scroll.dispose();
     super.dispose();
@@ -781,28 +892,28 @@ class _CartCardState extends State<_CartCard>
   /// already on its way there (it will reach the new end by itself), or the
   /// placeholders are still standing in for the rows (there is no real end).
   void _catchUp() {
-    if (!mounted || !_followEnd || _glide.isAnimating) return;
+    if (!mounted || !_followEnd || _landing || _glide.isAnimating) return;
     if (widget.existing.placeholders > 0 || !_scroll.hasClients) return;
     final position = _scroll.position;
     if (position.maxScrollExtent - position.pixels < 0.5) return;
     _glideToEnd(duration: const Duration(milliseconds: 260));
   }
 
-  /// The kasa's rows have just replaced the placeholders and cascade in from
-  /// the top. Listing them and scrolling down is ONE motion: the list holds
-  /// while the rows fill what is on screen, then rolls down at about the pace
-  /// the next rows keep arriving at the bottom, and lands on the end.
-  void _listToEnd(int rowCount, double rowHeight) {
-    if (!mounted || !_followEnd || !_scroll.hasClients) return;
-    final step = MqttExistingSection.cascadeStepFor(rowCount);
-    final onScreen = (_scroll.position.viewportDimension / rowHeight)
-        .floor()
-        .clamp(0, rowCount);
-    _glideToEnd(
-      delay: step * onScreen,
-      duration: step * (rowCount - onScreen) + MqttFadeIn.duration,
-      curve: Curves.easeInOutCubic,
-    );
+  /// Places the hidden list at its end, then shows it. A jump, not a glide —
+  /// the waiter never sees the order being listed. The list only knows its
+  /// true length once the rows near the end have been built, so it jumps
+  /// again on the next frame(s) until it is there (a few frames at most).
+  void _land([int attempt = 0]) {
+    if (!mounted) return;
+    if (_followEnd && _scroll.hasClients && attempt < 4) {
+      final position = _scroll.position;
+      if (position.maxScrollExtent - position.pixels > 0.5) {
+        _scroll.jumpTo(position.maxScrollExtent);
+        WidgetsBinding.instance.addPostFrameCallback((_) => _land(attempt + 1));
+        return;
+      }
+    }
+    setState(() => _landing = false);
   }
 
   @override
@@ -815,6 +926,7 @@ class _CartCardState extends State<_CartCard>
     // last-built count to detect a newly added line and scroll to it.
     if (lines.length > _lastCount) {
       _followEnd = true;
+      if (!_landed) _addedWhileLoading = true;
       WidgetsBinding.instance.addPostFrameCallback((_) => _catchUp());
     }
     _lastCount = lines.length;
@@ -858,44 +970,70 @@ class _CartCardState extends State<_CartCard>
         ),
     ];
 
-    // The kasa's rows just replaced the placeholders: list them and scroll
-    // down together, once this frame has been laid out.
-    final showingPlaceholders = existing.placeholders > 0;
-    if (_hadPlaceholders && !showingPlaceholders) {
-      final rowCount = existingItems.length;
-      // An existing row's height, near enough: the tile plus its divider.
-      final rowHeight = 53 * s;
-      WidgetsBinding.instance.addPostFrameCallback(
-        (_) => _listToEnd(rowCount, rowHeight),
-      );
+    // Waiting for the table's order: a short loader instead of placeholder
+    // rows. It shows from the first frame the screen is waiting.
+    final waiting =
+        !_landed &&
+        existing.rows.isEmpty &&
+        existing.error == null &&
+        (existing.awaiting || existing.loading || existing.placeholders > 0);
+    if (waiting) _loaderSince ??= DateTime.now();
+    // The order came in quickly: keep the loader up for the rest of its
+    // minimum time before the order is shown.
+    if (!_landed &&
+        !waiting &&
+        existing.rows.isNotEmpty &&
+        _loaderSince != null &&
+        _loaderTimer == null) {
+      final left =
+          MqttExistingLoader.minVisible -
+          DateTime.now().difference(_loaderSince!);
+      if (left > Duration.zero) {
+        _holdingLoader = true;
+        _loaderTimer = Timer(left, () {
+          if (mounted) setState(() => _holdingLoader = false);
+        });
+      }
     }
-    _hadPlaceholders = showingPlaceholders;
+    final showLoader = waiting || _holdingLoader;
+
+    // The table's order has arrived and the loader is done — or there was
+    // nothing to load, but this phone's unsent lines were restored: don't list
+    // it — hide the list, put it at its end once this frame is laid out, and
+    // show it there.
+    if (!_landed &&
+        !showLoader &&
+        existing.placeholders == 0 &&
+        (existing.rows.isNotEmpty || _restoredLines > 0)) {
+      _landed = true;
+      _landing = true;
+      _glide.stop();
+      WidgetsBinding.instance.addPostFrameCallback((_) => _land());
+    }
 
     // Existing order first (read-only, oldest at the top), then the lines being
     // added now — so a new line always lands at the bottom, where the
     // auto-scroll above takes the waiter.
     final children = <Widget>[
-      // The existing order as one animated block: placeholder rows until the
-      // kasa answers, the real rows cascading in, and an animated height so the
-      // new lines below slide down instead of jumping.
-      if (existing.hasContent)
+      // The existing order as one block: a single loading row while the kasa
+      // is asked (only seen when new lines are already below it — otherwise
+      // the card shows the centred loader), then the order itself, with an
+      // animated height so the new lines below slide down instead of jumping.
+      if (existing.hasContent || showLoader)
         MqttExistingSection(
-          key: const ValueKey('existing'),
-          showPlaceholders: existing.placeholders > 0,
+          // A fresh section once the order has landed: its rows are then
+          // simply there, at full height — no cascade, no growing block —
+          // so the list's end is final at once. Later arrivals in it still
+          // fade in on their own.
+          key: ValueKey(_landed ? 'existing-landed' : 'existing'),
+          showPlaceholders: showLoader,
           separator: const Divider(height: 1),
           placeholders: [
-            if (existing.loading)
-              MqttFadeIn(key: const ValueKey('loading'), child: loadingNotice),
-            for (var i = 0; i < existing.placeholders; i++)
-              MqttExistingSkeletonTile(
-                key: ValueKey('ph$i'),
-                index: i,
-                scale: s,
-              ),
+            MqttFadeIn(key: const ValueKey('loading'), child: loadingNotice),
           ],
           items: existingItems,
         ),
-      if (existing.hasContent && lines.isNotEmpty)
+      if ((existing.hasContent || showLoader) && lines.isNotEmpty)
         MqttOrderSectionLabel(text: 'Nove stavke', scale: s),
       for (var i = 0; i < lines.length; i++)
         _CartLineTile(
@@ -919,10 +1057,15 @@ class _CartCardState extends State<_CartCard>
         borderRadius: BorderRadius.circular(14 * s),
         side: BorderSide(color: scheme.outlineVariant.withValues(alpha: 0.5)),
       ),
-      // While the kasa's first answer is on its way the card stays blank: the
-      // items are coming, and saying "Nema stavki" for a moment is exactly the
-      // flash we don't want. The empty text only appears once that is true.
-      child: children.isEmpty && existing.awaiting
+      // While the table's order is being loaded, the card shows a short
+      // loader — restored unsent lines wait behind it and appear with the
+      // order. Only a line added during the load shows the list early.
+      // Otherwise, while the kasa's first answer is on its way the card stays
+      // blank: saying "Nema stavki" for a moment is exactly the flash we don't
+      // want. The empty text only appears once that is true.
+      child: showLoader && !_addedWhileLoading
+          ? MqttExistingLoader(scale: s)
+          : children.isEmpty && existing.awaiting
           ? const SizedBox.shrink()
           : children.isEmpty
           ? Center(
@@ -931,31 +1074,41 @@ class _CartCardState extends State<_CartCard>
                 style: TextStyle(color: scheme.onSurfaceVariant),
               ),
             )
-          : NotificationListener<ScrollMetricsNotification>(
-              // The list's extent changed (rows built, a row added or grown):
-              // if we are following the end, catch up with it. Deferred a
-              // frame — this arrives during layout.
-              onNotification: (_) {
-                if (_followEnd) {
-                  WidgetsBinding.instance.addPostFrameCallback(
-                    (_) => _catchUp(),
-                  );
-                }
-                return false;
-              },
-              child: Listener(
-                // The waiter took over — a scroll, or a tap that can grow a row
-                // (expanding its napomene): stop pulling the list to the end.
-                onPointerDown: (_) {
-                  _followEnd = false;
-                  _glide.stop();
+          // Hidden at once while it is being placed at its end, then faded in
+          // there — the order appears already scrolled to its last line.
+          : AnimatedOpacity(
+              opacity: _landing ? 0 : 1,
+              duration: _landing
+                  ? Duration.zero
+                  : const Duration(milliseconds: 160),
+              curve: Curves.easeOut,
+              child: NotificationListener<ScrollMetricsNotification>(
+                // The list's extent changed (rows built, a row added or
+                // grown): if we are following the end, catch up with it.
+                // Deferred a frame — this arrives during layout.
+                onNotification: (_) {
+                  if (_followEnd) {
+                    WidgetsBinding.instance.addPostFrameCallback(
+                      (_) => _catchUp(),
+                    );
+                  }
+                  return false;
                 },
-                child: ListView.separated(
-                  controller: _scroll,
-                  padding: EdgeInsets.only(bottom: 2 * s),
-                  itemCount: children.length,
-                  separatorBuilder: (_, _) => const Divider(height: 1),
-                  itemBuilder: (context, i) => children[i],
+                child: Listener(
+                  // The waiter took over — a scroll, or a tap that can grow a
+                  // row (expanding its napomene): stop pulling the list to the
+                  // end.
+                  onPointerDown: (_) {
+                    _followEnd = false;
+                    _glide.stop();
+                  },
+                  child: ListView.separated(
+                    controller: _scroll,
+                    padding: EdgeInsets.only(bottom: 2 * s),
+                    itemCount: children.length,
+                    separatorBuilder: (_, _) => const Divider(height: 1),
+                    itemBuilder: (context, i) => children[i],
+                  ),
                 ),
               ),
             ),
@@ -1647,10 +1800,7 @@ class _EmptyMenu extends StatelessWidget {
               color: Theme.of(context).colorScheme.outline,
             ),
             const SizedBox(height: 12),
-            const Text(
-              'Cjenik nije učitan',
-              textAlign: TextAlign.center,
-            ),
+            const Text('Cjenik nije učitan', textAlign: TextAlign.center),
           ],
         ),
       ),

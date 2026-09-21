@@ -54,46 +54,45 @@ enum MqttExistingStatus {
 (Color, String, IconData) mqttExistingStatusStyle(
   MqttExistingStatus status,
   bool dark,
-) =>
-    switch (status) {
-      MqttExistingStatus.naPutu => (
-          dark ? const Color(0xFFF4A83A) : const Color(0xFFE8890C),
-          'Šalje se',
-          Icons.arrow_upward,
-        ),
-      MqttExistingStatus.zaprimljeno => (
-          dark ? const Color(0xFF4FC98A) : const Color(0xFF2E9E5B),
-          'Poslano',
-          Icons.check,
-        ),
-      // Amber: with the broker, waiting for the kasa — nothing to do yet.
-      MqttExistingStatus.neposlano => (
-          dark ? const Color(0xFFF4A83A) : const Color(0xFFE8890C),
-          'Čeka potvrdu',
-          Icons.hourglass_top_rounded,
-        ),
-      MqttExistingStatus.nepotvrdena => (
-          dark ? const Color(0xFFF4A83A) : const Color(0xFFE8890C),
-          'Nije potvrđena',
-          Icons.help_outline,
-        ),
-      // Red: didn't get through — to be sent again or deleted.
-      MqttExistingStatus.neposlana => (
-          dark ? const Color(0xFFFF7B72) : const Color(0xFFB03A2E),
-          'Nije poslana',
-          Icons.cloud_off_outlined,
-        ),
-      MqttExistingStatus.odbijeno => (
-          dark ? const Color(0xFFFF7B72) : const Color(0xFFB03A2E),
-          'Nije primljena',
-          Icons.block,
-        ),
-      MqttExistingStatus.isteklo => (
-          dark ? const Color(0xFFFF7B72) : const Color(0xFFB03A2E),
-          'Zastarjela',
-          Icons.timer_off_outlined,
-        ),
-    };
+) => switch (status) {
+  MqttExistingStatus.naPutu => (
+    dark ? const Color(0xFFF4A83A) : const Color(0xFFE8890C),
+    'Šalje se',
+    Icons.arrow_upward,
+  ),
+  MqttExistingStatus.zaprimljeno => (
+    dark ? const Color(0xFF4FC98A) : const Color(0xFF2E9E5B),
+    'Poslano',
+    Icons.check,
+  ),
+  // Amber: with the broker, waiting for the kasa — nothing to do yet.
+  MqttExistingStatus.neposlano => (
+    dark ? const Color(0xFFF4A83A) : const Color(0xFFE8890C),
+    'Čeka potvrdu',
+    Icons.hourglass_top_rounded,
+  ),
+  MqttExistingStatus.nepotvrdena => (
+    dark ? const Color(0xFFF4A83A) : const Color(0xFFE8890C),
+    'Nije potvrđena',
+    Icons.help_outline,
+  ),
+  // Red: didn't get through — to be sent again or deleted.
+  MqttExistingStatus.neposlana => (
+    dark ? const Color(0xFFFF7B72) : const Color(0xFFB03A2E),
+    'Nije poslana',
+    Icons.cloud_off_outlined,
+  ),
+  MqttExistingStatus.odbijeno => (
+    dark ? const Color(0xFFFF7B72) : const Color(0xFFB03A2E),
+    'Nije primljena',
+    Icons.block,
+  ),
+  MqttExistingStatus.isteklo => (
+    dark ? const Color(0xFFFF7B72) : const Color(0xFFB03A2E),
+    'Zastarjela',
+    Icons.timer_off_outlined,
+  ),
+};
 
 /// The tag for an order in "Neposlane narudžbe".
 MqttExistingStatus mqttExistingStatusForOutbox(MqttOutboxStatus status) =>
@@ -114,8 +113,8 @@ String mqttOthersPendingText(int n) {
   final phrase = (last == 1 && lastTwo != 11)
       ? 'stavka se šalje'
       : (last >= 2 && last <= 4 && (lastTwo < 12 || lastTwo > 14))
-          ? 'stavke se šalju'
-          : 'stavki se šalje';
+      ? 'stavke se šalju'
+      : 'stavki se šalje';
   return '$n $phrase s drugog uređaja';
 }
 
@@ -237,8 +236,8 @@ class MqttExistingItems {
     // If the latest answer already shows our lines on the table, the travelling
     // copies are stale — drop them here rather than wait for the watcher to
     // catch up, or the same items would show twice for a moment.
-    final landed = reply != null &&
-        MqttPendingTransfersNotifier.transferLanded(reply, od);
+    final landed =
+        reply != null && MqttPendingTransfersNotifier.transferLanded(reply, od);
     final travelling = landed ? const <MqttInTransitOrder>[] : inTransit;
 
     // Still waiting for the kasa's first answer.
@@ -251,10 +250,14 @@ class MqttExistingItems {
     // kasa lists as occupied; nothing to size them from otherwise.
     var placeholders = 0;
     if (awaiting && seedLineCount != null) {
-      final travellingLines =
-          travelling.fold<int>(0, (n, o) => n + o.lines.length);
-      placeholders =
-          (seedLineCount + travellingLines).clamp(1, maxPlaceholders);
+      final travellingLines = travelling.fold<int>(
+        0,
+        (n, o) => n + o.lines.length,
+      );
+      placeholders = (seedLineCount + travellingLines).clamp(
+        1,
+        maxPlaceholders,
+      );
     }
 
     final rows = <MqttExistingRow>[];
@@ -265,28 +268,30 @@ class MqttExistingItems {
       final stavke = reply.sveStavke;
       for (var i = 0; i < stavke.length; i++) {
         final st = stavke[i];
-        rows.add(MqttExistingRow(
-          // The kasa appends new lines, so an earlier line keeps its position.
-          id: 't${st.cartikl}_$i',
-          name: st.naziv.isNotEmpty
-              ? st.naziv
-              : (byCode[st.cartikl]?.name ?? 'Artikl ${st.cartikl}'),
-          qty: st.kol,
-          unit: byCode[st.cartikl]?.unit ?? '',
-          // The kasa joins napomene with ';'. Our own custom notes can never
-          // contain one — they are sanitised before sending — so splitting on
-          // it recovers the individual napomene.
-          napomene: st.napomena
-              .split(';')
-              .map((p) => p.trim())
-              .where((p) => p.isNotEmpty)
-              .toList(),
-          amount: st.iznos,
-          // On the table means the kasa has it. Whether the kitchen/bar has
-          // picked it up (`poslano`) is deliberately not shown — see
-          // [MqttExistingStatus].
-          status: MqttExistingStatus.zaprimljeno,
-        ));
+        rows.add(
+          MqttExistingRow(
+            // The kasa appends new lines, so an earlier line keeps its position.
+            id: 't${st.cartikl}_$i',
+            name: st.naziv.isNotEmpty
+                ? st.naziv
+                : (byCode[st.cartikl]?.name ?? 'Artikl ${st.cartikl}'),
+            qty: st.kol,
+            unit: byCode[st.cartikl]?.unit ?? '',
+            // The kasa joins napomene with ';'. Our own custom notes can never
+            // contain one — they are sanitised before sending — so splitting on
+            // it recovers the individual napomene.
+            napomene: st.napomena
+                .split(';')
+                .map((p) => p.trim())
+                .where((p) => p.isNotEmpty)
+                .toList(),
+            amount: st.iznos,
+            // On the table means the kasa has it. Whether the kitchen/bar has
+            // picked it up (`poslano`) is deliberately not shown — see
+            // [MqttExistingStatus].
+            status: MqttExistingStatus.zaprimljeno,
+          ),
+        );
       }
       total += reply.ukupno;
     } else if (seedTotal != null) {
@@ -303,15 +308,17 @@ class MqttExistingItems {
         final l = order.lines[j];
         final a = byCode[l.code];
         final amount = (a?.price ?? 0) * l.qty;
-        rows.add(MqttExistingRow(
-          id: 'p${order.msgId}_$j',
-          name: a?.name ?? 'Artikl ${l.code}',
-          qty: l.qty,
-          unit: a?.unit ?? '',
-          napomene: [...l.remarkCodes.map(remarkName), ...l.customNotes],
-          amount: amount,
-          status: MqttExistingStatus.naPutu,
-        ));
+        rows.add(
+          MqttExistingRow(
+            id: 'p${order.msgId}_$j',
+            name: a?.name ?? 'Artikl ${l.code}',
+            qty: l.qty,
+            unit: a?.unit ?? '',
+            napomene: [...l.remarkCodes.map(remarkName), ...l.customNotes],
+            amount: amount,
+            status: MqttExistingStatus.naPutu,
+          ),
+        );
         total += amount;
       }
     }
@@ -326,15 +333,17 @@ class MqttExistingItems {
         final l = order.lines[j];
         final a = byCode[l.code];
         final amount = (a?.price ?? 0) * l.qty;
-        rows.add(MqttExistingRow(
-          id: 'u${order.msgId}_$j',
-          name: a?.name ?? 'Artikl ${l.code}',
-          qty: l.qty,
-          unit: a?.unit ?? '',
-          napomene: [...l.remarkCodes.map(remarkName), ...l.customNotes],
-          amount: amount,
-          status: status,
-        ));
+        rows.add(
+          MqttExistingRow(
+            id: 'u${order.msgId}_$j',
+            name: a?.name ?? 'Artikl ${l.code}',
+            qty: l.qty,
+            unit: a?.unit ?? '',
+            napomene: [...l.remarkCodes.map(remarkName), ...l.customNotes],
+            amount: amount,
+            status: status,
+          ),
+        );
         if (order.status == MqttOutboxStatus.sending) total += amount;
       }
     }
@@ -442,7 +451,8 @@ class _MqttExistingItemTileState extends State<MqttExistingItemTile> {
     return LayoutBuilder(
       builder: (context, c) {
         // Width left for napomene between the quantity and the amount.
-        final avail = c.maxWidth -
+        final avail =
+            c.maxWidth -
             (12 + 10) * s - // tile padding
             _textWidth(context, qtyText, qtyStyle) -
             (10 + 8) * s - // gaps either side of the napomene
@@ -516,15 +526,15 @@ class _MqttExistingItemTileState extends State<MqttExistingItemTile> {
                         // Expanded in the cart: a small cue that a tap folds
                         // the row back up. Nothing at all on the details screen.
                         ? (canToggle
-                            ? Align(
-                                alignment: Alignment.centerLeft,
-                                child: Icon(
-                                  Icons.expand_less,
-                                  size: 16 * s,
-                                  color: scheme.onSurfaceVariant,
-                                ),
-                              )
-                            : const SizedBox.shrink())
+                              ? Align(
+                                  alignment: Alignment.centerLeft,
+                                  child: Icon(
+                                    Icons.expand_less,
+                                    size: 16 * s,
+                                    color: scheme.onSurfaceVariant,
+                                  ),
+                                )
+                              : const SizedBox.shrink())
                         : Row(
                             children: [
                               Flexible(
@@ -537,7 +547,8 @@ class _MqttExistingItemTileState extends State<MqttExistingItemTile> {
                               ),
                               // Kept outside the ellipsized text, so the count of
                               // what's hidden can never itself be cut off.
-                              if (hidden > 0) Text('  +$hidden', style: moreStyle),
+                              if (hidden > 0)
+                                Text('  +$hidden', style: moreStyle),
                             ],
                           ),
                   ),
@@ -647,8 +658,9 @@ class MqttExistingNoticeTile extends StatelessWidget {
               style: TextStyle(
                 fontSize: 12.5 * s,
                 fontWeight: FontWeight.w500,
-                color:
-                    tint == null ? scheme.onSurfaceVariant : scheme.onSurface,
+                color: tint == null
+                    ? scheme.onSurfaceVariant
+                    : scheme.onSurface,
               ),
             ),
           ),
@@ -688,8 +700,10 @@ class _MqttExistingSkeletonTileState extends State<MqttExistingSkeletonTile>
     duration: const Duration(milliseconds: 850),
   )..repeat(reverse: true);
 
-  late final Animation<double> _opacity = Tween<double>(begin: 0.45, end: 1)
-      .animate(CurvedAnimation(parent: _pulse, curve: Curves.easeInOut));
+  late final Animation<double> _opacity = Tween<double>(
+    begin: 0.45,
+    end: 1,
+  ).animate(CurvedAnimation(parent: _pulse, curve: Curves.easeInOut));
 
   static const _nameWidths = [0.62, 0.46, 0.7, 0.54, 0.66, 0.5];
 
@@ -707,13 +721,13 @@ class _MqttExistingSkeletonTileState extends State<MqttExistingSkeletonTile>
     final fill = scheme.onSurface.withValues(alpha: dark ? 0.13 : 0.08);
 
     Widget bar(double width, double height) => Container(
-          width: width,
-          height: height,
-          decoration: BoxDecoration(
-            color: fill,
-            borderRadius: BorderRadius.circular(4 * s),
-          ),
-        );
+      width: width,
+      height: height,
+      decoration: BoxDecoration(
+        color: fill,
+        borderRadius: BorderRadius.circular(4 * s),
+      ),
+    );
 
     return FadeTransition(
       opacity: _opacity,
@@ -755,6 +769,50 @@ class _MqttExistingSkeletonTileState extends State<MqttExistingSkeletonTile>
                   const Spacer(),
                   bar(52 * s, 11 * s),
                 ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Shown in place of the order list while the table's order is fetched from
+/// the kasa (Stol X and Detalji narudžbe): a small spinner and a line of
+/// text, centred, fading in so it never pops.
+class MqttExistingLoader extends StatelessWidget {
+  const MqttExistingLoader({super.key, required this.scale});
+
+  final double scale;
+
+  /// Once shown, the loader stays at least this long, so a quick answer from
+  /// the kasa reads as a short load instead of a one-frame flicker.
+  static const minVisible = Duration(milliseconds: 450);
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final s = scale;
+    return MqttFadeIn(
+      child: Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            SizedBox(
+              width: 26 * s,
+              height: 26 * s,
+              child: CircularProgressIndicator(
+                strokeWidth: 2.6 * s,
+                color: scheme.primary,
+              ),
+            ),
+            SizedBox(height: 14 * s),
+            Text(
+              'Učitavanje stavki…',
+              style: TextStyle(
+                fontSize: 14 * s,
+                color: scheme.onSurfaceVariant,
               ),
             ),
           ],
@@ -877,10 +935,10 @@ class MqttExistingSection extends StatefulWidget {
   /// order lists at an easy pace; a long one speeds up so the whole listing
   /// stays around a second.
   static Duration cascadeStepFor(int count) => Duration(
-        microseconds: (_cascadeBudget.inMicroseconds / (count < 1 ? 1 : count))
-            .clamp(22000, 55000)
-            .round(),
-      );
+    microseconds: (_cascadeBudget.inMicroseconds / (count < 1 ? 1 : count))
+        .clamp(22000, 55000)
+        .round(),
+  );
 
   static const _cascadeBudget = Duration(milliseconds: 900);
 
@@ -941,7 +999,7 @@ class _MqttExistingSectionState extends State<MqttExistingSection> {
               enabled: _hadPlaceholders || !initial.containsKey(items[i].$1),
               delay: _hadPlaceholders && initial.containsKey(items[i].$1)
                   ? MqttExistingSection.cascadeStepFor(initial.length) *
-                      initial[items[i].$1]!
+                        initial[items[i].$1]!
                   : Duration.zero,
               // The divider travels with the row below it, so a line never
               // shows up ahead of the row it belongs to.
@@ -978,10 +1036,7 @@ class _MqttExistingSectionState extends State<MqttExistingSection> {
         // overlap from the first line down.
         layoutBuilder: (current, previous) => Stack(
           alignment: Alignment.topCenter,
-          children: [
-            ...previous,
-            ?current,
-          ],
+          children: [...previous, ?current],
         ),
         child: body,
       ),

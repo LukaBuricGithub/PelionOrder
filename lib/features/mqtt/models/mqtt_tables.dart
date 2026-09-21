@@ -90,6 +90,34 @@ class MqttTableState {
 }
 
 /// Occupied tables from `podaci/stolovi_stanje`, keyed by table number.
+int _int(Object? v) {
+  if (v is num) return v.toInt();
+  if (v is String) return int.tryParse(v) ?? 0;
+  return 0;
+}
+
+/// Tables the kasa reports as LOCKED (`zakljucani` in `stolovi_stanje`), as
+/// table number → who holds it (`CORD3` for orderman 3, otherwise a kasa's
+/// tag).
+///
+/// Separate from `zauzeti`: a cashier who steps into an EMPTY table locks it
+/// without putting anything on it, so such a table appears here only.
+Map<int, String> tableLocksFromStanje(String raw) {
+  final decoded = jsonDecode(raw);
+  if (decoded is! Map) return const {};
+  final locked = decoded['zakljucani'];
+  if (locked is! List) return const {};
+  final result = <int, String>{};
+  for (final e in locked) {
+    if (e is Map) {
+      final stol = _int(e['stol']);
+      final na = (e['otvoren_na'] ?? '').toString();
+      if (na.isNotEmpty) result[stol] = na;
+    }
+  }
+  return result;
+}
+
 Map<int, MqttTableState> tableStatesFromStanje(String raw) {
   final decoded = jsonDecode(raw);
   if (decoded is! Map) return const {};

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
@@ -99,6 +100,48 @@ class _MqttOrderDetailsScreenState
   /// dragging safe here — the normal row's tap-to-expand and its small +/−/✕
   /// targets would otherwise fight the drag gesture.
   bool _reordering = false;
+
+  final _scroll = ScrollController();
+
+  /// The order has been shown once. It is not listed from the top: the list
+  /// opens at its end — the lines about to be sent, the ones to review — the
+  /// same as Stol X (see [_land]).
+  bool _landed = false;
+
+  /// The list is hidden while it is being placed at its end — the frame or
+  /// two it takes the list to learn its true length — and fades in there.
+  bool _landing = false;
+
+  /// When the loader first showed; it then stays at least
+  /// [MqttExistingLoader.minVisible].
+  DateTime? _loaderSince;
+
+  /// The order is in, but the loader is still finishing its minimum time.
+  bool _holdingLoader = false;
+  Timer? _loaderTimer;
+
+  @override
+  void dispose() {
+    _loaderTimer?.cancel();
+    _scroll.dispose();
+    super.dispose();
+  }
+
+  /// Places the hidden list at its end, then shows it. A jump, not a glide.
+  /// The list only knows its true length once the rows near the end have been
+  /// built, so it jumps again on the next frame(s) until it is there.
+  void _land([int attempt = 0]) {
+    if (!mounted) return;
+    if (_scroll.hasClients && attempt < 4) {
+      final position = _scroll.position;
+      if (position.maxScrollExtent - position.pixels > 0.5) {
+        _scroll.jumpTo(position.maxScrollExtent);
+        WidgetsBinding.instance.addPostFrameCallback((_) => _land(attempt + 1));
+        return;
+      }
+    }
+    setState(() => _landing = false);
+  }
 
   MqttCart get cart => widget.cart;
   Map<int, MqttArticle> get byCode => widget.byCode;
@@ -238,29 +281,55 @@ class _MqttOrderDetailsScreenState
             ),
             s,
           );
+          // Waiting for the table's order: a short loader in place of the
+          // list, exactly as on Stol X. The lines about to be sent wait behind
+          // it and appear together with the order.
+          final waiting = !_landed &&
+              existing.rows.isEmpty &&
+              existing.error == null &&
+              (existing.awaiting ||
+                  existing.loading ||
+                  existing.placeholders > 0);
+          if (waiting) _loaderSince ??= DateTime.now();
+          // The order came in quickly: keep the loader up for the rest of its
+          // minimum time before the order is shown.
+          if (!_landed &&
+              !waiting &&
+              _loaderSince != null &&
+              _loaderTimer == null) {
+            final left = MqttExistingLoader.minVisible -
+                DateTime.now().difference(_loaderSince!);
+            if (left > Duration.zero) {
+              _holdingLoader = true;
+              _loaderTimer = Timer(left, () {
+                if (mounted) setState(() => _holdingLoader = false);
+              });
+            }
+          }
+          final showLoader = waiting || _holdingLoader;
+          // Everything is here: don't list it — hide the list, put it at its
+          // end once this frame is laid out, and show it there.
+          if (!_landed && !showLoader) {
+            _landed = true;
+            _landing = true;
+            WidgetsBinding.instance.addPostFrameCallback((_) => _land());
+          }
           // The existing order renders first and read-only. It is never part of
-          // the reorder list, the clear action or what gets sent. One animated
-          // block, exactly as on Stol X: placeholders until the kasa answers,
-          // a cross-fade into the real rows, and an animated height.
+          // the reorder list, the clear action or what gets sent. One block,
+          // with an animated height for anything that changes after it is
+          // shown.
           final existingWidgets = <Widget>[
             if (existing.hasContent)
               MqttExistingSection(
-                key: const ValueKey('existing'),
-                showPlaceholders: existing.placeholders > 0,
-                placeholders: [
-                  if (existing.loading)
-                    MqttFadeIn(
-                        key: const ValueKey('loading'), child: loadingCard),
-                  for (var i = 0; i < existing.placeholders; i++)
-                    KeyedSubtree(
-                      key: ValueKey('ph$i'),
-                      child: _existingCard(
-                        context,
-                        MqttExistingSkeletonTile(index: i, scale: s),
-                        s,
-                      ),
-                    ),
-                ],
+                // Built fresh once the order is shown: its rows are then
+                // simply there, at full height — no cascade, no growing
+                // block — so the list's end is final at once. Later arrivals
+                // in it still fade in on their own.
+                key: ValueKey(_landed ? 'existing-landed' : 'existing'),
+                // The loader stands in for the list while waiting, so the
+                // section never shows placeholder rows.
+                showPlaceholders: false,
+                placeholders: const [],
                 items: [
                   if (existing.loading && existing.placeholders == 0)
                     ('loading', loadingCard),
@@ -409,37 +478,51 @@ class _MqttOrderDetailsScreenState
                             );
                           },
                         )
-                      : ListView.builder(
-                          padding: const EdgeInsets.fromLTRB(12, 12, 12, 8),
-                          itemCount: existingWidgets.length + lines.length + 1,
-                          itemBuilder: (context, index) {
-                            // Existing order first, read-only.
-                            if (index < existingWidgets.length) {
-                              return existingWidgets[index];
-                            }
-                            final i = index - existingWidgets.length;
-                            if (i == lines.length) {
-                              return _AddItemButton(
-                                onTap: () => Navigator.of(context).pop(),
+                      : showLoader
+                      ? MqttExistingLoader(scale: s)
+                      // Hidden at once while it is being placed at its end,
+                      // then faded in there — the order appears already
+                      // scrolled to its last line.
+                      : AnimatedOpacity(
+                          opacity: _landing ? 0 : 1,
+                          duration: _landing
+                              ? Duration.zero
+                              : const Duration(milliseconds: 160),
+                          curve: Curves.easeOut,
+                          child: ListView.builder(
+                            controller: _scroll,
+                            padding: const EdgeInsets.fromLTRB(12, 12, 12, 8),
+                            itemCount:
+                                existingWidgets.length + lines.length + 1,
+                            itemBuilder: (context, index) {
+                              // Existing order first, read-only.
+                              if (index < existingWidgets.length) {
+                                return existingWidgets[index];
+                              }
+                              final i = index - existingWidgets.length;
+                              if (i == lines.length) {
+                                return _AddItemButton(
+                                  onTap: () => Navigator.of(context).pop(),
+                                );
+                              }
+                              final line = lines[i];
+                              return _LineTile(
+                                // Keyed on the line OBJECT, not the index: the
+                                // tile owns its expanded state, so an index
+                                // key would leave the wrong row open after a
+                                // move or a delete.
+                                key: ObjectKey(line),
+                                index: i,
+                                line: line,
+                                cart: cart,
+                                name: _name(line.code),
+                                unit: byCode[line.code]?.unit ?? '',
+                                lineTotal:
+                                    money.format(_price(line.code) * line.qty),
+                                available: _remarksFor(line.code),
                               );
-                            }
-                            final line = lines[i];
-                            return _LineTile(
-                              // Keyed on the line OBJECT, not the index: the
-                              // tile owns its expanded state, so an index key
-                              // would leave the wrong row open after a move or
-                              // a delete.
-                              key: ObjectKey(line),
-                              index: i,
-                              line: line,
-                              cart: cart,
-                              name: _name(line.code),
-                              unit: byCode[line.code]?.unit ?? '',
-                              lineTotal:
-                                  money.format(_price(line.code) * line.qty),
-                              available: _remarksFor(line.code),
-                            );
-                          },
+                            },
+                          ),
                         ),
                 ),
                 if (_reordering)

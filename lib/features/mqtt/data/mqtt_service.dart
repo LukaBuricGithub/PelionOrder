@@ -9,6 +9,7 @@ import 'package:mqtt_client/mqtt_server_client.dart';
 import '../models/mqtt_connection_config.dart';
 import '../models/mqtt_device_status.dart';
 import '../models/mqtt_order_reply.dart';
+import '../models/mqtt_table_lock.dart';
 import '../models/mqtt_table_query.dart';
 
 /// The phone's single, long-lived MQTT connection to the Pelion broker, driven
@@ -160,6 +161,11 @@ class MqttService {
   /// as the order replies above. Broadcast, paired downstream by `msg_id`.
   final _tableReplies = StreamController<MqttTableQueryReply>.broadcast();
   Stream<MqttTableQueryReply> get tableReplies => _tableReplies.stream;
+
+  /// Answers to `ulaz` / `izlaz` on a table's lock (`tip: "ulaz" | "izlaz"`),
+  /// on the same `mob/{uredaj}` topic. Broadcast, paired downstream by msg_id.
+  final _lockReplies = StreamController<MqttTableLockReply>.broadcast();
+  Stream<MqttTableLockReply> get lockReplies => _lockReplies.stream;
 
   /// The `tip` of a reply payload, or null when it has none / isn't JSON.
   /// Used only to route between the order and table-query streams.
@@ -613,12 +619,14 @@ class MqttService {
     if (e.topic == _tKorisnici) korisniciRawJson.value = payload;
     if (e.topic == _tStolovi) stoloviRawJson.value = payload;
     if (e.topic == _tStanje) stanjeRawJson.value = payload;
-    // Our private reply topic carries BOTH order replies (`tip: "nalog"`) and
-    // table-query answers (`tip: "stol"`); each is paired downstream by the
-    // msg_id we generated.
+    // Our private reply topic carries every answer the kasa sends us: order
+    // confirmations (no `tip`, or `tip: "nalog"`), table-query answers
+    // (`tip: "stol"`) and table-lock answers (`tip: "ulaz" | "izlaz"`). Each
+    // is paired downstream by the msg_id we generated.
     //
-    // Only "stol" is matched positively — everything else keeps going to the
-    // order path, so a kasa that sends no `tip` on order replies still works.
+    // Only the known kinds are matched positively — everything else keeps
+    // going to the order path, so a kasa that sends no `tip` on order replies
+    // still works.
     if (e.topic == _tMob) {
       final tip = _tipOf(payload);
       if (tip == 'stol') {
@@ -627,6 +635,13 @@ class MqttService {
           debugPrint('MQTT ✗ unusable table reply (no msg_id?): $payload');
         } else {
           _tableReplies.add(reply);
+        }
+      } else if (tip == 'ulaz' || tip == 'izlaz') {
+        final reply = MqttTableLockReply.tryParse(payload);
+        if (reply == null) {
+          debugPrint('MQTT ✗ unusable lock reply: $payload');
+        } else {
+          _lockReplies.add(reply);
         }
       } else {
         if (tip != null && tip != 'nalog') {

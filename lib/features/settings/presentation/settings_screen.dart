@@ -28,6 +28,12 @@ class SettingsScreen extends ConsumerWidget {
   /// editor/delete) back.
   bool get _showProfileCard => false;
 
+  /// "Slanje narudžbe" (Grupiraj artikle pri slanju / Automatsko ponovno
+  /// slanje) is hidden for now — the waiter can't change either setting, so
+  /// both keep their stored value (off by default). Everything behind them is
+  /// untouched: flip this to true to bring the card back.
+  bool get _showSendingCard => false;
+
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final profiles = ref.watch(profilesProvider);
@@ -157,69 +163,71 @@ class SettingsScreen extends ConsumerWidget {
           ),
           const SizedBox(height: 16),
 
-          // ── Slanje narudžbe ──────────────────────────────────────────────
-          _SettingsCard(
-            header: 'Slanje narudžbe',
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    Expanded(
-                      child: Text(
-                        'Grupiraj artikle pri slanju',
-                        style: theme.textTheme.bodyLarge?.copyWith(
-                          fontWeight: FontWeight.w600,
+          // ── Slanje narudžbe (hidden, see _showSendingCard) ────────────────
+          if (_showSendingCard) ...[
+            _SettingsCard(
+              header: 'Slanje narudžbe',
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          'Grupiraj artikle pri slanju',
+                          style: theme.textTheme.bodyLarge?.copyWith(
+                            fontWeight: FontWeight.w600,
+                          ),
                         ),
                       ),
-                    ),
-                    const SizedBox(width: 12),
-                    Switch(
-                      value: settings.shouldGroupArticles,
-                      onChanged: (v) => ref
-                          .read(settingsProvider.notifier)
-                          .setShouldGroupArticles(v),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 12),
-                Row(
-                  children: [
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            'Automatsko ponovno slanje',
-                            style: theme.textTheme.bodyLarge?.copyWith(
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                          const SizedBox(height: 2),
-                          Text(
-                            'Neposlane narudžbe šalju se same kad glavni '
-                            'program ponovno prima narudžbe, najkasnije 9 minuta '
-                            'od prvog slanja.',
-                            style: theme.textTheme.bodySmall?.copyWith(
-                              color: theme.colorScheme.onSurfaceVariant,
-                            ),
-                          ),
-                        ],
+                      const SizedBox(width: 12),
+                      Switch(
+                        value: settings.shouldGroupArticles,
+                        onChanged: (v) => ref
+                            .read(settingsProvider.notifier)
+                            .setShouldGroupArticles(v),
                       ),
-                    ),
-                    const SizedBox(width: 12),
-                    Switch(
-                      value: settings.shouldAutoResend,
-                      onChanged: (v) => ref
-                          .read(settingsProvider.notifier)
-                          .setShouldAutoResend(v),
-                    ),
-                  ],
-                ),
-              ],
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Automatsko ponovno slanje',
+                              style: theme.textTheme.bodyLarge?.copyWith(
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                            const SizedBox(height: 2),
+                            Text(
+                              'Neposlane narudžbe šalju se same kad glavni '
+                              'program ponovno prima narudžbe, najkasnije 9 minuta '
+                              'od prvog slanja.',
+                              style: theme.textTheme.bodySmall?.copyWith(
+                                color: theme.colorScheme.onSurfaceVariant,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Switch(
+                        value: settings.shouldAutoResend,
+                        onChanged: (v) => ref
+                            .read(settingsProvider.notifier)
+                            .setShouldAutoResend(v),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
             ),
-          ),
-          const SizedBox(height: 16),
+            const SizedBox(height: 16),
+          ],
 
           // ── Veza (once the device has a code) ─────────────────────────────
           if (config != null) ...[
@@ -379,7 +387,7 @@ class _ConnectionCard extends StatelessWidget {
                 state: connected ? _Dot.ok : _Dot.bad,
                 text: connected
                     ? 'Spojeno'
-                    : 'Nije spojeno, pokušava se ponovno…',
+                    : 'Nije spojeno, pokušava se ponovno spojiti.',
               ),
               const SizedBox(height: 14),
               _InfoRow(
@@ -935,10 +943,10 @@ class _ConnectCardState extends State<_ConnectCard>
   /// The attempt has taken long enough to show "Spajanje…".
   bool _slow = false;
 
-  late final AnimationController _mark = AnimationController(
-    vsync: this,
-    duration: const Duration(milliseconds: 900),
-  );
+  /// Built in [initState], not lazily: dismissing the card while it still
+  /// says "Spajanje…" would otherwise make `dispose()` the first access, and
+  /// creating a controller during teardown throws.
+  late final AnimationController _mark;
   late final _circle = CurvedAnimation(
     parent: _mark,
     curve: const Interval(0.0, 0.5, curve: Curves.easeOutBack),
@@ -959,6 +967,10 @@ class _ConnectCardState extends State<_ConnectCard>
   @override
   void initState() {
     super.initState();
+    _mark = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 900),
+    );
     Future<void>.delayed(_slowAfter, () {
       if (mounted && _outcome == null) setState(() => _slow = true);
     });

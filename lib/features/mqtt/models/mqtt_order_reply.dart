@@ -5,7 +5,8 @@ import 'dart:convert';
 ///
 /// * `{msg_id, uredaj}` — the order was printed;
 /// * `{msg_id, uredaj, odbijeno}` — it was not, for the reason in `odbijeno`
-///   ([nijeAktiviran], [zastarjela], [nijeUProdaji], [greskaPisaca]).
+///   ([nijeAktiviran], [zastarjela], [nijeUProdaji], [greskaPisaca],
+///   [stolZauzet]).
 ///
 /// If the field is absent, the order was printed. The only proof an order was
 /// received is this confirmation — a successful publish proves nothing.
@@ -30,6 +31,11 @@ class MqttOrderReply {
   static const zastarjela = 'zastarjela';
   static const nijeUProdaji = 'nije u prodaji';
   static const greskaPisaca = 'greska pisaca';
+
+  /// The table is held by the kasa or another orderman ("brave stolova"). Only
+  /// happens when the order went out without our `ulaz` getting through — a
+  /// lock of our own lets the order past even if a cashier stepped in after.
+  static const stolZauzet = 'stol zauzet';
 
   bool get isPrinted => odbijeno == null;
 

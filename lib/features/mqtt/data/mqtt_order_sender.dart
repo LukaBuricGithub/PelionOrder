@@ -239,6 +239,11 @@ class MqttOrderSender {
           'Nije primljena, zastarjela. Pošalji ponovno; ako se ponovi odmah, '
               'provjeri sat na uređaju.',
         ),
+      MqttOrderReply.stolZauzet => (
+          MqttSendOutcome.odbijeno,
+          'Nije primljena, stol je zauzet. Otvorite stol ponovno pa pošaljite '
+              'narudžbu.',
+        ),
       MqttOrderReply.nijeAktiviran => (
           MqttSendOutcome.nijeAktiviran,
           'Pelion Order nije aktiviran, skeniraj kod u glavnom programu.',
