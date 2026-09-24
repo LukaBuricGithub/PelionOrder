@@ -1,7 +1,8 @@
-import 'package:app_settings/app_settings.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
+
+import '../../shared/platform/open_app_settings.dart';
 
 /// Full-screen QR scanner opened from "Postavke uređaja". On the first
 /// successful scan it closes and returns the decoded string to the caller via
@@ -84,12 +85,9 @@ class _QrScannerScreenState extends State<QrScannerScreen>
   /// phone's settings.
   Future<void> _openSettings() async {
     _toSettings = true;
-    try {
-      await AppSettings.openAppSettings();
-    } catch (e) {
-      _toSettings = false;
-      debugPrint('QR ▸ opening the settings failed: $e');
-    }
+    // Didn't open (no settings app answered): nothing changes, the message
+    // stays and the camera isn't retried.
+    if (!await openAppSettings()) _toSettings = false;
   }
 
   /// Starts the camera again. A refusal sticks to the controller until it is

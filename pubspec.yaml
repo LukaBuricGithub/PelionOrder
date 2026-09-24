@@ -66,9 +66,13 @@ dependencies:
   # sizes, required by Google Play); iOS uses Apple's Vision (no ML Kit),
   # iOS 12+.
   mobile_scanner: ^7.4.0
-  # Opens the app's page in the phone's settings (camera access refused).
-  # Held at 6.x: 7+ supports only Swift Package Manager on iOS, not CocoaPods.
-  app_settings: ^6.1.1
+  # Opens the iPhone's settings for this app ("app-settings:") when camera
+  # access has been refused — Android does the same through a method channel
+  # in MainActivity, see lib/features/shared/platform/open_app_settings.dart.
+  # (The app_settings package can't be used: its CocoaPods version doesn't
+  # compile under Swift 6 / Xcode 26, and its newer Swift-Package-only version
+  # breaks every Flutter command on Windows, Android builds included.)
+  url_launcher: ^6.3.2
 
 dev_dependencies:
   flutter_test:
