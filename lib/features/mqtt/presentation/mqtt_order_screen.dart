@@ -104,6 +104,11 @@ class _MqttOrderScreenState extends ConsumerState<MqttOrderScreen> {
   /// The details screen is open on top: it shows its own ✓ and closes both.
   bool _detailsOpen = false;
 
+  /// Reorder mode: the cart shows the new lines as plain names to be dragged,
+  /// and nothing else on the screen can be tapped. Only the lines being added
+  /// now can move — what the kasa already has can't.
+  bool _reordering = false;
+
   /// The table holds another waiter's unsent items this waiter can't see:
   /// the first edit here replaces them with this waiter's own.
   bool _takeOverDraft = false;
@@ -486,6 +491,12 @@ class _MqttOrderScreenState extends ConsumerState<MqttOrderScreen> {
   }
 
   /// Opens the details screen on the same cart (edit quantities/remarks/delete).
+  /// Enters or leaves reorder mode.
+  void _toggleReorder() {
+    HapticFeedback.selectionClick();
+    setState(() => _reordering = !_reordering);
+  }
+
   void _openDetails() {
     // Details is a normal screen: the nav bar shows while it is open.
     SystemBars.showNavigation();
@@ -681,25 +692,38 @@ class _MqttOrderScreenState extends ConsumerState<MqttOrderScreen> {
                                   money: _money,
                                   remarksFor: _remarksFor,
                                   existing: existing,
+                                  reordering: _reordering,
                                   onRetryExisting: () =>
                                       _contents?.refresh(refill: true),
                                 ),
                               ),
                               const SizedBox(width: 10),
+                              // While reordering, only the ✓ that ends it can be
+                              // tapped: nothing may be sent or cleared mid-drag.
                               _ActionColumn(
                                 sending: _sending,
                                 confirmed: _confirmed,
-                                onClear: hasItems && !_sending
+                                reordering: _reordering,
+                                onClear: hasItems && !_sending && !_reordering
                                     ? _confirmClear
                                     : null,
                                 // Details also opens on the existing order alone,
                                 // to read it — sending still needs new lines.
                                 onDetails:
                                     (hasItems || existing.rows.isNotEmpty) &&
-                                        !_sending
+                                        !_sending &&
+                                        !_reordering
                                     ? _openDetails
                                     : null,
-                                onSend: hasItems && !_sending && sendGate.isOpen
+                                // Nothing to reorder with a single line.
+                                onReorder: _cart.lines.length > 1 && !_sending
+                                    ? _toggleReorder
+                                    : null,
+                                onSend:
+                                    hasItems &&
+                                        !_sending &&
+                                        !_reordering &&
+                                        sendGate.isOpen
                                     ? _send
                                     : null,
                               ),
@@ -718,30 +742,39 @@ class _MqttOrderScreenState extends ConsumerState<MqttOrderScreen> {
                       ),
 
                       // ── Article picker ──────────────────────────────────────
+                      // Dimmed and inactive while reordering, so a tap on an
+                      // article can't add a line in the middle of a drag.
                       Expanded(
                         flex: 6,
-                        child: Column(
-                          children: [
-                            _PickerBar(
-                              groups: groups,
-                              size: menuSize,
-                              selectedId: selectedId,
-                              searching: _searching,
-                              searchController: _searchController,
-                              onSelectGroup: (id) => setState(() {
-                                _selectedGroupId = id;
-                                _query = '';
-                              }),
-                              onQuery: (q) => setState(() => _query = q),
+                        child: IgnorePointer(
+                          ignoring: _reordering,
+                          child: AnimatedOpacity(
+                            opacity: _reordering ? 0.4 : 1,
+                            duration: const Duration(milliseconds: 180),
+                            child: Column(
+                              children: [
+                                _PickerBar(
+                                  groups: groups,
+                                  size: menuSize,
+                                  selectedId: selectedId,
+                                  searching: _searching,
+                                  searchController: _searchController,
+                                  onSelectGroup: (id) => setState(() {
+                                    _selectedGroupId = id;
+                                    _query = '';
+                                  }),
+                                  onQuery: (q) => setState(() => _query = q),
+                                ),
+                                Expanded(
+                                  child: _ArticleGrid(
+                                    articles: articles,
+                                    size: menuSize,
+                                    onAdd: _cart.addLine,
+                                  ),
+                                ),
+                              ],
                             ),
-                            Expanded(
-                              child: _ArticleGrid(
-                                articles: articles,
-                                size: menuSize,
-                                onAdd: _cart.addLine,
-                              ),
-                            ),
-                          ],
+                          ),
                         ),
                       ),
                     ],
@@ -766,6 +799,7 @@ class _CartCard extends StatefulWidget {
     required this.money,
     required this.remarksFor,
     required this.existing,
+    required this.reordering,
     required this.onRetryExisting,
   });
 
@@ -776,6 +810,10 @@ class _CartCard extends StatefulWidget {
 
   /// The table's existing order, shown read-only above the new lines.
   final MqttExistingItems existing;
+
+  /// Rearranging the new lines: the card shows them as plain names to drag,
+  /// and the table's existing order is left out — it can't move.
+  final bool reordering;
   final VoidCallback onRetryExisting;
 
   @override
@@ -850,6 +888,17 @@ class _CartCardState extends State<_CartCard>
           WidgetsBinding.instance.addPostFrameCallback((_) => _catchUp());
         }
       });
+  }
+
+  @override
+  void didUpdateWidget(covariant _CartCard oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // Back from reordering: the cart list is built anew and would start at the
+    // top, so put it back at the end — where the newest lines are.
+    if (oldWidget.reordering && !widget.reordering) {
+      _followEnd = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) => _catchUp());
+    }
   }
 
   @override
@@ -1060,13 +1109,25 @@ class _CartCardState extends State<_CartCard>
         borderRadius: BorderRadius.circular(14 * s),
         side: BorderSide(color: scheme.outlineVariant.withValues(alpha: 0.5)),
       ),
-      // While the table's order is being loaded, the card shows a short
-      // loader — restored unsent lines wait behind it and appear with the
-      // order. Only a line added during the load shows the list early.
-      // Otherwise, while the kasa's first answer is on its way the card stays
-      // blank: saying "Nema stavki" for a moment is exactly the flash we don't
-      // want. The empty text only appears once that is true.
-      child: showLoader && !_addedWhileLoading
+      // Rearranging: only the new lines, as plain names to drag. Everything
+      // else — the table's existing order, the editors on each row — is out
+      // of the way, so a drag can't be confused with another gesture.
+      // Otherwise: while the table's order is being loaded, the card shows a
+      // short loader — restored unsent lines wait behind it and appear with
+      // the order. Only a line added during the load shows the list early.
+      // And while the kasa's first answer is on its way the card stays blank:
+      // saying "Nema stavki" for a moment is exactly the flash we don't want.
+      // The empty text only appears once that is true.
+      child: widget.reordering
+          ? _ReorderList(
+              cart: widget.cart,
+              names: [
+                for (final line in lines)
+                  widget.byCode[line.code]?.name ?? 'Artikl ${line.code}',
+              ],
+              scale: s,
+            )
+          : showLoader && !_addedWhileLoading
           ? MqttExistingLoader(scale: s)
           : children.isEmpty && existing.awaiting
           ? const SizedBox.shrink()
@@ -1115,6 +1176,198 @@ class _CartCardState extends State<_CartCard>
                 ),
               ),
             ),
+    );
+  }
+}
+
+/// The cart while it is being rearranged: the lines being added now, each as
+/// its full name on a row of its own, in the order they will be sent.
+///
+/// Quantity, napomene, prices and ✕ are all absent on purpose — the rows stay
+/// short and uniform (more of the order on screen, predictable drop targets),
+/// and dragging is the only gesture on a row, so nothing fights it. None of
+/// that is lost: the lines keep everything and show it again afterwards.
+class _ReorderList extends StatelessWidget {
+  const _ReorderList({
+    required this.cart,
+    required this.names,
+    required this.scale,
+  });
+
+  final MqttCart cart;
+
+  /// Article names, in the cart's current order.
+  final List<String> names;
+  final double scale;
+
+  @override
+  Widget build(BuildContext context) {
+    final s = scale;
+    // The row being dragged is drawn in the nearest Overlay, and the app's own
+    // one covers the screen — so a row could be dragged out over the total bar
+    // and the article grid. Overlay.wrap puts an Overlay around this list
+    // alone, so the dragged row is clipped to the card.
+    //
+    // Overlay.wrap, NOT a hand-built Overlay with initialEntries: those
+    // entries are taken once, so the list would keep rendering the order it
+    // had on the first build and the rearranging would be lost. Overlay.wrap
+    // rebuilds its entry on every build of this widget.
+    return Overlay.wrap(
+      clipBehavior: Clip.hardEdge,
+      child: ReorderableListView.builder(
+        padding: EdgeInsets.fromLTRB(8 * s, 8 * s, 8 * s, 8 * s),
+        itemCount: names.length,
+        // The handle drags at once; the rest of the row after a long press —
+        // so a plain vertical swipe still scrolls a long order.
+        buildDefaultDragHandles: false,
+        onReorderStart: (_) => HapticFeedback.selectionClick(),
+        onReorder: cart.moveLine,
+        // The lifted row keeps its own rounded shape: the default lift is a
+        // plain rectangle that also covers the gap under the row.
+        proxyDecorator: (child, index, animation) =>
+            _ReorderProxy(animation: animation, scale: s, child: child),
+        itemBuilder: (context, i) => _CartReorderTile(
+          key: ValueKey('reorder_${names[i]}_$i'),
+          index: i,
+          name: names[i],
+          scale: s,
+        ),
+      ),
+    );
+  }
+}
+
+/// Space under each row while reordering (unscaled).
+const double _kCartReorderGap = 6;
+
+/// One row of [_ReorderList]: drag handle · full article name.
+class _CartReorderTile extends StatelessWidget {
+  const _CartReorderTile({
+    super.key,
+    required this.index,
+    required this.name,
+    required this.scale,
+  });
+
+  final int index;
+  final String name;
+  final double scale;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final dark = Theme.of(context).brightness == Brightness.dark;
+    final s = scale;
+    // The navy of the reorder button, as a tint — the mode and the button that
+    // started it read as one thing, without a solid block on every row.
+    final handleBg = dark ? const Color(0xFF17253C) : const Color(0xFFDDE9F6);
+    final handleFg = dark ? const Color(0xFF4F8BE8) : const Color(0xFF2F6FB3);
+
+    return Padding(
+      padding: EdgeInsets.only(bottom: _kCartReorderGap * s),
+      child: Material(
+        color: scheme.surface,
+        clipBehavior: Clip.antiAlias,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(10 * s),
+          side: BorderSide(color: scheme.outlineVariant.withValues(alpha: 0.5)),
+        ),
+        child: ReorderableDelayedDragStartListener(
+          index: index,
+          child: IntrinsicHeight(
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Expanded(
+                  child: Padding(
+                    padding: EdgeInsets.fromLTRB(
+                      12 * s,
+                      10 * s,
+                      10 * s,
+                      10 * s,
+                    ),
+                    // The whole name, wrapped if it needs two lines — this is
+                    // the only thing on the row.
+                    child: Text(
+                      name,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: 14 * s,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                ),
+                // On the right, where the thumb holding the phone rests.
+                ReorderableDragStartListener(
+                  index: index,
+                  child: Container(
+                    width: 44 * s,
+                    color: handleBg,
+                    alignment: Alignment.center,
+                    child: Icon(
+                      Icons.drag_handle,
+                      size: 22 * s,
+                      color: handleFg,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// The lifted row while it is dragged: its own shadow and a touch of scale,
+/// keeping the row's rounded shape (the default lift is a plain rectangle).
+class _ReorderProxy extends StatelessWidget {
+  const _ReorderProxy({
+    required this.animation,
+    required this.scale,
+    required this.child,
+  });
+
+  final Animation<double> animation;
+  final double scale;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: animation,
+      child: child,
+      builder: (context, child) {
+        final t = Curves.easeInOut.transform(animation.value);
+        return Material(
+          color: Colors.transparent,
+          child: Stack(
+            children: [
+              // The shadow, only behind the row (the tile's bottom padding is
+              // the gap to the next row).
+              Positioned.fill(
+                bottom: _kCartReorderGap * scale,
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(10 * scale),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withValues(alpha: 0.22 * t),
+                        blurRadius: 14 * t,
+                        offset: Offset(0, 5 * t),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              Transform.scale(scale: 1 + 0.02 * t, child: child),
+            ],
+          ),
+        );
+      },
     );
   }
 }
@@ -1327,13 +1580,16 @@ class _NoteButton extends StatelessWidget {
   }
 }
 
-/// The stacked action buttons to the right of the cart (Clear / Details / Send).
+/// The stacked action buttons to the right of the cart: Clear / Details /
+/// Reorder / Send.
 class _ActionColumn extends StatelessWidget {
   const _ActionColumn({
     required this.sending,
     required this.confirmed,
+    required this.reordering,
     required this.onClear,
     required this.onDetails,
+    required this.onReorder,
     required this.onSend,
   });
 
@@ -1343,7 +1599,13 @@ class _ActionColumn extends StatelessWidget {
   final bool confirmed;
   final VoidCallback? onClear;
   final VoidCallback? onDetails;
+
+  /// Enters reorder mode, and leaves it again (the button is then a ✓).
+  final VoidCallback? onReorder;
   final VoidCallback? onSend;
+
+  /// The cart is being rearranged right now.
+  final bool reordering;
 
   @override
   Widget build(BuildContext context) {
@@ -1356,11 +1618,11 @@ class _ActionColumn extends StatelessWidget {
       child: LayoutBuilder(
         builder: (context, c) {
           final btn = c.maxHeight.isFinite
-              ? math.min(naturalBtn, (c.maxHeight - gap * 2) / 3)
+              ? math.min(naturalBtn, (c.maxHeight - gap * 3) / 4)
               : naturalBtn;
           final roomy =
               c.maxHeight.isFinite &&
-              c.maxHeight > naturalBtn * 3 + gap * 2 + 1;
+              c.maxHeight > naturalBtn * 4 + gap * 3 + 1;
           return Column(
             children: [
               _ActionButton(
@@ -1375,6 +1637,16 @@ class _ActionColumn extends StatelessWidget {
                 icon: Icons.list_alt,
                 tone: _Tone.neutral,
                 onTap: onDetails,
+                width: width,
+                height: btn,
+              ),
+              SizedBox(height: gap),
+              // Rearrange the lines being added now. While it runs, this is the
+              // only button that answers, and it shows ✓ to end the mode.
+              _ActionButton(
+                icon: reordering ? Icons.check : Icons.swap_vert,
+                tone: _Tone.info,
+                onTap: onReorder,
                 width: width,
                 height: btn,
               ),
@@ -1396,7 +1668,7 @@ class _ActionColumn extends StatelessWidget {
   }
 }
 
-enum _Tone { primary, neutral, danger }
+enum _Tone { primary, neutral, info, danger }
 
 class _ActionButton extends StatelessWidget {
   const _ActionButton({
@@ -1431,6 +1703,13 @@ class _ActionButton extends StatelessWidget {
         dark
             ? (const Color(0xFF8677E8), const Color(0xFF140A3A))
             : (const Color(0xFF6A57D8), Colors.white),
+      // Solid blue: filled like Detalji and Pošalji, and the one hue the
+      // button column doesn't use yet. The dark shade is deliberately a clear
+      // blue — a softer one read as a second teal next to "Pošalji".
+      _Tone.info =>
+        dark
+            ? (const Color(0xFF4F8BE8), const Color(0xFF04152E))
+            : (const Color(0xFF2F6FB3), Colors.white),
       _Tone.danger =>
         dark
             ? (const Color(0xFF5A2A2A), const Color(0xFFF0B5B5))
