@@ -9,6 +9,10 @@ import '../models/mqtt_menu.dart';
 const _kMqttArtikliKey = 'mqtt_artikli_raw_v1';
 const _kMqttArtikliVerKey = 'mqtt_artikli_ver_v1';
 
+/// What this provider saves — removed when the phone moves to another venue
+/// (see `forgetVenueData`).
+const mqttMenuStorageKeys = [_kMqttArtikliKey, _kMqttArtikliVerKey];
+
 /// Holds the MQTT-delivered menu — article groups + predefined remark
 /// definitions ([MqttMenu]). Loads the last-saved payload from local storage on
 /// startup, then updates live whenever the broker sends a new `podaci/artikli`

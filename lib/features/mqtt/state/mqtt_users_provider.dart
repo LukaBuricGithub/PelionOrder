@@ -9,6 +9,10 @@ import '../models/mqtt_user.dart';
 const _kMqttKorisniciKey = 'mqtt_korisnici_raw_v1';
 const _kMqttKorisniciVerKey = 'mqtt_korisnici_ver_v1';
 
+/// What this provider saves — removed when the phone moves to another venue
+/// (see `forgetVenueData`).
+const mqttUsersStorageKeys = [_kMqttKorisniciKey, _kMqttKorisniciVerKey];
+
 /// Holds the MQTT-delivered staff list (`podaci/korisnici`) used for PIN login.
 /// Loads the last-saved list from local storage on startup, then updates live
 /// whenever the broker sends a new payload — persisting each one so login works

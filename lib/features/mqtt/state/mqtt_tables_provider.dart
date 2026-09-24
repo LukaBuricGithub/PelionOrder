@@ -10,6 +10,14 @@ const _kMqttStoloviKey = 'mqtt_stolovi_raw_v1';
 const _kMqttStoloviVerKey = 'mqtt_stolovi_ver_v1';
 const _kMqttStanjeKey = 'mqtt_stolovi_stanje_raw_v1';
 
+/// What the table providers save — removed when the phone moves to another
+/// venue (see `forgetVenueData`).
+const mqttTablesStorageKeys = [
+  _kMqttStoloviKey,
+  _kMqttStoloviVerKey,
+  _kMqttStanjeKey,
+];
+
 /// Holds the MQTT-delivered tables grouped by zone (`podaci/stolovi`). Loads the
 /// last-saved list on startup, then updates live + persists on each payload.
 class MqttTablesNotifier extends StateNotifier<List<MqttTerrace>> {

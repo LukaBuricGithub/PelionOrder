@@ -16,7 +16,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
 # In Windows, build-name is used as the major, minor, and patch parts
 # of the product and file versions while build-number is used as the build suffix.
-version: 1.0.0+3
+version: 1.0.1+5
 
 environment:
   sdk: ^3.10.7
@@ -53,7 +53,6 @@ dependencies:
   path_provider: ^2.1.6
   path: ^1.9.1
   shared_preferences: ^2.2.3
-  flutter_secure_storage: ^9.2.4
 
   # --- Misc ---
   package_info_plus: ^8.1.0
@@ -63,7 +62,13 @@ dependencies:
   flutter_svg: ^2.0.17 # floor-plan table/wall SVG assets (Odabir stola)
   mqtt_client: ^10.8.0 # MQTT v3.1.1 test connection (Pelion broker)
   flutter_native_splash: ^2.4.4 # OS splash (preserve/remove used at runtime)
-  mobile_scanner: ^5.2.3 # QR scanner (Postavke uređaja); 5.x keeps iOS 13 min
+  # QR scanner (Postavke uređaja). 7.x: Android CameraX 1.6 (16 KB page
+  # sizes, required by Google Play); iOS uses Apple's Vision (no ML Kit),
+  # iOS 12+.
+  mobile_scanner: ^7.4.0
+  # Opens the app's page in the phone's settings (camera access refused).
+  # Held at 6.x: 7+ supports only Swift Package Manager on iOS, not CocoaPods.
+  app_settings: ^6.1.1
 
 dev_dependencies:
   flutter_test:

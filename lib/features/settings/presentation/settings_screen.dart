@@ -8,6 +8,7 @@ import '../../mqtt/data/mqtt_service.dart';
 import '../../mqtt/models/mqtt_connection_config.dart';
 import '../../mqtt/models/mqtt_device_status.dart';
 import '../../mqtt/state/mqtt_config_provider.dart';
+import '../../mqtt/state/mqtt_venue_reset.dart';
 import '../../profiles/models/api_entry.dart';
 import '../../profiles/state/profiles_provider.dart';
 import '../../shared/presentation/app_bottom_sheet.dart';
@@ -644,7 +645,11 @@ class _QrSkenerCardState extends ConsumerState<_QrSkenerCard> {
     // Remember the provisioning, then connect with it immediately. A code that
     // isn't a valid orderman code from the kasa is refused and changes nothing,
     // so a wrong scan can't replace a working provisioning.
-    final saved = await ref.read(mqttConfigProvider.notifier).saveScanned(code);
+    final configs = ref.read(mqttConfigProvider.notifier);
+    // Which venue the data on this phone belongs to — read before the new
+    // code replaces the old one.
+    final dataLicenca = configs.dataLicenca;
+    final saved = await configs.saveScanned(code);
     if (!mounted) return;
     if (!saved) {
       // A dialog, not a snackbar: it must be seen, on every device.
@@ -664,7 +669,17 @@ class _QrSkenerCardState extends ConsumerState<_QrSkenerCard> {
       return;
     }
     final config = ref.read(mqttConfigProvider);
-    if (config != null) await _connect(config);
+    if (config == null) return;
+    // A code for another venue: nothing of the old one — staff, tables,
+    // menu, unsent orders — may carry over. The same venue keeps its data
+    // (a device re-activated at the same kasa keeps its unsent orders).
+    if (dataLicenca != config.licenca) {
+      await forgetVenueData(ref);
+      if (!mounted) return;
+    }
+    await configs.setDataLicenca(config.licenca);
+    if (!mounted) return;
+    await _connect(config);
   }
 
   /// Connects with a freshly scanned code, in a small card that shows the

@@ -14,6 +14,12 @@ import '../models/mqtt_connection_config.dart';
 /// code.
 const _kMqttQrCodeKey = 'mqtt_qr_code_v2';
 
+/// The licence (venue) the data on this phone — menu, staff, tables, unsent
+/// orders — was received under. Kept apart from the QR code on purpose: a
+/// device the kasa no longer accepts forgets its code but keeps its data, so
+/// a new code for the SAME venue can carry on with it.
+const _kMqttDataLicencaKey = 'mqtt_data_licenca_v1';
+
 /// The device's MQTT provisioning, derived from the scanned QR code and
 /// **persisted**, so every launch can reconnect without scanning again.
 ///
@@ -44,6 +50,15 @@ class MqttConfigNotifier extends StateNotifier<MqttConnectionConfig?> {
     state = config;
     return true;
   }
+
+  /// The venue (licence) whose data this phone holds; before this was
+  /// recorded, the venue of the current code. Null when unknown.
+  String? get dataLicenca =>
+      _prefs.getString(_kMqttDataLicencaKey) ?? state?.licenca;
+
+  /// Records that the data on this phone now belongs to [licenca].
+  Future<void> setDataLicenca(String licenca) =>
+      _prefs.setString(_kMqttDataLicencaKey, licenca);
 
   /// The kasa refused an order with "nije aktiviran" (§9, §11.6): this code is
   /// no longer accepted there — never activated, cancelled, or the device was

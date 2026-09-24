@@ -289,6 +289,10 @@ class MqttOutboxNotifier extends StateNotifier<List<MqttOutboxOrder>> {
 
   static const _key = 'mqtt_outbox_v1';
 
+  /// What this provider saves — removed when the phone moves to another venue
+  /// (see `forgetVenueData`): its unsent orders can't go to a different kasa.
+  static const storageKeys = [_key];
+
   final SharedPreferences _prefs;
   final MqttPendingTransfersNotifier _transfers;
 

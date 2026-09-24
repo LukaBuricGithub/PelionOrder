@@ -53,6 +53,14 @@ class MqttTableLockKeeper {
   /// The app is back: claim the open table again.
   static void refreshAfterResume() => _active?.refreshNow();
 
+  /// The phone moved to another venue: table numbers granted a moment ago
+  /// meant tables THERE, and a keeper still running would announce to the
+  /// wrong kasa. Stops it without an `izlaz` — the old connection is gone.
+  static void forgetVenue() {
+    _active?.release(announce: false);
+    _granted.clear();
+  }
+
   final int stol;
 
   /// Called with the kasa's message once the table is held by someone else.

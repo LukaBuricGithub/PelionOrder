@@ -2,8 +2,15 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 	<dict>
+		<!-- A Croatian app (as in ikasa): iOS then draws its own parts of the
+		     app — the camera permission buttons, the copy/paste menu — in
+		     Croatian, and the App Store lists the language as Croatian. -->
 		<key>CFBundleDevelopmentRegion</key>
-		<string>$(DEVELOPMENT_LANGUAGE)</string>
+		<string>hr</string>
+		<key>CFBundleLocalizations</key>
+		<array>
+			<string>hr</string>
+		</array>
 		<key>CFBundleDisplayName</key>
 		<string>Pelion Order</string>
 		<key>CFBundleExecutable</key>
@@ -14,13 +21,11 @@
 		<string>6.0</string>
 		<key>CFBundleName</key>
 		<string>Pelion Order</string>
-		<!-- The venue server is reached over the local network via plain HTTP, so
-	     allow cleartext connections (App Transport Security exception). -->
-		<key>NSAppTransportSecurity</key>
-		<dict>
-			<key>NSAllowsArbitraryLoads</key>
-			<true/>
-		</dict>
+		<!-- Export compliance: the app uses only standard encryption (TLS to the
+		     MQTT broker), so App Store Connect doesn't hold each build for the
+		     encryption questions. -->
+		<key>ITSAppUsesNonExemptEncryption</key>
+		<false/>
 		<key>CFBundlePackageType</key>
 		<string>APPL</string>
 		<key>CFBundleShortVersionString</key>
@@ -35,18 +40,12 @@
 		<string>LaunchScreen</string>
 		<key>UIMainStoryboardFile</key>
 		<string>Main</string>
+		<!-- iPhone only (TARGETED_DEVICE_FAMILY = 1), portrait only, matching
+		     the app's own lock in main.dart, so even the launch screen never
+		     comes up sideways. -->
 		<key>UISupportedInterfaceOrientations</key>
 		<array>
 			<string>UIInterfaceOrientationPortrait</string>
-			<string>UIInterfaceOrientationLandscapeLeft</string>
-			<string>UIInterfaceOrientationLandscapeRight</string>
-		</array>
-		<key>UISupportedInterfaceOrientations~ipad</key>
-		<array>
-			<string>UIInterfaceOrientationPortrait</string>
-			<string>UIInterfaceOrientationPortraitUpsideDown</string>
-			<string>UIInterfaceOrientationLandscapeLeft</string>
-			<string>UIInterfaceOrientationLandscapeRight</string>
 		</array>
 		<key>CADisableMinimumFrameDurationOnPhone</key>
 		<true/>

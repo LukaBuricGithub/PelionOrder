@@ -239,7 +239,10 @@ class _MqttOrderScreenState extends ConsumerState<MqttOrderScreen> {
     _cart.removeListener(_onCart);
     _cart.dispose();
     SystemBars.releaseNavigation();
-    SystemChrome.setPreferredOrientations(DeviceOrientation.values);
+    // Back to the app's own rule (portrait only, set in main.dart) — NOT
+    // every orientation, or the whole app would rotate once a table had been
+    // opened.
+    SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
     _searchController.dispose();
     super.dispose();
   }
@@ -1555,6 +1558,11 @@ class _PickerBar extends StatelessWidget {
         child: TextField(
           controller: searchController,
           autofocus: true,
+          // Article names are not dictionary words: the keyboard must not
+          // "correct" them (iOS does on space), and its suggestion strip would
+          // take room from the item grid.
+          autocorrect: false,
+          enableSuggestions: false,
           onChanged: onQuery,
           decoration: const InputDecoration(
             isDense: true,

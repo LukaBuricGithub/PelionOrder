@@ -179,6 +179,21 @@ class MqttService {
     return null;
   }
 
+  /// Forgets everything received from the current venue: the last menu,
+  /// staff, tables, table state and versions, and the other devices'
+  /// statuses. For a new device identity (a different QR code) — so nothing
+  /// of the previous venue can be applied again while the new one connects.
+  void forgetVenueData() {
+    artikliRawJson.value = null;
+    korisniciRawJson.value = null;
+    stoloviRawJson.value = null;
+    stanjeRawJson.value = null;
+    verzijaRawJson.value = null;
+    devices.value = const {};
+    statusesReady.value = false;
+    lastOrderReply = null;
+  }
+
   /// The current version hash for [section] (from the last `podaci/verzija`),
   /// or null if not received / not present.
   String? versionFor(String section) {
@@ -237,14 +252,14 @@ class MqttService {
 
   /// Everything the phone subscribes to, every time it connects.
   List<String> get _subscriptionTopics => [
-        _tArtikli,
-        _tKorisnici,
-        _tStolovi,
-        _tStanje,
-        _tVerzija,
-        _tMob,
-        _tStatusAll,
-      ];
+    _tArtikli,
+    _tKorisnici,
+    _tStolovi,
+    _tStanje,
+    _tVerzija,
+    _tMob,
+    _tStatusAll,
+  ];
 
   /// Our MQTT client-id — this is the `od` field of an order, and the last
   /// segment of the reply topic.
@@ -374,6 +389,8 @@ class MqttService {
       await _cleanShutdown();
       _spojen = null;
       _resetRetries();
+      // What the old identity received must not be applied to the new one.
+      forgetVenueData();
     }
     _config = config;
   }
@@ -423,8 +440,10 @@ class MqttService {
     }
     final wait =
         base + Duration(milliseconds: _random.nextInt(_maxJitterMs + 1));
-    debugPrint('MQTT ▸ next connection attempt in ${wait.inSeconds} s'
-        '${_lastAttemptRefused ? ' (the broker refused the login)' : ''}');
+    debugPrint(
+      'MQTT ▸ next connection attempt in ${wait.inSeconds} s'
+      '${_lastAttemptRefused ? ' (the broker refused the login)' : ''}',
+    );
     _retryTimer = Timer(wait, () {
       _retryTimer = null;
       if (_running && !isConnected && !_attemptInProgress) _attempt();
@@ -467,7 +486,9 @@ class MqttService {
       // with the same options and the same last will.
       ..autoReconnect = true
       ..resubscribeOnAutoReconnect = true
-      ..logging(on: true)
+      // The client's own log prints every message — orders, staff names —
+      // so only in debug builds, never in what ships to the stores.
+      ..logging(on: kDebugMode)
       ..setProtocolV311()
       // TEST ONLY: the broker cert is signed by a private CA ("Pelion
       // Orderman CA"). Accept it here instead of bundling the truststore.
@@ -540,8 +561,10 @@ class MqttService {
     _client = client;
 
     try {
-      debugPrint('MQTT ▸ connecting to ssl://${config.broker}:${config.port} '
-          'as $clientId (user=${config.licenca})…');
+      debugPrint(
+        'MQTT ▸ connecting to ssl://${config.broker}:${config.port} '
+        'as $clientId (user=${config.licenca})…',
+      );
       await client.connect(config.licenca, config.lozinka);
     } catch (e) {
       debugPrint('MQTT ✗ connect error: $e');
@@ -554,7 +577,8 @@ class MqttService {
     }
     if (client.connectionStatus?.state != MqttConnectionState.connected) {
       final rc = client.connectionStatus?.returnCode;
-      _lastAttemptRefused = rc == MqttConnectReturnCode.badUsernameOrPassword ||
+      _lastAttemptRefused =
+          rc == MqttConnectReturnCode.badUsernameOrPassword ||
           rc == MqttConnectReturnCode.notAuthorized;
       debugPrint('MQTT ✗ not connected: $rc');
       _client = null;
@@ -579,8 +603,9 @@ class MqttService {
     });
     client.published?.listen((m) {
       debugPrint(
-          'MQTT ▸ published ACK id=${m.variableHeader?.messageIdentifier}'
-          ' topic=${m.variableHeader?.topicName}');
+        'MQTT ▸ published ACK id=${m.variableHeader?.messageIdentifier}'
+        ' topic=${m.variableHeader?.topicName}',
+      );
     });
 
     // Subscribe with QoS 1 — the retained data flows to the listener above —
@@ -595,9 +620,11 @@ class MqttService {
     }
     debugPrint('MQTT ▸ replies on: $_tMob');
     if (!isReplyIdValid) {
-      debugPrint('MQTT ✗ WARNING: "od" (${config.uredaj}) is invalid — the '
-          'kasa will silently drop orders (no reply). It must be 1-64 chars '
-          'and must not contain / + #');
+      debugPrint(
+        'MQTT ✗ WARNING: "od" (${config.uredaj}) is invalid — the '
+        'kasa will silently drop orders (no reply). It must be 1-64 chars '
+        'and must not contain / + #',
+      );
     }
     await _announceOnline(client);
     connected.value = isConnected;
@@ -608,7 +635,13 @@ class MqttService {
   void _onMessage(MqttReceivedMessage<MqttMessage> e) {
     final m = e.payload as MqttPublishMessage;
     final payload = MqttPublishPayload.bytesToStringAsString(m.payload.message);
-    debugPrint('MQTT ◂ ${e.topic}: $payload');
+    // Content only in debug builds: messages carry staff names and codes,
+    // the menu and orders. A release build logs just that something came in.
+    debugPrint(
+      kDebugMode
+          ? 'MQTT ◂ ${e.topic}: $payload'
+          : 'MQTT ◂ ${e.topic} (${payload.length} B)',
+    );
     // A device's status (§11.2). The id is read from the topic, not the
     // content — an emptied status has no content to read it from.
     if (e.topic.startsWith(_statusPrefix)) {
@@ -645,8 +678,10 @@ class MqttService {
         }
       } else {
         if (tip != null && tip != 'nalog') {
-          debugPrint('MQTT ▸ unknown reply tip "$tip" — routed to orders; '
-              'add a case for it if this is a new query type');
+          debugPrint(
+            'MQTT ▸ unknown reply tip "$tip" — routed to orders; '
+            'add a case for it if this is a new query type',
+          );
         }
         final reply = MqttOrderReply.tryParse(payload);
         if (reply == null) {
@@ -719,9 +754,11 @@ class MqttService {
       try {
         await settled.future.timeout(_subscriptionConfirmWait);
       } on TimeoutException {
-        debugPrint('MQTT ▸ subscriptions not all confirmed within '
-            '${_subscriptionConfirmWait.inSeconds} s ($_pendingSubscriptions) '
-            '— announcing online anyway');
+        debugPrint(
+          'MQTT ▸ subscriptions not all confirmed within '
+          '${_subscriptionConfirmWait.inSeconds} s ($_pendingSubscriptions) '
+          '— announcing online anyway',
+        );
       }
     }
     if (!identical(_client, client) || !isConnected) return;
@@ -801,10 +838,10 @@ class MqttService {
   // ── Publishing ─────────────────────────────────────────────────────────────
 
   void _publishStatus(String status) => _publish(
-        _tStatus,
-        _statusJson(_cfg, status, _spojen ?? _now()),
-        retain: true,
-      );
+    _tStatus,
+    _statusJson(_cfg, status, _spojen ?? _now()),
+    retain: true,
+  );
 
   /// Publishes with QoS 1 right now, or returns null when that's not possible
   /// (not connected, or the client refused). Never queues.
@@ -819,7 +856,12 @@ class MqttService {
         builder.payload!,
         retain: retain,
       );
-      debugPrint('MQTT ▸ publish → "$topic" (id=$id) $payload');
+      // The order itself only in debug builds (see _onMessage).
+      debugPrint(
+        kDebugMode
+            ? 'MQTT ▸ publish → "$topic" (id=$id) $payload'
+            : 'MQTT ▸ publish → "$topic" (id=$id, ${payload.length} B)',
+      );
       return id;
     } catch (e) {
       debugPrint('MQTT ✗ publish → "$topic" failed: $e');
@@ -840,17 +882,16 @@ class MqttService {
     MqttConnectionConfig config,
     String status,
     int spojen,
-  ) =>
-      jsonEncode({
-        'sh': 1,
-        'uredaj': config.uredaj,
-        'tip': 'PELIONORDER',
-        'grupa': config.grupa,
-        'naziv': config.naziv,
-        'status': status,
-        'prima': false,
-        'spojen': spojen,
-      });
+  ) => jsonEncode({
+    'sh': 1,
+    'uredaj': config.uredaj,
+    'tip': 'PELIONORDER',
+    'grupa': config.grupa,
+    'naziv': config.naziv,
+    'status': status,
+    'prima': false,
+    'spojen': spojen,
+  });
 
   static int _now() => DateTime.now().millisecondsSinceEpoch;
 }
