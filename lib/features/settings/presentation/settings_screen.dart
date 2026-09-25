@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
@@ -672,14 +673,81 @@ class _QrSkenerCardState extends ConsumerState<_QrSkenerCard> {
     if (config == null) return;
     // A code for another venue: nothing of the old one — staff, tables,
     // menu, unsent orders — may carry over. The same venue keeps its data
-    // (a device re-activated at the same kasa keeps its unsent orders).
-    if (dataLicenca != config.licenca) {
-      await forgetVenueData(ref);
-      if (!mounted) return;
+    // (a device re-activated at the same kasa keeps its unsent orders). The
+    // wipe itself happens behind the card, see [_prepareAndConnect].
+    await _connect(config, forget: dataLicenca != config.licenca);
+  }
+
+  /// How long the card keeps waiting after the FIRST attempt didn't connect.
+  /// The service's own retries start at 5 s, then 10 s, 20 s — this covers the
+  /// first two of them.
+  static const _retryWait = Duration(seconds: 20);
+
+  /// Everything a new code sets in motion, behind the card that is already on
+  /// screen: forget the previous venue's data if the code is for another one,
+  /// record whose data the phone now holds, drop any live session, connect.
+  ///
+  /// It runs BEHIND the card on purpose. Done before it, a failure here — or
+  /// anything that rebuilt this widget while it awaited — left the scan with
+  /// no answer at all: no dots, no ✓, no ✗, just the settings screen again.
+  /// Whatever happens now, the card is up and reports the outcome.
+  Future<_ConnectOutcome> _prepareAndConnect(
+    MqttConnectionConfig config, {
+    required bool forget,
+  }) async {
+    try {
+      if (forget) await forgetVenueData(ref);
+      await ref
+          .read(mqttConfigProvider.notifier)
+          .setDataLicenca(config.licenca);
+    } catch (e) {
+      // The code is saved either way: connecting matters more than the wipe.
+      debugPrint('MQTT ▸ forgetting the previous venue failed: $e');
     }
-    await configs.setDataLicenca(config.licenca);
-    if (!mounted) return;
-    await _connect(config);
+    // A new QR replaces the old provisioning — drop the live session first, or
+    // connectAndSend would keep the previous licenca ("already connected").
+    if (MqttService.instance.isConnected) MqttService.instance.disconnect();
+    return _attemptOutcome(config);
+  }
+
+  /// What the card shows for a freshly scanned code.
+  ///
+  /// Deliberately NOT the first attempt's result alone: that attempt can end
+  /// without connecting and without being refused (it was superseded, or one
+  /// was already running), and the service then retries on its own. Reporting
+  /// that as "nothing" closed the card with no answer at all — the first scan
+  /// on a new phone looked like it had done nothing, while the connection came
+  /// up seconds later. So a first attempt that neither connected nor was
+  /// refused keeps the dots on screen and waits for the retry.
+  Future<_ConnectOutcome> _attemptOutcome(MqttConnectionConfig config) async {
+    final result = await MqttService.instance.connectAndSend(config);
+    debugPrint(result);
+    if (MqttService.instance.isConnected) return _ConnectOutcome.connected;
+    if (result.startsWith('MQTT: broker je odbio')) {
+      return _ConnectOutcome.refused;
+    }
+    final connected = await _waitForConnection(_retryWait);
+    return connected ? _ConnectOutcome.connected : _ConnectOutcome.failed;
+  }
+
+  /// True as soon as the service is connected, false if [limit] passes first.
+  Future<bool> _waitForConnection(Duration limit) {
+    final connected = MqttService.instance.connected;
+    if (connected.value) return Future<bool>.value(true);
+    final done = Completer<bool>();
+    Timer? timer;
+    void onChanged() {
+      if (connected.value && !done.isCompleted) done.complete(true);
+    }
+
+    connected.addListener(onChanged);
+    timer = Timer(limit, () {
+      if (!done.isCompleted) done.complete(false);
+    });
+    return done.future.whenComplete(() {
+      timer?.cancel();
+      connected.removeListener(onChanged);
+    });
   }
 
   /// Connects with a freshly scanned code, in a small card that shows the
@@ -687,23 +755,12 @@ class _QrSkenerCardState extends ConsumerState<_QrSkenerCard> {
   /// this first attempt fails, the service keeps retrying on its own.
   ///
   /// The service's own lines ("MQTT: …") only go to the debug console.
-  Future<void> _connect(MqttConnectionConfig config) async {
+  Future<void> _connect(
+    MqttConnectionConfig config, {
+    bool forget = false,
+  }) async {
     debugPrint('MQTT: spajanje…');
-    // A new QR replaces the old provisioning — drop the live session first, or
-    // connectAndSend would keep the previous licenca ("already connected").
-    if (MqttService.instance.isConnected) MqttService.instance.disconnect();
-    final attempt = MqttService.instance.connectAndSend(config).then((result) {
-      debugPrint(result);
-      if (MqttService.instance.isConnected) return _ConnectOutcome.connected;
-      if (result.startsWith('MQTT: broker je odbio')) {
-        return _ConnectOutcome.refused;
-      }
-      if (result.startsWith('MQTT: nije spojeno')) {
-        return _ConnectOutcome.failed;
-      }
-      // Already in progress, interrupted, not provisioned: nothing to show.
-      return _ConnectOutcome.none;
-    });
+    final attempt = _prepareAndConnect(config, forget: forget);
     if (!mounted) return;
     await showGeneralDialog<void>(
       context: context,
@@ -937,7 +994,7 @@ enum _ConnectOutcome { connected, refused, failed, none }
 
 /// The connection attempt after a scan, in one card that changes in place:
 /// blue moving dots with "Spajanje…" → a green check with "Spojeno", or a red
-/// X with "Prijava odbijena" / "Pogreška pri spajanju". It closes on its own.
+/// X with "Prijava odbijena" / "Nije spojeno". It closes on its own.
 ///
 /// The dots only fade in once the attempt has taken a moment, so a quick
 /// connection goes straight to the check without a flash of "Spajanje…".
@@ -1025,7 +1082,9 @@ class _ConnectCardState extends State<_ConnectCard>
       _ConnectOutcome.connected => 'Spojeno',
       _ConnectOutcome.refused =>
         'Prijava odbijena, skenirajte novi kod u glavnom programu',
-      _ => 'Pogreška pri spajanju',
+      // The code is saved either way and the service keeps trying, so this
+      // says what is true instead of sounding like the scan failed.
+      _ => 'Nije spojeno, pokušava se ponovno spojiti',
     };
 
     final Widget body = outcome == null
