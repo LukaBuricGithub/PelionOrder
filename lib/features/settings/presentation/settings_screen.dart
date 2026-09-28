@@ -10,6 +10,9 @@ import '../../mqtt/models/mqtt_connection_config.dart';
 import '../../mqtt/models/mqtt_device_status.dart';
 import '../../mqtt/state/mqtt_config_provider.dart';
 import '../../mqtt/state/mqtt_venue_reset.dart';
+import '../../printer/data/printer_service.dart';
+import '../../shared/platform/open_app_settings.dart';
+import '../../printer/state/printer_provider.dart';
 import '../../profiles/models/api_entry.dart';
 import '../../profiles/state/profiles_provider.dart';
 import '../../shared/presentation/app_bottom_sheet.dart';
@@ -239,6 +242,10 @@ class SettingsScreen extends ConsumerWidget {
 
           // ── QR skener ────────────────────────────────────────────────────
           const _QrSkenerCard(),
+          const SizedBox(height: 16),
+
+          // ── Pisač ────────────────────────────────────────────────────────
+          const _PisacCard(),
         ],
       ),
     );
@@ -792,6 +799,303 @@ class _QrSkenerCardState extends ConsumerState<_QrSkenerCard> {
                 config == null ? 'Skeniraj QR kod' : 'Skeniraj ponovno',
               ),
             ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Bluetooth printer: which one this phone prints to, and a test print.
+///
+/// Pairing itself stays in the phone's own Bluetooth settings (it needs the
+/// PIN and is done once); here the waiter only picks one of the paired
+/// printers and checks that it prints.
+class _PisacCard extends ConsumerStatefulWidget {
+  const _PisacCard();
+
+  @override
+  ConsumerState<_PisacCard> createState() => _PisacCardState();
+}
+
+class _PisacCardState extends ConsumerState<_PisacCard> {
+  bool _busy = false;
+
+  /// Shows [message] the way the rest of this screen does — a dialog, because
+  /// snackbars go unseen on the phones the waiters use. With [toSettings] it
+  /// also offers the way to the app's page in the phone's settings, which is
+  /// the only way back once a permission was refused for good.
+  Future<void> _say(
+    String title,
+    String message, {
+    bool toSettings = false,
+  }) async {
+    if (!mounted) return;
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(title),
+        content: Text(message),
+        actions: [
+          if (toSettings)
+            TextButton(
+              onPressed: () {
+                Navigator.pop(ctx);
+                openAppSettings();
+              },
+              child: const Text('Otvori postavke'),
+            ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('U redu'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  String _faultText(PrinterFault fault) => switch (fault) {
+    PrinterFault.unsupported =>
+      'Bluetooth pisač radi samo na Android uređajima.',
+    PrinterFault.noPermission =>
+      'Za pisač je potrebno dopuštenje za Bluetooth. Pokušajte ponovno i '
+          'dopustite pristup.',
+    PrinterFault.permissionBlocked =>
+      'Dopuštenje za Bluetooth je odbijeno. Uključite ga u postavkama '
+          'telefona.',
+    PrinterFault.bluetoothOff => 'Uključite Bluetooth na telefonu.',
+    PrinterFault.notReachable =>
+      'Pisač se ne javlja. Provjerite je li uključen, u dometu i povezan s '
+          'ovim telefonom.',
+    PrinterFault.writeFailed =>
+      'Pisač je povezan, ali ispis nije prošao. Pokušajte ponovno.',
+  };
+
+  Future<void> _choose() async {
+    setState(() => _busy = true);
+    final fault = await Printers.ensureReady();
+    List<PrinterDevice> devices = const [];
+    if (fault == null) devices = await Printers.paired();
+    if (!mounted) return;
+    setState(() => _busy = false);
+
+    if (fault != null) {
+      await _say(
+        'Pisač',
+        _faultText(fault),
+        toSettings: fault == PrinterFault.permissionBlocked,
+      );
+      return;
+    }
+    if (devices.isEmpty) {
+      await _say(
+        'Nema uparenih pisača',
+        'Prvo uparite pisač u Bluetooth postavkama telefona, pa ga ovdje '
+            'odaberite.',
+      );
+      return;
+    }
+    if (!mounted) return;
+    final picked = await showAppBottomSheet<PrinterDevice>(
+      context: context,
+      title: 'Odaberite pisač',
+      body: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          for (final device in devices)
+            ListTile(
+              leading: const Icon(Icons.print_outlined),
+              title: Text(device.name.isEmpty ? device.mac : device.name),
+              subtitle: Text(device.mac),
+              onTap: () => Navigator.pop(context, device),
+            ),
+        ],
+      ),
+    );
+    if (picked == null || !mounted) return;
+    await ref.read(printerProvider.notifier).select(picked);
+  }
+
+  /// Removing the printer is a deliberate act, like deleting a profile: the
+  /// same red confirmation the rest of the app uses.
+  Future<void> _confirmForget(PrinterDevice printer) async {
+    final named = printer.name.isNotEmpty;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) {
+        final scheme = Theme.of(ctx).colorScheme;
+        final text = Theme.of(ctx).textTheme;
+        return AlertDialog(
+          title: const Text('Obriši pisač'),
+          // The name is whatever the printer announces over Bluetooth, and
+          // many of them announce something generic ("BlueTooth Printer"), so
+          // the address is shown too — it tells two of them apart.
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text('Obrisati odabrani pisač?'),
+              const SizedBox(height: 10),
+              if (named)
+                Text(
+                  printer.name,
+                  style: text.bodyLarge?.copyWith(fontWeight: FontWeight.w700),
+                ),
+              Text(
+                printer.mac,
+                style: text.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
+              ),
+            ],
+          ),
+          actions: [
+            // Quiet cancel so a mis-tap defaults to the safe option.
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Odustani'),
+            ),
+            FilledButton.icon(
+              style: FilledButton.styleFrom(
+                backgroundColor: scheme.error,
+                foregroundColor: scheme.onError,
+              ),
+              onPressed: () => Navigator.pop(ctx, true),
+              icon: const Icon(Icons.delete_outline, size: 18),
+              label: const Text('Obriši'),
+            ),
+          ],
+        );
+      },
+    );
+    if (ok == true && mounted) {
+      await ref.read(printerProvider.notifier).forget();
+    }
+  }
+
+  Future<void> _testPrint(PrinterDevice printer) async {
+    setState(() => _busy = true);
+    final config = ref.read(mqttConfigProvider);
+    final fault = await Printers.printTest(
+      mac: printer.mac,
+      venue: config?.naziv ?? '',
+      device: config?.uredaj ?? '',
+    );
+    if (!mounted) return;
+    setState(() => _busy = false);
+    await _say(
+      fault == null ? 'Probni ispis poslan' : 'Ispis nije uspio',
+      fault == null
+          ? 'Ako pisač nije ispisao, provjerite ima li papira.'
+          : _faultText(fault),
+      toSettings: fault == PrinterFault.permissionBlocked,
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final printer = ref.watch(printerProvider);
+
+    if (!Printers.isSupported) {
+      return _SettingsCard(
+        header: 'Pisač',
+        child: Text(
+          'Bluetooth pisač trenutačno radi samo na Android uređajima.',
+          style: theme.textTheme.bodyMedium?.copyWith(
+            color: theme.colorScheme.onSurfaceVariant,
+          ),
+        ),
+      );
+    }
+
+    return _SettingsCard(
+      header: 'Pisač',
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(
+                Icons.print_outlined,
+                color: printer == null
+                    ? theme.colorScheme.onSurfaceVariant
+                    : theme.colorScheme.primary,
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      printer == null
+                          ? 'Nije odabran'
+                          : (printer.name.isEmpty ? printer.mac : printer.name),
+                      style: theme.textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    if (printer != null) ...[
+                      const SizedBox(height: 2),
+                      Text(
+                        printer.mac,
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: theme.colorScheme.onSurfaceVariant,
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+              if (printer != null)
+                IconButton(
+                  icon: Icon(
+                    Icons.delete_outline,
+                    color: theme.colorScheme.error,
+                  ),
+                  tooltip: 'Ukloni pisač',
+                  onPressed: _busy ? null : () => _confirmForget(printer),
+                ),
+            ],
+          ),
+          const SizedBox(height: 14),
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: _busy ? null : _choose,
+                  icon: const Icon(Icons.bluetooth_searching),
+                  label: Text(printer == null ? 'Odaberi' : 'Promijeni'),
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                // No icon: the label alone fills the chip, and on a narrow
+                // phone it wraps to two lines ("Probni" / "ispis") instead of
+                // being cut off.
+                child: FilledButton(
+                  onPressed: _busy || printer == null
+                      ? null
+                      : () => _testPrint(printer),
+                  style: FilledButton.styleFrom(
+                    minimumSize: const Size(0, 48),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 12,
+                      vertical: 10,
+                    ),
+                  ),
+                  child: _busy
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2.2),
+                        )
+                      : const Text(
+                          'Probni ispis',
+                          textAlign: TextAlign.center,
+                          maxLines: 2,
+                        ),
+                ),
+              ),
+            ],
           ),
         ],
       ),

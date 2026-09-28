@@ -1,8 +1,21 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
     <!-- The broker connection (MQTT over TLS) and the connectivity state it
          is watched with. -->
     <uses-permission android:name="android.permission.INTERNET"/>
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
+
+    <!-- Bluetooth printer ("Postavke uređaja" → Pisač). The printer is paired
+         in the phone's own Bluetooth settings; the app only connects to the
+         one the waiter picked. BLUETOOTH_SCAN is required even so, because the
+         printer library calls cancelDiscovery() before connecting, and
+         Android 12+ refuses that call without it. Nothing here looks for
+         devices, hence neverForLocation: no location is derived from
+         Bluetooth. -->
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT"/>
+    <uses-permission android:name="android.permission.BLUETOOTH_SCAN"
+        android:usesPermissionFlags="neverForLocation"
+        tools:targetApi="s"/>
 
     <application
         android:label="Pelion Order"

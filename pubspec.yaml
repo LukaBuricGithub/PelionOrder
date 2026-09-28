@@ -73,6 +73,7 @@ dependencies:
   # compile under Swift 6 / Xcode 26, and its newer Swift-Package-only version
   # breaks every Flutter command on Windows, Android builds included.)
   url_launcher: ^6.3.2
+  print_bluetooth_thermal: 1.2.1
 
 dev_dependencies:
   flutter_test:
