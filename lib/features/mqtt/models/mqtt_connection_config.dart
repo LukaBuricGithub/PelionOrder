@@ -18,7 +18,7 @@ class MqttConnectionConfig {
     this.port = 8883,
     this.lozinka = '0000',
     this.zvuk = true,
-    this.keepalive = 10,
+    this.keepalive = 60,
     this.tls = true,
   });
 
@@ -39,6 +39,20 @@ class MqttConnectionConfig {
   /// The kasa's group (`PRODUKCIJA`, `TEST`, `NELICENCIRANO`), reported as-is
   /// in our status.
   final String grupa;
+
+  /// Seconds between keepalives; the broker drops a client that says nothing
+  /// for one and a half times as long.
+  ///
+  /// 60, not the 10 the spec names for a kasa. A kasa sits on mains power and
+  /// a fixed line; a phone doesn't. With 10 the broker cut a device off after
+  /// 15 seconds of silence, which is exactly what happens when the screen goes
+  /// off and Android suspends the app's network — one venue's phone connected
+  /// 356 times in a week, 267 of those ending in "exceeded timeout", with an
+  /// average connection life of 47 seconds (broker log 22–28 Sep 2026). Worse
+  /// than the drop itself, the phone kept believing it was connected and sent
+  /// orders into a dead socket. 60 leaves 90 seconds of silence, which covers
+  /// a screen going off and a Wi-Fi-to-mobile handover, and the broker's
+  /// max_keepalive is 120, so it is accepted.
   final int keepalive;
   final bool tls;
 
@@ -78,17 +92,17 @@ class MqttConnectionConfig {
   }
 
   Map<String, dynamic> toJson() => {
-        'broker': broker,
-        'port': port,
-        'licenca': licenca,
-        'lozinka': lozinka,
-        'zvuk': zvuk,
-        'uredaj': uredaj,
-        'naziv': naziv,
-        'grupa': grupa,
-        'keepalive': keepalive,
-        'tls': tls,
-      };
+    'broker': broker,
+    'port': port,
+    'licenca': licenca,
+    'lozinka': lozinka,
+    'zvuk': zvuk,
+    'uredaj': uredaj,
+    'naziv': naziv,
+    'grupa': grupa,
+    'keepalive': keepalive,
+    'tls': tls,
+  };
 
   /// Pretty-printed JSON, for showing the connection payload on screen.
   String toPrettyJson() => const JsonEncoder.withIndent('  ').convert(toJson());

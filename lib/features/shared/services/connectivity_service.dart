@@ -15,16 +15,18 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 /// timeout.
 class ConnectivityService {
   ConnectivityService([Connectivity? connectivity])
-      : _connectivity = connectivity ?? Connectivity();
+    : _connectivity = connectivity ?? Connectivity();
 
   final Connectivity _connectivity;
 
   static bool _isConnected(List<ConnectivityResult> results) {
-    return results.any((r) =>
-        r == ConnectivityResult.wifi ||
-        r == ConnectivityResult.ethernet ||
-        r == ConnectivityResult.mobile ||
-        r == ConnectivityResult.vpn);
+    return results.any(
+      (r) =>
+          r == ConnectivityResult.wifi ||
+          r == ConnectivityResult.ethernet ||
+          r == ConnectivityResult.mobile ||
+          r == ConnectivityResult.vpn,
+    );
   }
 
   /// One-shot check used before making a request.

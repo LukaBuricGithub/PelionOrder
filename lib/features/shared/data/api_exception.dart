@@ -46,10 +46,9 @@ class ApiException implements UserFacingException {
   final String rawBody;
 
   @override
-  String get userMessage =>
-      (message != null && message!.isNotEmpty)
-          ? message!
-          : 'Greška poslužitelja ($statusCode).';
+  String get userMessage => (message != null && message!.isNotEmpty)
+      ? message!
+      : 'Greška poslužitelja ($statusCode).';
 
   /// Builds an [ApiException] from a non-2xx HTTP response. Silently tolerates
   /// non-JSON bodies — the caller still gets a usable exception with the

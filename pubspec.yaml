@@ -74,6 +74,12 @@ dependencies:
   # breaks every Flutter command on Windows, Android builds included.)
   url_launcher: ^6.3.2
   print_bluetooth_thermal: 1.2.1
+  in_app_update: 4.2.5
+  # Crash reporting — Firebase project "pelion-order" (separate from the
+  # ikasa app's "pelion-mobile"). Same versions the ikasa app runs, which
+  # are known to work with this AGP/Kotlin combination.
+  firebase_core: ^3.15.2
+  firebase_crashlytics: ^4.3.10
 
 dev_dependencies:
   flutter_test:

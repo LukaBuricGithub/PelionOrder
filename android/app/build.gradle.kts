@@ -5,6 +5,12 @@ plugins {
     id("kotlin-android")
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
     id("dev.flutter.flutter-gradle-plugin")
+    // Firebase: google-services bakes android/app/google-services.json into
+    // the app's resources (so Firebase.initializeApp() needs no arguments on
+    // Android); the Crashlytics plugin uploads the mapping file so release
+    // stack traces stay readable.
+    id("com.google.gms.google-services")
+    id("com.google.firebase.crashlytics")
 }
 
 // Release signing: android/key.properties (never in git) holds the passwords

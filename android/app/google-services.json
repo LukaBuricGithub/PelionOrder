@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "808786642476",
+    "project_id": "pelion-order",
+    "storage_bucket": "pelion-order.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:808786642476:android:547c2cf50b1237ab9ef389",
+        "android_client_info": {
+          "package_name": "hr.pelion.order"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBUBA1O4hYl-vQN-WwT9a6YFY2lPn48wBY"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

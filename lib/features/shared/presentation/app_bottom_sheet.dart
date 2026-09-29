@@ -30,11 +30,7 @@ Future<T?> showAppBottomSheet<T>({
     builder: (ctx) {
       if (sheetBuilder != null) return sheetBuilder(ctx);
 
-      return AppBottomSheetScaffold(
-        title: title!,
-        body: body!,
-        footer: footer,
-      );
+      return AppBottomSheetScaffold(title: title!, body: body!, footer: footer);
     },
   );
 }
@@ -66,9 +62,7 @@ class AppBottomSheetScaffold extends StatelessWidget {
       curve: Curves.easeOut,
       padding: EdgeInsets.only(bottom: media.viewInsets.bottom),
       child: ConstrainedBox(
-        constraints: BoxConstraints(
-          maxHeight: media.size.height * 0.9,
-        ),
+        constraints: BoxConstraints(maxHeight: media.size.height * 0.9),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
@@ -96,11 +90,11 @@ class AppBottomSheetScaffold extends StatelessWidget {
                             title,
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
-                            style:
-                                Theme.of(context).textTheme.titleMedium?.copyWith(
-                                      color: Colors.white,
-                                      fontWeight: FontWeight.w600,
-                                    ),
+                            style: Theme.of(context).textTheme.titleMedium
+                                ?.copyWith(
+                                  color: Colors.white,
+                                  fontWeight: FontWeight.w600,
+                                ),
                           ),
                         ),
                         IconButton(

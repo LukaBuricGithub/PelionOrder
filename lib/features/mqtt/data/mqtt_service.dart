@@ -16,7 +16,9 @@ import '../models/mqtt_table_query.dart';
 /// by a [MqttConnectionConfig] built from the QR code issued by the kasa, and
 /// following the connection rules of the spec "I-Kasa MQTT javljanje" v4.0:
 ///
-/// * **Connecting (§7)** — MQTT 3.1.1, clean session false, keepalive 10 s,
+/// * **Connecting (§7)** — MQTT 3.1.1, clean session false, keepalive 60 s
+///   (the spec's 10 s is for a kasa on mains power — see
+///   [MqttConnectionConfig.keepalive]),
 ///   15 s connection timeout. The FIRST connection of a session is retried
 ///   forever by [_scheduleRetry]: 5 s, 10 s, 20 s, 40 s, then every 60 s, each
 ///   plus a random 0–5 s; when the broker refuses the login (return code 4/5)

@@ -17,6 +17,7 @@ import '../../profiles/models/api_entry.dart';
 import '../../profiles/state/profiles_provider.dart';
 import '../../shared/presentation/app_bottom_sheet.dart';
 import '../../shared/presentation/bottom_sheet_safe_area.dart';
+import '../../shared/presentation/crash_test_dialog.dart';
 import '../models/menu_view_size.dart';
 import '../models/table_view_size.dart';
 import '../state/settings_provider.dart';
@@ -47,7 +48,15 @@ class SettingsScreen extends ConsumerWidget {
     final theme = Theme.of(context);
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Postavke uređaja')),
+      appBar: AppBar(
+        // TEMPORARY: long-press opens the crash-reporting test (see
+        // crash_test_dialog.dart). Remove both before the store release.
+        title: GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onLongPress: () => showCrashTestDialog(context),
+          child: const Text('Postavke uređaja'),
+        ),
+      ),
       body: ListView(
         padding: EdgeInsets.fromLTRB(
           16,

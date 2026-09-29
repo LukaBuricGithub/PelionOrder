@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -15,10 +17,19 @@ import 'features/mqtt/data/mqtt_service.dart';
 import 'features/mqtt/state/mqtt_table_lock_keeper.dart';
 import 'features/mqtt/state/mqtt_config_provider.dart';
 import 'features/mqtt/state/mqtt_outbox_provider.dart';
+import 'features/shared/presentation/update_required_gate.dart';
+import 'features/shared/services/crash_reporting.dart';
 import 'features/shared/state/shared_preferences_provider.dart';
 import 'features/theme/state/theme_mode_provider.dart';
 
-Future<void> main() async {
+/// The whole app runs inside one guarded zone, so an async error that nothing
+/// catches — a Future thrown far from the call that started it — still reaches
+/// Crashlytics instead of disappearing into the console. See [CrashReporting].
+void main() {
+  runZonedGuarded(_start, CrashReporting.record);
+}
+
+Future<void> _start() async {
   final binding = WidgetsFlutterBinding.ensureInitialized();
 
   // Inter is bundled in assets/google_fonts/, so nothing should ever be fetched
@@ -35,6 +46,10 @@ Future<void> main() async {
   // the brief in-app spinner so startup looks like one continuous splash.
   FlutterNativeSplash.preserve(widgetsBinding: binding);
 
+  // Before anything that can fail, so a crash during startup is reported
+  // too. Never throws: without Firebase the app simply runs unreported.
+  await CrashReporting.init();
+
   // Resolve SharedPreferences up front so the rest of the app can read it
   // synchronously via [sharedPreferencesProvider].
   final prefs = await SharedPreferences.getInstance();
@@ -44,9 +59,7 @@ Future<void> main() async {
 
   runApp(
     ProviderScope(
-      overrides: [
-        sharedPreferencesProvider.overrideWithValue(prefs),
-      ],
+      overrides: [sharedPreferencesProvider.overrideWithValue(prefs)],
       child: const OrdermanApp(),
     ),
   );
@@ -87,8 +100,9 @@ class _OrdermanAppState extends ConsumerState<OrdermanApp>
       // bootstrap() flips isBootstrapping to false, so the router redirects off
       // /splash on the next frame. Lift the native splash only after that frame
       // has painted the destination screen, so the Dart spinner never shows.
-      WidgetsBinding.instance
-          .addPostFrameCallback((_) => FlutterNativeSplash.remove());
+      WidgetsBinding.instance.addPostFrameCallback(
+        (_) => FlutterNativeSplash.remove(),
+      );
     });
   }
 
@@ -141,13 +155,16 @@ class _OrdermanAppState extends ConsumerState<OrdermanApp>
         // Lock text scaling so dense POS layouts stay predictable, matching
         // the ikasa app.
         return MediaQuery(
-          data: MediaQuery.of(context)
-              .copyWith(textScaler: const TextScaler.linear(1.0)),
+          data: MediaQuery.of(
+            context,
+          ).copyWith(textScaler: const TextScaler.linear(1.0)),
           // The app's background under every page, so a screen fading in
           // or out shows this colour behind it rather than black.
           child: ColoredBox(
             color: Theme.of(context).scaffoldBackgroundColor,
-            child: child!,
+            // Above every page: if the store has a newer build, the waiter
+            // has to update before working on (see UpdateRequiredGate).
+            child: UpdateRequiredGate(child: child!),
           ),
         );
       },

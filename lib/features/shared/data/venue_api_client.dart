@@ -43,14 +43,16 @@ class VenueApiClient {
   }
 
   Map<String, String> get _headers => {
-        'Content-Type': 'application/json',
-        AppConfig.apiKeyHeader: apiKey,
-      };
+    'Content-Type': 'application/json',
+    AppConfig.apiKeyHeader: apiKey,
+  };
 
   /// GET returning a decoded JSON list (the shape of every master-data and
   /// report endpoint). Returns an empty list for an empty/`204` body.
-  Future<List<dynamic>> getList(String path,
-      [Map<String, dynamic>? query]) async {
+  Future<List<dynamic>> getList(
+    String path, [
+    Map<String, dynamic>? query,
+  ]) async {
     final resp = await retryingGet(buildUri(path, query), headers: _headers);
     throwIfError(resp);
     if (resp.body.trim().isEmpty) return const [];
@@ -60,8 +62,10 @@ class VenueApiClient {
 
   /// GET where only the HTTP status matters (e.g. the plain `/ping` health
   /// check). Returns the raw response for the caller to inspect.
-  Future<http.Response> getRaw(String path,
-      [Map<String, dynamic>? query]) async {
+  Future<http.Response> getRaw(
+    String path, [
+    Map<String, dynamic>? query,
+  ]) async {
     return retryingGet(buildUri(path, query), headers: _headers);
   }
 
