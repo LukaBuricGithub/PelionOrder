@@ -14,6 +14,7 @@ import 'app/app_theme.dart';
 import 'app/router.dart';
 import 'features/auth/state/auth_controller.dart';
 import 'features/mqtt/data/mqtt_service.dart';
+import 'features/mqtt/models/mqtt_connection_config.dart';
 import 'features/mqtt/state/mqtt_table_lock_keeper.dart';
 import 'features/mqtt/state/mqtt_config_provider.dart';
 import 'features/mqtt/state/mqtt_outbox_provider.dart';
@@ -85,8 +86,13 @@ class _OrdermanAppState extends ConsumerState<OrdermanApp>
     // the broker straight away — every cold start comes up already live, and the
     // resume handler above keeps it that way afterwards. Deliberately not
     // awaited: startup must not wait on the network.
+    // Tag crash reports with the venue/device this phone is provisioned for,
+    // and keep the tag current (see _syncCrashVenue / _syncCrashConnection).
+    MqttService.instance.connected.addListener(_syncCrashConnection);
+    _syncCrashConnection();
     Future.microtask(() {
       final config = ref.read(mqttConfigProvider);
+      _syncCrashVenue(config);
       if (config != null) MqttService.instance.ensureConnected(config);
     });
     // Start "Neposlane narudžbe" at launch, so a confirmation for an order sent
@@ -109,8 +115,26 @@ class _OrdermanAppState extends ConsumerState<OrdermanApp>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    MqttService.instance.connected.removeListener(_syncCrashConnection);
     super.dispose();
   }
+
+  /// Venue context for crash reports. A device with no scanned code clears
+  /// the keys rather than leaving the previous venue's on them.
+  void _syncCrashVenue(MqttConnectionConfig? config) {
+    if (config == null) {
+      CrashReporting.clearVenueContext();
+      return;
+    }
+    CrashReporting.setVenueContext(
+      licenca: config.licenca,
+      uredaj: config.uredaj,
+      naziv: config.naziv,
+    );
+  }
+
+  void _syncCrashConnection() =>
+      CrashReporting.setConnected(MqttService.instance.connected.value);
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
@@ -136,6 +160,12 @@ class _OrdermanAppState extends ConsumerState<OrdermanApp>
   Widget build(BuildContext context) {
     final router = ref.watch(routerProvider);
     final themeMode = ref.watch(themeModeProvider);
+
+    // A new QR code (or a wipe) re-tags crash reports straight away.
+    ref.listen<MqttConnectionConfig?>(
+      mqttConfigProvider,
+      (_, next) => _syncCrashVenue(next),
+    );
 
     return MaterialApp.router(
       debugShowCheckedModeBanner: false,

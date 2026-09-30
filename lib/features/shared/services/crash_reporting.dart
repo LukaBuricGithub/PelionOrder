@@ -84,6 +84,41 @@ class CrashReporting {
     }
   }
 
+  /// Attaches the venue this device is provisioned for to every later report,
+  /// so a crash arrives as "phone 3 at this venue" instead of anonymously.
+  /// They show up on the "Keys" tab of a report in the Firebase console.
+  ///
+  /// Business identifiers only. The signed-in waiter's name and code are
+  /// deliberately never attached — they are the one genuinely personal field
+  /// in the app, and the privacy policy promises crash reports carry neither.
+  static void setVenueContext({
+    required String licenca,
+    required String uredaj,
+    required String naziv,
+  }) {
+    _setKey('licenca', licenca);
+    _setKey('uredaj', uredaj);
+    _setKey('naziv', naziv);
+  }
+
+  /// Before the first scan, and after the venue data is wiped. Crashlytics
+  /// has no "delete key" call, so the keys are overwritten rather than
+  /// removed — otherwise a report from a wiped device would still carry the
+  /// previous venue's name.
+  static void clearVenueContext() =>
+      setVenueContext(licenca: '—', uredaj: '—', naziv: 'nije skenirano');
+
+  /// Whether the broker connection was up when the report was made. Most of
+  /// what can go wrong in this app is connection-shaped, so this is usually
+  /// the first thing worth knowing about a crash.
+  static void setConnected(bool connected) =>
+      _setKey('mqtt', connected ? 'spojen' : 'nije spojen');
+
+  static void _setKey(String key, String value) {
+    if (!_ready) return;
+    unawaited(FirebaseCrashlytics.instance.setCustomKey(key, value));
+  }
+
   /// Records one error, fatal unless it looks like a network problem.
   /// Safe to call at any time: with Crashlytics unavailable it just prints.
   static void record(Object error, StackTrace stack, {String? reason}) {
