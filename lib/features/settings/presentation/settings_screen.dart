@@ -40,6 +40,16 @@ class SettingsScreen extends ConsumerWidget {
   /// untouched: flip this to true to bring the card back.
   bool get _showSendingCard => false;
 
+  /// "Pisač" (odabir Bluetooth pisača + probni ispis) is hidden until
+  /// printing is ready for production. Everything behind it is untouched —
+  /// the card, PrinterService, the ESC/POS builder and the saved printer all
+  /// stay in place; flip this to true to bring the card back.
+  ///
+  /// Note this only hides the UI. The print_bluetooth_thermal plugin is still
+  /// bundled, so iOS uploads still need NSBluetoothAlwaysUsageDescription in
+  /// ios/Runner/Info.plist (Apple's ITMS-90683).
+  bool get _showPrinterCard => false;
+
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final profiles = ref.watch(profilesProvider);
@@ -251,10 +261,12 @@ class SettingsScreen extends ConsumerWidget {
 
           // ── QR skener ────────────────────────────────────────────────────
           const _QrSkenerCard(),
-          const SizedBox(height: 16),
 
-          // ── Pisač ────────────────────────────────────────────────────────
-          const _PisacCard(),
+          // ── Pisač (hidden, see _showPrinterCard) ─────────────────────────
+          if (_showPrinterCard) ...[
+            const SizedBox(height: 16),
+            const _PisacCard(),
+          ],
         ],
       ),
     );
