@@ -55,5 +55,14 @@
 		<false/>
 		<key>NSCameraUsageDescription</key>
 		<string>Kamera se koristi za skeniranje QR kodova.</string>
+		<!-- Required by Apple (ITMS-90683) even though the app never asks for
+		     Bluetooth on iPhone: the bundled print_bluetooth_thermal plugin
+		     imports CoreBluetooth, and Apple's static check only sees that the
+		     API is referenced. Printing is Android-only (Printers.kind returns
+		     none on iOS), so this prompt is never shown to a waiter — but
+		     without the key every upload is flagged, and a submission for
+		     review would be rejected. -->
+		<key>NSBluetoothAlwaysUsageDescription</key>
+		<string>Bluetooth se koristi za povezivanje s termalnim pisačem za ispis računa.</string>
 	</dict>
 </plist>
