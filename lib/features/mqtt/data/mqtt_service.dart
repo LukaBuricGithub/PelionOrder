@@ -128,6 +128,12 @@ class MqttService {
   /// The raw `podaci/stolovi_stanje` payload (which tables are occupied).
   final ValueNotifier<String?> stanjeRawJson = ValueNotifier<String?>(null);
 
+  /// The raw `podaci/tlocrt` payload — the venue's own floor plan, drawn
+  /// instead of the generic grid when the kasa has one (`TLOCRT_ON`). Retained,
+  /// so it arrives on connect; an older kasa simply never publishes it and the
+  /// grid stays.
+  final ValueNotifier<String?> tlocrtRawJson = ValueNotifier<String?>(null);
+
   /// The raw `podaci/verzija` payload — a version hash per data section
   /// (stolovi / artikli / korisnici). Providers compare these against their
   /// saved hash to skip re-parsing/re-storing unchanged sections.
@@ -190,6 +196,7 @@ class MqttService {
     korisniciRawJson.value = null;
     stoloviRawJson.value = null;
     stanjeRawJson.value = null;
+    tlocrtRawJson.value = null;
     verzijaRawJson.value = null;
     devices.value = const {};
     statusesReady.value = false;
@@ -233,6 +240,8 @@ class MqttService {
       'kasa/${_cfg.licenca}/podaci/stolovi'; // tables + zones (retained)
   String get _tStanje =>
       'kasa/${_cfg.licenca}/podaci/stolovi_stanje'; // occupancy (retained)
+  String get _tTlocrt =>
+      'kasa/${_cfg.licenca}/podaci/tlocrt'; // floor plan (retained)
   String get _tVerzija =>
       'kasa/${_cfg.licenca}/podaci/verzija'; // per-section version hashes
 
@@ -258,6 +267,7 @@ class MqttService {
     _tKorisnici,
     _tStolovi,
     _tStanje,
+    _tTlocrt,
     _tVerzija,
     _tMob,
     _tStatusAll,
@@ -654,6 +664,7 @@ class MqttService {
     if (e.topic == _tKorisnici) korisniciRawJson.value = payload;
     if (e.topic == _tStolovi) stoloviRawJson.value = payload;
     if (e.topic == _tStanje) stanjeRawJson.value = payload;
+    if (e.topic == _tTlocrt) tlocrtRawJson.value = payload;
     // Our private reply topic carries every answer the kasa sends us: order
     // confirmations (no `tip`, or `tip: "nalog"`), table-query answers
     // (`tip: "stol"`) and table-lock answers (`tip: "ulaz" | "izlaz"`). Each

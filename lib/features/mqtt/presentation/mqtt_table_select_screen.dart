@@ -13,7 +13,9 @@ import '../../settings/models/table_view_size.dart';
 import '../../settings/presentation/settings_drawer.dart';
 import '../../settings/state/settings_provider.dart';
 import '../../shared/presentation/system_bars.dart';
+import '../models/mqtt_floor_plan.dart';
 import '../models/mqtt_tables.dart';
+import '../state/mqtt_floor_plan_provider.dart';
 import '../state/mqtt_orders_provider.dart';
 import '../state/mqtt_outbox_provider.dart';
 import '../state/mqtt_pending_transfers_provider.dart';
@@ -23,7 +25,9 @@ import '../models/mqtt_table_lock.dart';
 import '../state/mqtt_table_lock_keeper.dart';
 import '../state/mqtt_tables_provider.dart';
 import '../state/mqtt_users_provider.dart';
+import 'mqtt_floor_plan_view.dart';
 import 'mqtt_outbox_summary_bar.dart';
+import 'table_status.dart';
 
 // ── SVG assets (see assets/table_select) ───────────────────────────────────
 // Two theme-specific chair sprites, each with its own per-part colours
@@ -31,8 +35,7 @@ import 'mqtt_outbox_summary_bar.dart';
 const _kSprite = 'assets/table_select/table_sprite.svg'; // light theme
 const _kSpriteDark = 'assets/table_select/table_sprite_dark.svg'; // dark theme
 const _kWalls = 'assets/table_select/walls';
-const _kDarkAssetTint =
-    ColorFilter.mode(Color(0xFF434A53), BlendMode.modulate);
+const _kDarkAssetTint = ColorFilter.mode(Color(0xFF434A53), BlendMode.modulate);
 
 /// How long a table tile takes to change colour, icon or badge — long enough
 /// to read as one smooth change, short enough never to lag behind the state.
@@ -62,35 +65,6 @@ Future<void> precacheTableSelectSvgs() async {
       () => loader.loadBytes(null),
     );
   }
-}
-
-/// How a table tile is presented / behaves.
-enum _TileStatus {
-  free, // openable → new order
-  order, // your unsent local items (on any table) → openable, editable
-  occupiedMine, // yours (or your order is arriving) → order screen, read-only lines
-  occupiedOther, // occupied by a colleague → openable only with pravo 008
-}
-
-/// "Jesu li poslane sve narudžbe sa stola" — drawn as a corner badge, kept
-/// separate from [_TileStatus] so the answer never competes with the tile's
-/// colour for the same pixels.
-enum _SendMark {
-  /// No badge: nothing ordered here, or only an unsent draft (which the blue
-  /// tile already shows on a free table) — neither on its way nor arrived.
-  none,
-
-  /// On its way: sent and waiting for the kasa's confirmation, or accepted by
-  /// the kasa but not yet on the table — "šalje se". Amber ↑.
-  pending,
-
-  /// Everything sent from this device has reached the table. Green ✓.
-  sent,
-
-  /// An order in "Neposlane narudžbe" that didn't get through (not sent,
-  /// refused, too old). Red !, and it wins over every other mark: it is the
-  /// one a waiter must act on or at least know about.
-  unsent,
 }
 
 /// MQTT floor plan: pick a zone (terasa), then a table to open its menu.
@@ -230,10 +204,10 @@ class _MqttTableSelectScreenState extends ConsumerState<MqttTableSelectScreen> {
   }
 
   int _columns(TableViewSize s) => switch (s) {
-        TableViewSize.small => 4,
-        TableViewSize.medium => 3,
-        TableViewSize.large => 2,
-      };
+    TableViewSize.small => 4,
+    TableViewSize.medium => 3,
+    TableViewSize.large => 2,
+  };
 
   @override
   Widget build(BuildContext context) {
@@ -253,8 +227,10 @@ class _MqttTableSelectScreenState extends ConsumerState<MqttTableSelectScreen> {
     final drafts = ref.watch(mqttVisibleDraftsProvider);
     final withOrders = drafts.keys.toSet();
     // Tables the kasa has accepted an order for but not yet applied it to.
-    final pendingTransfer =
-        ref.watch(mqttPendingTransfersProvider).keys.toSet();
+    final pendingTransfer = ref
+        .watch(mqttPendingTransfersProvider)
+        .keys
+        .toSet();
     final me = ref.watch(currentUserProvider);
     final myCuser = me?.code;
     // Our own short name as the kasa shows it (naziv), for a table whose order
@@ -289,7 +265,19 @@ class _MqttTableSelectScreenState extends ConsumerState<MqttTableSelectScreen> {
       for (final e in ref.watch(mqttLockedProvider).entries)
         if (e.value != ourTag) e.key: e.value,
     };
-    final columns = _columns(ref.watch(settingsProvider).tableViewSize);
+    final settings = ref.watch(settingsProvider);
+    final columns = _columns(settings.tableViewSize);
+    // The venue's own floor plan, when the kasa publishes one and the waiter
+    // hasn't chosen the grid on this phone.
+    final floorPlan = ref.watch(mqttFloorPlanProvider);
+    final planAvailable =
+        floorPlan.enabled &&
+        zones.isNotEmpty &&
+        floorPlan.forTerrace(
+              zones[_selectedZone.clamp(0, zones.length - 1)].id,
+            ) !=
+            null;
+    final showPlan = planAvailable && !settings.preferTableGrid;
 
     return Scaffold(
       key: _scaffoldKey,
@@ -297,6 +285,16 @@ class _MqttTableSelectScreenState extends ConsumerState<MqttTableSelectScreen> {
       appBar: AppBar(
         title: const Text('Odabir stola'),
         actions: [
+          // Only where there is something to switch between: a venue without a
+          // plan never sees this.
+          if (planAvailable)
+            IconButton(
+              icon: Icon(showPlan ? Icons.grid_view : Icons.map_outlined),
+              tooltip: showPlan ? 'Prikaži mrežu' : 'Prikaži tlocrt',
+              onPressed: () => ref
+                  .read(settingsProvider.notifier)
+                  .setPreferTableGrid(showPlan),
+            ),
           IconButton(
             icon: const Icon(Icons.settings_outlined),
             tooltip: 'Postavke',
@@ -319,10 +317,24 @@ class _MqttTableSelectScreenState extends ConsumerState<MqttTableSelectScreen> {
                   Expanded(
                     child: zones.isEmpty
                         ? const _EmptyTables()
-                        : _buildBody(zones, occupied, withOrders,
-                            pendingTransfer, landed, unsentBy, sendingBy,
-                            userNames, myCuser, myName, canOpenAll, columns,
-                            lockedBy),
+                        : _buildBody(
+                            zones,
+                            MqttTableFacts(
+                              occupied: occupied,
+                              withOrders: withOrders,
+                              pendingTransfer: pendingTransfer,
+                              landed: landed,
+                              unsentBy: unsentBy,
+                              sendingBy: sendingBy,
+                              lockedBy: lockedBy,
+                              userNames: userNames,
+                              myCuser: myCuser,
+                              myName: myName,
+                            ),
+                            canOpenAll,
+                            columns,
+                            showPlan ? floorPlan : null,
+                          ),
                   ),
                 ],
               ),
@@ -339,23 +351,20 @@ class _MqttTableSelectScreenState extends ConsumerState<MqttTableSelectScreen> {
     );
   }
 
+  /// The zone chips with, under them, either the venue's own floor plan
+  /// ([plan] non-null) or the generic grid. The chips stay the same in both:
+  /// a plan is per terrace, exactly as the zones are.
   Widget _buildBody(
     List<MqttTerrace> zones,
-    Map<int, MqttTableState> occupied,
-    Set<int> withOrders,
-    Set<int> pendingTransfer,
-    Set<int> landed,
-    Map<int, String> unsentBy,
-    Map<int, String> sendingBy,
-    Map<String, String> userNames,
-    String? myCuser,
-    String? myName,
+    MqttTableFacts facts,
     bool canOpenAll,
     int columns,
-    Map<int, String> lockedBy,
+    MqttFloorPlan? plan,
   ) {
     final selected = _selectedZone.clamp(0, zones.length - 1);
-    final tables = zones[selected].tables;
+    final zone = zones[selected];
+    final tables = zone.tables;
+    final planned = plan?.forTerrace(zone.id);
 
     return Column(
       children: [
@@ -367,30 +376,38 @@ class _MqttTableSelectScreenState extends ConsumerState<MqttTableSelectScreen> {
         Expanded(
           child: Padding(
             padding: const EdgeInsets.fromLTRB(10, 2, 10, 10),
-            child: _WallFrame(
-              floor: _floorColor(context),
-              child: tables.isEmpty
-                  ? const Center(child: Text('Nema stolova u ovoj zoni.'))
-                  : _PagedTableGrid(
-                      tables: tables,
-                      occupied: occupied,
-                      withOrders: withOrders,
-                      pendingTransfer: pendingTransfer,
-                      landed: landed,
-                      unsentBy: unsentBy,
-                      sendingBy: sendingBy,
-                      userNames: userNames,
-                      myCuser: myCuser,
-                      myName: myName,
+            child: planned != null
+                // The plan draws its own room — walls, bar, doors — so the
+                // generic wall frame would only box it in a second time.
+                ? ClipRRect(
+                    borderRadius: BorderRadius.circular(12),
+                    child: MqttFloorPlanView(
+                      // A fresh view per zone, so panning and zooming don't
+                      // carry over from the terrace before it.
+                      key: ValueKey('tlocrt-${zone.id}'),
+                      doc: planned.plan,
+                      tables: {for (final t in tables) t.broj: t},
+                      facts: facts,
                       canOpenAll: canOpenAll,
-                      columns: columns,
-                      showName: columns < 4, // drop naziv at "small"
-                      shakes: _shakes,
                       opening: _opening,
-                      lockedBy: lockedBy,
                       onTapTable: _onTap,
                     ),
-            ),
+                  )
+                : _WallFrame(
+                    floor: _floorColor(context),
+                    child: tables.isEmpty
+                        ? const Center(child: Text('Nema stolova u ovoj zoni.'))
+                        : _PagedTableGrid(
+                            tables: tables,
+                            facts: facts,
+                            canOpenAll: canOpenAll,
+                            columns: columns,
+                            showName: columns < 4, // drop naziv at "small"
+                            shakes: _shakes,
+                            opening: _opening,
+                            onTapTable: _onTap,
+                          ),
+                  ),
           ),
         ),
       ],
@@ -399,10 +416,10 @@ class _MqttTableSelectScreenState extends ConsumerState<MqttTableSelectScreen> {
 
   Color _floorColor(BuildContext context) =>
       Theme.of(context).brightness == Brightness.dark
-          ? const Color(0xFF10151C)
-          : const Color(0xFFF4F6F8);
+      ? const Color(0xFF10151C)
+      : const Color(0xFFF4F6F8);
 
-  void _onTap(MqttTable table, _TileStatus status, String? occupant) {
+  void _onTap(MqttTable table, TableTileStatus status, String? occupant) {
     // Locked by the kasa or another orderman: `ulaz` would refuse it anyway,
     // and the waiter is better off seeing that before the wait.
     final lock = ref.read(mqttLockedProvider)[table.broj];
@@ -414,7 +431,7 @@ class _MqttTableSelectScreenState extends ConsumerState<MqttTableSelectScreen> {
       return;
     }
     switch (status) {
-      case _TileStatus.occupiedOther:
+      case TableTileStatus.occupiedOther:
         // Pravo 008 turns a colleague's table from blocked into openable —
         // treated exactly like your own from here on.
         if (ref.read(currentUserProvider)?.allTablesOpenRight ?? false) {
@@ -422,9 +439,9 @@ class _MqttTableSelectScreenState extends ConsumerState<MqttTableSelectScreen> {
           return;
         }
         _refuse(table, occupant?.trim() ?? '');
-      case _TileStatus.occupiedMine:
-      case _TileStatus.free:
-      case _TileStatus.order:
+      case TableTileStatus.occupiedMine:
+      case TableTileStatus.free:
+      case TableTileStatus.order:
         _openOrder(table);
     }
   }
@@ -479,50 +496,20 @@ class _MqttTableSelectScreenState extends ConsumerState<MqttTableSelectScreen> {
 class _PagedTableGrid extends StatelessWidget {
   const _PagedTableGrid({
     required this.tables,
-    required this.occupied,
-    required this.withOrders,
-    required this.pendingTransfer,
-    required this.landed,
-    required this.unsentBy,
-    required this.sendingBy,
-    required this.userNames,
-    required this.myCuser,
-    required this.myName,
+    required this.facts,
     required this.canOpenAll,
     required this.columns,
     required this.showName,
     required this.shakes,
     required this.opening,
-    required this.lockedBy,
     required this.onTapTable,
   });
 
   final List<MqttTable> tables;
-  final Map<int, MqttTableState> occupied;
-  final Set<int> withOrders;
 
-  /// Tables whose accepted order the kasa has not yet moved onto the table.
-  final Set<int> pendingTransfer;
-
-  /// Tables whose order has just landed but that stolovi_stanje doesn't list
-  /// yet — drawn as ours with ✓, exactly as they will look once it does.
-  final Set<int> landed;
-
-  /// Tables with an order in "Neposlane narudžbe", with the waiter who placed
-  /// it (only orders this waiter may see).
-  final Map<int, String> unsentBy;
-
-  /// Tables with an order sent from this phone that the broker holds, waiting
-  /// for the kasa's confirmation (also "Nije potvrđena"), with the waiter who
-  /// placed it.
-  final Map<int, String> sendingBy;
-
-  /// Waiter name by user code, for an unsent order's table.
-  final Map<String, String> userNames;
-  final String? myCuser;
-
-  /// Our own naziv — shown on a table whose order is still arriving.
-  final String? myName;
+  /// Everything known about the tables, and the rules that colour them —
+  /// shared with the floor-plan view (see [MqttTableFacts]).
+  final MqttTableFacts facts;
 
   /// Whether this waiter holds pravo 008 (may open colleagues' tables).
   final bool canOpenAll;
@@ -535,66 +522,8 @@ class _PagedTableGrid extends StatelessWidget {
   /// The table whose lock is being asked for right now, if any.
   final int? opening;
 
-  /// Tables the kasa has locked for someone ELSE, and who holds them
-  /// (`CORD3`, or a kasa's tag). Our own lock is not in here.
-  final Map<int, String> lockedBy;
-  final void Function(MqttTable table, _TileStatus status, String? occupant)
-      onTapTable;
-
-  _TileStatus _statusFor(MqttTable table) {
-    // Locked by the kasa or another orderman: shown as taken and not
-    // openable, even when it holds nothing — a cashier standing in an empty
-    // table is exactly the case that isn't in `zauzeti` at all.
-    if (lockedBy.containsKey(table.broj)) return _TileStatus.occupiedOther;
-    // Items added on this phone and not sent yet: blue, whatever else the
-    // table is — also an occupied one, ours or (with pravo 008) a colleague's.
-    // Once they are sent or removed, the table shows its usual colour again.
-    if (withOrders.contains(table.broj)) return _TileStatus.order;
-    final occ = occupied[table.broj];
-    if (occ != null) {
-      return occ.cuser == myCuser
-          ? _TileStatus.occupiedMine
-          : _TileStatus.occupiedOther;
-    }
-    // Sent from this phone and accepted, but the kasa hasn't put it on the table
-    // yet, so it isn't in stolovi_stanje. Show it as ours straight away — the
-    // amber ↑ says it is still arriving — so that when it lands only the badge
-    // changes, instead of a grey "free" table suddenly turning teal.
-    if (pendingTransfer.contains(table.broj) || landed.contains(table.broj)) {
-      return _TileStatus.occupiedMine;
-    }
-    // An unconfirmed order: the table belongs to whoever placed it, even though
-    // the kasa doesn't list it (yet).
-    final unsentCuser = unsentBy[table.broj] ?? sendingBy[table.broj];
-    if (unsentCuser != null) {
-      return unsentCuser == myCuser
-          ? _TileStatus.occupiedMine
-          : _TileStatus.occupiedOther;
-    }
-    return _TileStatus.free;
-  }
-
-  /// The corner badge — independent of [_statusFor], so it answers a different
-  /// question from the tile's colour: where is the order on its journey?
-  ///
-  /// Amber ↑ only while the kasa has an order but hasn't put it on the table;
-  /// green ✓ once everything has landed. An unsent draft gets NO badge: nothing
-  /// is on its way, so ↑ would suggest something was sent — and it must also
-  /// stop an occupied table falling through to ✓, which would claim an unsent
-  /// addition had arrived.
-  _SendMark _markFor(MqttTable table) {
-    if (unsentBy.containsKey(table.broj)) return _SendMark.unsent;
-    if (sendingBy.containsKey(table.broj) ||
-        pendingTransfer.contains(table.broj)) {
-      return _SendMark.pending;
-    }
-    if (withOrders.contains(table.broj)) return _SendMark.none;
-    // Everything on the table has landed — but only mark a table that actually
-    // has an order; an empty table has nothing to report.
-    return occupied.containsKey(table.broj) || landed.contains(table.broj)
-        ? _SendMark.sent
-        : _SendMark.none;
-  }
+  final void Function(MqttTable table, TableTileStatus status, String? occupant)
+  onTapTable;
 
   static const double _pad = 6;
   static const double _spacing = 6;
@@ -613,9 +542,10 @@ class _PagedTableGrid extends StatelessWidget {
         // …but never taller than the room: at least one whole row, never half
         // a tile (large tiles on a short screen shrink to fit).
         if (cell > availH) cell = math.max(availH, 0);
-        final rows = ((availH + _spacing) / (cell + _spacing))
-            .floor()
-            .clamp(1, 999);
+        final rows = ((availH + _spacing) / (cell + _spacing)).floor().clamp(
+          1,
+          999,
+        );
         // Height the rows don't use is spread evenly above, between and below
         // them, instead of collecting as a strip under the last row.
         final leftover = availH - rows * cell - (rows - 1) * _spacing;
@@ -647,20 +577,8 @@ class _PagedTableGrid extends StatelessWidget {
               itemCount: pageItems.length,
               itemBuilder: (context, i) {
                 final table = pageItems[i];
-                final status = _statusFor(table);
-                // While our order is still arriving the table isn't in
-                // stolovi_stanje yet, so show our own name — the one the kasa
-                // will show once it lands, so nothing changes then.
-                final lockedTag = lockedBy[table.broj];
-                // A locked table says only "Zauzeto" — who holds it is in the
-                // message shown when it is tapped, where there is room for it.
-                final occupant = (lockedTag != null ? 'Zauzeto' : null) ??
-                    occupied[table.broj]?.konobar ??
-                    (pendingTransfer.contains(table.broj) ||
-                            landed.contains(table.broj)
-                        ? myName
-                        : userNames[unsentBy[table.broj] ??
-                              sendingBy[table.broj]]);
+                final status = facts.statusFor(table.broj);
+                final occupant = facts.occupantFor(table.broj);
                 return _Shake(
                   // Keyed by table, so switching zones builds fresh tiles
                   // instead of animating one table's colour into another's.
@@ -672,9 +590,9 @@ class _PagedTableGrid extends StatelessWidget {
                     showName: showName,
                     occupantName: occupant,
                     canOpenAll: canOpenAll,
-                    mark: _markFor(table),
+                    mark: facts.markFor(table.broj),
                     opening: opening == table.broj,
-                    locked: lockedTag != null,
+                    locked: facts.isLocked(table.broj),
                     // One table at a time: while the kasa is being asked, the
                     // others don't react either.
                     onTap: opening != null
@@ -725,7 +643,7 @@ class _TableCell extends StatelessWidget {
   });
 
   final MqttTable table;
-  final _TileStatus status;
+  final TableTileStatus status;
   final bool showName;
 
   /// The waiter holding the table (`konobar` from `stolovi_stanje`), or null
@@ -741,7 +659,7 @@ class _TableCell extends StatelessWidget {
   /// Drawn as a MARK rather than a colour so it is independent of the status
   /// hue: it has to be visible on a free table and on an occupied one alike,
   /// and red/teal already carry a different meaning.
-  final _SendMark mark;
+  final TableSendMark mark;
 
   /// The kasa is being asked for this table's lock right now.
   final bool opening;
@@ -762,19 +680,23 @@ class _TableCell extends StatelessWidget {
     final (Color fill, Color fg, IconData? corner) = switch (status) {
       // Red always means "another waiter holds this" — but the icon says
       // whether that BLOCKS you: a lock without pravo 008, an eye with it.
-      _TileStatus.occupiedOther => (
-          const Color(0xFFD46A5A),
-          Colors.white,
-          // A locked table can't be entered by anyone on a phone, not even
-          // with pravo 008 — the kasa refuses the `ulaz`.
-          locked || !canOpenAll ? Icons.lock : Icons.visibility,
-        ),
-      _TileStatus.occupiedMine =>
-        (const Color(0xFF3E8E7E), Colors.white, Icons.visibility),
-      _TileStatus.order => (const Color(0xFF4A78B4), Colors.white, null),
-      _TileStatus.free => dark
-          ? (const Color(0xFF3A4756), const Color(0xFFC9D3DE), null)
-          : (const Color(0xFFD8DEE4), const Color(0xFF37424E), null),
+      TableTileStatus.occupiedOther => (
+        const Color(0xFFD46A5A),
+        Colors.white,
+        // A locked table can't be entered by anyone on a phone, not even
+        // with pravo 008 — the kasa refuses the `ulaz`.
+        locked || !canOpenAll ? Icons.lock : Icons.visibility,
+      ),
+      TableTileStatus.occupiedMine => (
+        const Color(0xFF3E8E7E),
+        Colors.white,
+        Icons.visibility,
+      ),
+      TableTileStatus.order => (const Color(0xFF4A78B4), Colors.white, null),
+      TableTileStatus.free =>
+        dark
+            ? (const Color(0xFF3A4756), const Color(0xFFC9D3DE), null)
+            : (const Color(0xFFD8DEE4), const Color(0xFF37424E), null),
     };
     // The second line carries the WAITER when the table is occupied, and the
     // table's naziv otherwise: the naziv is static (a waiter learns it in a
@@ -784,8 +706,9 @@ class _TableCell extends StatelessWidget {
     // is dropped — who holds a table is worth the small type, a table's name is
     // not.
     final konobar = _shortName(occupantName ?? '');
-    final secondLine =
-        konobar.isNotEmpty ? konobar : (showName ? table.naziv : '');
+    final secondLine = konobar.isNotEmpty
+        ? konobar
+        : (showName ? table.naziv : '');
     final hasSecondLine = secondLine.isNotEmpty;
 
     return GestureDetector(
@@ -810,8 +733,7 @@ class _TableCell extends StatelessWidget {
                     color: fill,
                     borderRadius: BorderRadius.circular(w * 0.075),
                     border: Border.all(
-                      color:
-                          Colors.black.withValues(alpha: dark ? 0.28 : 0.05),
+                      color: Colors.black.withValues(alpha: dark ? 0.28 : 0.05),
                     ),
                   ),
                   child: Padding(
@@ -821,9 +743,9 @@ class _TableCell extends StatelessWidget {
                     child: AnimatedDefaultTextStyle(
                       duration: _kTileAnimation,
                       curve: Curves.easeInOut,
-                      style: DefaultTextStyle.of(context)
-                          .style
-                          .copyWith(color: fg),
+                      style: DefaultTextStyle.of(
+                        context,
+                      ).style.copyWith(color: fg),
                       child: Column(
                         mainAxisAlignment: MainAxisAlignment.center,
                         children: [
@@ -957,9 +879,9 @@ class _TableCell extends StatelessWidget {
                     opacity: animation,
                     child: ScaleTransition(scale: animation, child: child),
                   ),
-                  child: mark == _SendMark.none
+                  child: mark == TableSendMark.none
                       ? SizedBox(
-                          key: const ValueKey(_SendMark.none),
+                          key: const ValueKey(TableSendMark.none),
                           width: w * 0.17,
                           height: w * 0.17,
                         )
@@ -976,26 +898,30 @@ class _TableCell extends StatelessWidget {
   /// The send-state badge: red ! not confirmed by the kasa, amber ↑ still
   /// arriving, green ✓ arrived.
   Widget _badge(double w, bool dark) {
-    final (Color fill, IconData icon, double size, Color darkFg) =
-        switch (mark) {
-      _SendMark.unsent => (
-          dark ? const Color(0xFFFF7B72) : const Color(0xFFD64541),
-          Icons.priority_high,
-          w * 0.11,
-          const Color(0xFF3A0B08),
-        ),
-      _SendMark.pending => (
-          dark ? const Color(0xFFF4A83A) : const Color(0xFFE8890C),
-          Icons.arrow_upward,
-          w * 0.10,
-          const Color(0xFF3A2600),
-        ),
+    final (
+      Color fill,
+      IconData icon,
+      double size,
+      Color darkFg,
+    ) = switch (mark) {
+      TableSendMark.unsent => (
+        dark ? const Color(0xFFFF7B72) : const Color(0xFFD64541),
+        Icons.priority_high,
+        w * 0.11,
+        const Color(0xFF3A0B08),
+      ),
+      TableSendMark.pending => (
+        dark ? const Color(0xFFF4A83A) : const Color(0xFFE8890C),
+        Icons.arrow_upward,
+        w * 0.10,
+        const Color(0xFF3A2600),
+      ),
       _ => (
-          dark ? const Color(0xFF4FC98A) : const Color(0xFF2E9E5B),
-          Icons.check,
-          w * 0.11,
-          const Color(0xFF063020),
-        ),
+        dark ? const Color(0xFF4FC98A) : const Color(0xFF2E9E5B),
+        Icons.check,
+        w * 0.11,
+        const Color(0xFF063020),
+      ),
     };
     return Container(
       key: ValueKey(mark),
@@ -1028,11 +954,8 @@ class _WallFrame extends StatelessWidget {
   static const double _wall = 18;
   static const double _corner = 52;
 
-  Widget _svg(String name, ColorFilter? filter) => SvgPicture.asset(
-        '$_kWalls/$name',
-        fit: BoxFit.fill,
-        colorFilter: filter,
-      );
+  Widget _svg(String name, ColorFilter? filter) =>
+      SvgPicture.asset('$_kWalls/$name', fit: BoxFit.fill, colorFilter: filter);
 
   @override
   Widget build(BuildContext context) {
@@ -1051,29 +974,61 @@ class _WallFrame extends StatelessWidget {
             ),
           ),
           Positioned(
-              top: 0, left: _corner, right: _corner, height: _wall,
-              child: _svg('edge_top.svg', filter)),
+            top: 0,
+            left: _corner,
+            right: _corner,
+            height: _wall,
+            child: _svg('edge_top.svg', filter),
+          ),
           Positioned(
-              bottom: 0, left: _corner, right: _corner, height: _wall,
-              child: _svg('edge_bottom.svg', filter)),
+            bottom: 0,
+            left: _corner,
+            right: _corner,
+            height: _wall,
+            child: _svg('edge_bottom.svg', filter),
+          ),
           Positioned(
-              left: 0, top: _corner, bottom: _corner, width: _wall,
-              child: _svg('edge_left.svg', filter)),
+            left: 0,
+            top: _corner,
+            bottom: _corner,
+            width: _wall,
+            child: _svg('edge_left.svg', filter),
+          ),
           Positioned(
-              right: 0, top: _corner, bottom: _corner, width: _wall,
-              child: _svg('edge_right.svg', filter)),
+            right: 0,
+            top: _corner,
+            bottom: _corner,
+            width: _wall,
+            child: _svg('edge_right.svg', filter),
+          ),
           Positioned(
-              top: 0, left: 0, width: _corner, height: _corner,
-              child: _svg('corner_tl.svg', filter)),
+            top: 0,
+            left: 0,
+            width: _corner,
+            height: _corner,
+            child: _svg('corner_tl.svg', filter),
+          ),
           Positioned(
-              top: 0, right: 0, width: _corner, height: _corner,
-              child: _svg('corner_tr.svg', filter)),
+            top: 0,
+            right: 0,
+            width: _corner,
+            height: _corner,
+            child: _svg('corner_tr.svg', filter),
+          ),
           Positioned(
-              bottom: 0, left: 0, width: _corner, height: _corner,
-              child: _svg('corner_bl.svg', filter)),
+            bottom: 0,
+            left: 0,
+            width: _corner,
+            height: _corner,
+            child: _svg('corner_bl.svg', filter),
+          ),
           Positioned(
-              bottom: 0, right: 0, width: _corner, height: _corner,
-              child: _svg('corner_br.svg', filter)),
+            bottom: 0,
+            right: 0,
+            width: _corner,
+            height: _corner,
+            child: _svg('corner_br.svg', filter),
+          ),
         ],
       ),
     );
@@ -1123,8 +1078,11 @@ class _EmptyTables extends StatelessWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(Icons.table_restaurant_outlined,
-                size: 56, color: Theme.of(context).colorScheme.outline),
+            Icon(
+              Icons.table_restaurant_outlined,
+              size: 56,
+              color: Theme.of(context).colorScheme.outline,
+            ),
             const SizedBox(height: 12),
             const Text('Stolovi nisu učitani', textAlign: TextAlign.center),
           ],

@@ -16,6 +16,7 @@ class SettingsStorage {
   static const _menuViewSizeKey = 'menu_view_size_v1';
   static const _shouldGroupArticlesKey = 'should_group_articles_v1';
   static const _autoResendKey = 'auto_resend_orders_v1';
+  static const _preferTableGridKey = 'prefer_table_grid_v1';
   static const _businessNameKey = 'business_name_v1';
   static const _currentUserCodeKey = 'current_user_code_v1';
 
@@ -53,6 +54,16 @@ class SettingsStorage {
 
   Future<void> saveShouldAutoResend(bool value) async {
     await _prefs.setBool(_autoResendKey, value);
+  }
+
+  /// Whether this device sticks to the generic table grid even when the venue
+  /// has its own floor plan (`podaci/tlocrt`). Defaults to **false**: a venue
+  /// that drew a plan drew it to be used, and the waiter can switch back from
+  /// the table screen if the plan doesn't suit their phone.
+  bool loadPreferTableGrid() => _prefs.getBool(_preferTableGridKey) ?? false;
+
+  Future<void> savePreferTableGrid(bool value) async {
+    await _prefs.setBool(_preferTableGridKey, value);
   }
 
   /// Venue/business name reported by the `/ping` heartbeat.

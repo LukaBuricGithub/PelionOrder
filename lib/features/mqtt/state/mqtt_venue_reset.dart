@@ -5,6 +5,7 @@ import '../../auth/state/auth_controller.dart';
 import '../../master_data/state/master_data_providers.dart';
 import '../../shared/state/shared_preferences_provider.dart';
 import '../data/mqtt_service.dart';
+import 'mqtt_floor_plan_provider.dart';
 import 'mqtt_menu_provider.dart';
 import 'mqtt_orders_provider.dart';
 import 'mqtt_outbox_provider.dart';
@@ -40,6 +41,7 @@ Future<void> forgetVenueData(WidgetRef ref) async {
     ...mqttMenuStorageKeys,
     ...mqttUsersStorageKeys,
     ...mqttTablesStorageKeys,
+    ...mqttFloorPlanStorageKeys,
     ...MqttOutboxNotifier.storageKeys,
   ]) {
     await prefs.remove(key);
@@ -54,6 +56,7 @@ Future<void> forgetVenueData(WidgetRef ref) async {
     ..invalidate(mqttMenuProvider)
     ..invalidate(mqttUsersProvider)
     ..invalidate(mqttTablesProvider)
+    ..invalidate(mqttFloorPlanProvider)
     ..invalidate(mqttOccupiedProvider)
     ..invalidate(mqttLockedProvider)
     ..invalidate(mqttOrdersProvider)

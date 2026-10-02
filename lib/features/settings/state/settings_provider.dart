@@ -17,6 +17,7 @@ class SettingsState {
     this.menuViewSize = MenuViewSize.small,
     this.shouldGroupArticles = false,
     this.shouldAutoResend = false,
+    this.preferTableGrid = false,
     this.businessName,
   });
 
@@ -24,6 +25,9 @@ class SettingsState {
   final MenuViewSize menuViewSize;
   final bool shouldGroupArticles;
   final bool shouldAutoResend;
+
+  /// Stick to the generic grid although the venue has a floor plan.
+  final bool preferTableGrid;
   final String? businessName;
 
   SettingsState copyWith({
@@ -31,6 +35,7 @@ class SettingsState {
     MenuViewSize? menuViewSize,
     bool? shouldGroupArticles,
     bool? shouldAutoResend,
+    bool? preferTableGrid,
     String? businessName,
   }) {
     return SettingsState(
@@ -38,6 +43,7 @@ class SettingsState {
       menuViewSize: menuViewSize ?? this.menuViewSize,
       shouldGroupArticles: shouldGroupArticles ?? this.shouldGroupArticles,
       shouldAutoResend: shouldAutoResend ?? this.shouldAutoResend,
+      preferTableGrid: preferTableGrid ?? this.preferTableGrid,
       businessName: businessName ?? this.businessName,
     );
   }
@@ -46,13 +52,16 @@ class SettingsState {
 /// Holds the device display / sending preferences and persists changes.
 class SettingsController extends StateNotifier<SettingsState> {
   SettingsController(this._storage)
-      : super(SettingsState(
+    : super(
+        SettingsState(
           tableViewSize: _storage.loadTableViewSize(),
           menuViewSize: _storage.loadMenuViewSize(),
           shouldGroupArticles: _storage.loadShouldGroupArticles(),
           shouldAutoResend: _storage.loadShouldAutoResend(),
+          preferTableGrid: _storage.loadPreferTableGrid(),
           businessName: _storage.loadBusinessName(),
-        ));
+        ),
+      );
 
   final SettingsStorage _storage;
 
@@ -76,6 +85,11 @@ class SettingsController extends StateNotifier<SettingsState> {
     state = state.copyWith(shouldAutoResend: value);
   }
 
+  Future<void> setPreferTableGrid(bool value) async {
+    await _storage.savePreferTableGrid(value);
+    state = state.copyWith(preferTableGrid: value);
+  }
+
   Future<void> setBusinessName(String? name) async {
     await _storage.saveBusinessName(name);
     state = state.copyWith(businessName: name ?? '');
@@ -84,5 +98,5 @@ class SettingsController extends StateNotifier<SettingsState> {
 
 final settingsProvider =
     StateNotifierProvider<SettingsController, SettingsState>((ref) {
-  return SettingsController(ref.watch(settingsStorageProvider));
-});
+      return SettingsController(ref.watch(settingsStorageProvider));
+    });
