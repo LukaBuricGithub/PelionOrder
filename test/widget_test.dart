@@ -1,7 +1,10 @@
 // Basic smoke test for the Orderman app shell.
 //
 // Feature-level tests live alongside their features; this just verifies the
-// splash screen renders the app name without throwing.
+// splash screen builds without throwing. It deliberately asserts nothing
+// about what is ON it: the screen is intentionally blank, because the OS
+// native splash stays painted over it until the first real screen is ready
+// (see SplashScreen).
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -12,7 +15,7 @@ import 'package:pelion_order/features/auth/presentation/splash_screen.dart';
 import 'package:pelion_order/features/shared/state/shared_preferences_provider.dart';
 
 void main() {
-  testWidgets('Splash screen renders the app name', (tester) async {
+  testWidgets('Splash screen builds without throwing', (tester) async {
     SharedPreferences.setMockInitialValues({});
     final prefs = await SharedPreferences.getInstance();
 
@@ -23,6 +26,7 @@ void main() {
       ),
     );
 
-    expect(find.text('Pelion Order'), findsOneWidget);
+    expect(find.byType(SplashScreen), findsOneWidget);
+    expect(tester.takeException(), isNull);
   });
 }

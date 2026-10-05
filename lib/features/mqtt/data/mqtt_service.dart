@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart';
 import 'package:mqtt_client/mqtt_client.dart';
 import 'package:mqtt_client/mqtt_server_client.dart';
 
+import '../../shared/services/crash_reporting.dart';
 import '../models/mqtt_connection_config.dart';
 import '../models/mqtt_device_status.dart';
 import '../models/mqtt_order_reply.dart';
@@ -174,6 +175,23 @@ class MqttService {
   /// on the same `mob/{uredaj}` topic. Broadcast, paired downstream by msg_id.
   final _lockReplies = StreamController<MqttTableLockReply>.broadcast();
   Stream<MqttTableLockReply> get lockReplies => _lockReplies.stream;
+
+  /// One line of the connection's story: printed to the console exactly as
+  /// before (so a device attached to the IDE still shows everything), and also
+  /// kept as a Crashlytics breadcrumb.
+  ///
+  /// Breadcrumbs are an on-device ring buffer uploaded only when a report is
+  /// actually filed — nothing is sent while the app behaves, and the waiter
+  /// never sees any of it. They answer what a stack trace alone cannot: what
+  /// was the connection doing in the minutes before this.
+  ///
+  /// Only lifecycle moments belong here. No payloads, no item names, no
+  /// amounts, no waiter names or codes — the privacy policy promises crash
+  /// reports carry none of those.
+  void _trace(String message) {
+    debugPrint('MQTT ▸ $message');
+    CrashReporting.log('MQTT: $message');
+  }
 
   /// The `tip` of a reply payload, or null when it has none / isn't JSON.
   /// Used only to route between the order and table-query streams.
@@ -365,7 +383,7 @@ class MqttService {
   /// broker doesn't keep showing us online until the keepalive runs out.
   Future<void> onAppPaused() async {
     if (!_running) return;
-    debugPrint('MQTT ▸ app paused → clean shutdown');
+    _trace('app paused → clean shutdown');
     _running = false;
     _pausedByLifecycle = true;
     await _cleanShutdown();
@@ -375,7 +393,7 @@ class MqttService {
   /// (a new first-connection retry sequence).
   Future<void> onAppResumed() async {
     if (!_pausedByLifecycle || _config == null) return;
-    debugPrint('MQTT ▸ app resumed → connecting');
+    _trace('app resumed → connecting');
     _pausedByLifecycle = false;
     _running = true;
     _resetRetries();
@@ -386,7 +404,7 @@ class MqttService {
   /// Manual, user-initiated disconnect: clean shutdown, and nothing reconnects
   /// on its own afterwards.
   void disconnect() {
-    debugPrint('MQTT ▸ manual disconnect');
+    _trace('manual disconnect');
     _running = false;
     _pausedByLifecycle = false;
     unawaited(_cleanShutdown());
@@ -512,18 +530,18 @@ class MqttService {
     client
       ..onConnected = (() {
         if (!current()) return;
-        debugPrint('MQTT ▸ connected as $clientId');
+        _trace('connected as $clientId');
         connected.value = true;
       })
       ..onDisconnected = (() {
         if (!current()) return;
-        debugPrint('MQTT ▸ disconnected');
+        _trace('disconnected');
         connected.value = false;
         _resetDevices();
       })
       ..onAutoReconnect = (() {
         if (!current()) return;
-        debugPrint('MQTT ▸ connection lost — reconnecting');
+        _trace('connection lost — reconnecting');
         connected.value = false;
         // The client resubscribes on its own once back; wait for those
         // confirmations before announcing "online" again.
@@ -531,7 +549,7 @@ class MqttService {
       })
       ..onAutoReconnected = (() {
         if (!current()) return;
-        debugPrint('MQTT ▸ reconnected');
+        _trace('reconnected');
         connected.value = true;
         unawaited(_announceOnline(client));
       })
@@ -545,12 +563,12 @@ class MqttService {
       })
       ..onSubscribeFail = ((String topic) {
         if (!current()) return;
-        debugPrint('MQTT ✗ subscribe DENIED (ACL): $topic');
+        _trace('subscribe DENIED (ACL): $topic');
         _subscriptionSettled(topic);
       })
       // Supplying this makes a failed attempt return instead of throwing.
       ..onFailedConnectionAttempt = ((int attempt) {
-        debugPrint('MQTT ✗ connection attempt failed');
+        _trace('connection attempt failed');
       })
       ..pongCallback = (() {
         debugPrint('MQTT ▸ pong (keepalive)');
@@ -579,7 +597,7 @@ class MqttService {
       );
       await client.connect(config.licenca, config.lozinka);
     } catch (e) {
-      debugPrint('MQTT ✗ connect error: $e');
+      _trace('connect error: $e');
     }
 
     if (!current()) {
@@ -592,7 +610,7 @@ class MqttService {
       _lastAttemptRefused =
           rc == MqttConnectReturnCode.badUsernameOrPassword ||
           rc == MqttConnectReturnCode.notAuthorized;
-      debugPrint('MQTT ✗ not connected: $rc');
+      _trace('not connected: $rc');
       _client = null;
       connected.value = false;
       _discard(client);
@@ -687,6 +705,7 @@ class MqttService {
         if (reply == null) {
           debugPrint('MQTT ✗ unusable lock reply: $payload');
         } else {
+          _trace('$tip stol ${reply.stol}: ${reply.status}');
           _lockReplies.add(reply);
         }
       } else {
@@ -700,6 +719,7 @@ class MqttService {
         if (reply == null) {
           debugPrint('MQTT ✗ unusable order reply (no msg_id?): $payload');
         } else {
+          _trace('potvrda ${reply.msgId}: ${reply.odbijeno ?? "primljena"}');
           lastOrderReply = reply;
           _orderReplies.add(reply);
         }
@@ -827,11 +847,11 @@ class MqttService {
           builder.payload!,
           retain: true,
         );
-        debugPrint('MQTT ▸ publish offline (id=$id) — waiting for delivery');
+        _trace('publish offline (id=$id) — waiting for delivery');
         await delivered.future.timeout(_offlineDeliveryWait);
-        debugPrint('MQTT ▸ offline delivered');
+        _trace('offline delivered');
       } catch (e) {
-        debugPrint('MQTT ▸ offline not confirmed before disconnecting: $e');
+        _trace('offline not confirmed before disconnecting: $e');
       } finally {
         await sub?.cancel();
       }
@@ -875,9 +895,12 @@ class MqttService {
             ? 'MQTT ▸ publish → "$topic" (id=$id) $payload'
             : 'MQTT ▸ publish → "$topic" (id=$id, ${payload.length} B)',
       );
+      // The breadcrumb never carries the payload — that is the order itself.
+      // Topic and size are enough to see what went out and when.
+      CrashReporting.log('MQTT: publish → "$topic" (${payload.length} B)');
       return id;
     } catch (e) {
-      debugPrint('MQTT ✗ publish → "$topic" failed: $e');
+      _trace('publish → "$topic" failed: $e');
       return null;
     }
   }

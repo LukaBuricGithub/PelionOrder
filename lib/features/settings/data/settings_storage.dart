@@ -16,7 +16,13 @@ class SettingsStorage {
   static const _menuViewSizeKey = 'menu_view_size_v1';
   static const _shouldGroupArticlesKey = 'should_group_articles_v1';
   static const _autoResendKey = 'auto_resend_orders_v1';
-  static const _preferTableGridKey = 'prefer_table_grid_v1';
+
+  /// Deliberately a NEW key, not the earlier `prefer_table_grid_v1`: that one
+  /// meant the opposite ("stay on the grid although a plan exists") and
+  /// defaulted to false, so a phone carrying it would read as "show the plan"
+  /// and land on the floor plan by itself after the update. The old key is
+  /// abandoned, and every device starts on the grid.
+  static const _useFloorPlanKey = 'use_floor_plan_v1';
   static const _businessNameKey = 'business_name_v1';
   static const _currentUserCodeKey = 'current_user_code_v1';
 
@@ -56,14 +62,14 @@ class SettingsStorage {
     await _prefs.setBool(_autoResendKey, value);
   }
 
-  /// Whether this device sticks to the generic table grid even when the venue
-  /// has its own floor plan (`podaci/tlocrt`). Defaults to **false**: a venue
-  /// that drew a plan drew it to be used, and the waiter can switch back from
-  /// the table screen if the plan doesn't suit their phone.
-  bool loadPreferTableGrid() => _prefs.getBool(_preferTableGridKey) ?? false;
+  /// Whether this device draws the venue's own floor plan (`podaci/tlocrt`)
+  /// instead of the generic grid. Defaults to **false** — the grid is what
+  /// every waiter already knows, so a venue that draws a plan switches to it
+  /// deliberately, per phone, in "Postavke uređaja".
+  bool loadUseFloorPlan() => _prefs.getBool(_useFloorPlanKey) ?? false;
 
-  Future<void> savePreferTableGrid(bool value) async {
-    await _prefs.setBool(_preferTableGridKey, value);
+  Future<void> saveUseFloorPlan(bool value) async {
+    await _prefs.setBool(_useFloorPlanKey, value);
   }
 
   /// Venue/business name reported by the `/ping` heartbeat.

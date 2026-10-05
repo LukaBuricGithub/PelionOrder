@@ -9,6 +9,7 @@ import '../../mqtt/data/mqtt_service.dart';
 import '../../mqtt/models/mqtt_connection_config.dart';
 import '../../mqtt/models/mqtt_device_status.dart';
 import '../../mqtt/state/mqtt_config_provider.dart';
+import '../../mqtt/state/mqtt_floor_plan_provider.dart';
 import '../../mqtt/state/mqtt_venue_reset.dart';
 import '../../printer/data/printer_service.dart';
 import '../../shared/platform/open_app_settings.dart';
@@ -55,6 +56,15 @@ class SettingsScreen extends ConsumerWidget {
     final settings = ref.watch(settingsProvider);
     final config = ref.watch(mqttConfigProvider);
     final theme = Theme.of(context);
+    // "Prikaz stolova" only exists where the venue sends a floor plan: an
+    // older kasa publishes none, and a choice between one layout and nothing
+    // is no choice at all.
+    final floorPlan = ref.watch(mqttFloorPlanProvider);
+    final hasFloorPlan = floorPlan.enabled && floorPlan.terraces.isNotEmpty;
+    // What the table screen will actually draw — the setting alone isn't
+    // enough, since a plan can be withdrawn while this phone is still set to
+    // it (the table screen falls back to the grid in that case too).
+    final showFloorPlan = hasFloorPlan && settings.useFloorPlan;
 
     return Scaffold(
       appBar: AppBar(title: const Text('Postavke uređaja')),
@@ -92,55 +102,99 @@ class SettingsScreen extends ConsumerWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  'Veličina prikaza stolova',
-                  style: theme.textTheme.bodyLarge,
-                ),
-                const SizedBox(height: 12),
-                SizedBox(
-                  width: double.infinity,
-                  child: SegmentedButton<TableViewSize>(
-                    // Hide the selected check-mark (it steals width and pushes
-                    // longer labels like "Srednje" onto a second line), keep the
-                    // labels to one line, and shrink-to-fit on narrow screens.
-                    showSelectedIcon: false,
-                    style: SegmentedButton.styleFrom(
-                      visualDensity: VisualDensity.compact,
-                      padding: const EdgeInsets.symmetric(horizontal: 4),
-                      textStyle: const TextStyle(fontSize: 13),
-                      selectedBackgroundColor: theme.colorScheme.primary,
-                      selectedForegroundColor: theme.colorScheme.onPrimary,
+                // Only where the venue actually sends a floor plan: on an
+                // older kasa this card looks exactly as it always has.
+                if (hasFloorPlan) ...[
+                  Text('Prikaz stolova', style: theme.textTheme.bodyLarge),
+                  const SizedBox(height: 12),
+                  SizedBox(
+                    width: double.infinity,
+                    child: SegmentedButton<bool>(
+                      showSelectedIcon: false,
+                      style: SegmentedButton.styleFrom(
+                        visualDensity: VisualDensity.compact,
+                        padding: const EdgeInsets.symmetric(horizontal: 4),
+                        textStyle: const TextStyle(fontSize: 13),
+                        selectedBackgroundColor: theme.colorScheme.primary,
+                        selectedForegroundColor: theme.colorScheme.onPrimary,
+                      ),
+                      segments: const [
+                        ButtonSegment(
+                          value: false,
+                          label: FittedBox(
+                            fit: BoxFit.scaleDown,
+                            child: Text('Osnovno', maxLines: 1),
+                          ),
+                        ),
+                        ButtonSegment(
+                          value: true,
+                          label: FittedBox(
+                            fit: BoxFit.scaleDown,
+                            child: Text('Tlocrt', maxLines: 1),
+                          ),
+                        ),
+                      ],
+                      selected: {settings.useFloorPlan},
+                      onSelectionChanged: (s) => ref
+                          .read(settingsProvider.notifier)
+                          .setUseFloorPlan(s.first),
                     ),
-                    segments: const [
-                      ButtonSegment(
-                        value: TableViewSize.small,
-                        label: FittedBox(
-                          fit: BoxFit.scaleDown,
-                          child: Text('Male', maxLines: 1),
-                        ),
-                      ),
-                      ButtonSegment(
-                        value: TableViewSize.medium,
-                        label: FittedBox(
-                          fit: BoxFit.scaleDown,
-                          child: Text('Srednje', maxLines: 1),
-                        ),
-                      ),
-                      ButtonSegment(
-                        value: TableViewSize.large,
-                        label: FittedBox(
-                          fit: BoxFit.scaleDown,
-                          child: Text('Velike', maxLines: 1),
-                        ),
-                      ),
-                    ],
-                    selected: {settings.tableViewSize},
-                    onSelectionChanged: (s) => ref
-                        .read(settingsProvider.notifier)
-                        .setTableViewSize(s.first),
                   ),
-                ),
-                const SizedBox(height: 18),
+                  const SizedBox(height: 18),
+                ],
+                // The size below belongs to the grid's 4 / 3 / 2 columns, so
+                // it has nothing to set while the floor plan is drawn.
+                if (!showFloorPlan) ...[
+                  Text(
+                    'Veličina prikaza stolova',
+                    style: theme.textTheme.bodyLarge,
+                  ),
+                  const SizedBox(height: 12),
+                  SizedBox(
+                    width: double.infinity,
+                    child: SegmentedButton<TableViewSize>(
+                      // Hide the selected check-mark (it steals width and pushes
+                      // longer labels like "Srednje" onto a second line), keep the
+                      // labels to one line, and shrink-to-fit on narrow screens.
+                      showSelectedIcon: false,
+                      style: SegmentedButton.styleFrom(
+                        visualDensity: VisualDensity.compact,
+                        padding: const EdgeInsets.symmetric(horizontal: 4),
+                        textStyle: const TextStyle(fontSize: 13),
+                        selectedBackgroundColor: theme.colorScheme.primary,
+                        selectedForegroundColor: theme.colorScheme.onPrimary,
+                      ),
+                      segments: const [
+                        ButtonSegment(
+                          value: TableViewSize.small,
+                          label: FittedBox(
+                            fit: BoxFit.scaleDown,
+                            child: Text('Male', maxLines: 1),
+                          ),
+                        ),
+                        ButtonSegment(
+                          value: TableViewSize.medium,
+                          label: FittedBox(
+                            fit: BoxFit.scaleDown,
+                            child: Text('Srednje', maxLines: 1),
+                          ),
+                        ),
+                        ButtonSegment(
+                          value: TableViewSize.large,
+                          label: FittedBox(
+                            fit: BoxFit.scaleDown,
+                            child: Text('Velike', maxLines: 1),
+                          ),
+                        ),
+                      ],
+                      selected: {settings.tableViewSize},
+                      onSelectionChanged: (s) => ref
+                          .read(settingsProvider.notifier)
+                          .setTableViewSize(s.first),
+                    ),
+                  ),
+                  const SizedBox(height: 18),
+                ],
                 Text(
                   'Veličina prikaza artikala',
                   style: theme.textTheme.bodyLarge,

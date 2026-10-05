@@ -17,7 +17,7 @@ class SettingsState {
     this.menuViewSize = MenuViewSize.small,
     this.shouldGroupArticles = false,
     this.shouldAutoResend = false,
-    this.preferTableGrid = false,
+    this.useFloorPlan = false,
     this.businessName,
   });
 
@@ -26,8 +26,9 @@ class SettingsState {
   final bool shouldGroupArticles;
   final bool shouldAutoResend;
 
-  /// Stick to the generic grid although the venue has a floor plan.
-  final bool preferTableGrid;
+  /// Draw the venue's own floor plan instead of the generic grid. Only ever
+  /// acted on where the venue actually sends one.
+  final bool useFloorPlan;
   final String? businessName;
 
   SettingsState copyWith({
@@ -35,7 +36,7 @@ class SettingsState {
     MenuViewSize? menuViewSize,
     bool? shouldGroupArticles,
     bool? shouldAutoResend,
-    bool? preferTableGrid,
+    bool? useFloorPlan,
     String? businessName,
   }) {
     return SettingsState(
@@ -43,7 +44,7 @@ class SettingsState {
       menuViewSize: menuViewSize ?? this.menuViewSize,
       shouldGroupArticles: shouldGroupArticles ?? this.shouldGroupArticles,
       shouldAutoResend: shouldAutoResend ?? this.shouldAutoResend,
-      preferTableGrid: preferTableGrid ?? this.preferTableGrid,
+      useFloorPlan: useFloorPlan ?? this.useFloorPlan,
       businessName: businessName ?? this.businessName,
     );
   }
@@ -58,7 +59,7 @@ class SettingsController extends StateNotifier<SettingsState> {
           menuViewSize: _storage.loadMenuViewSize(),
           shouldGroupArticles: _storage.loadShouldGroupArticles(),
           shouldAutoResend: _storage.loadShouldAutoResend(),
-          preferTableGrid: _storage.loadPreferTableGrid(),
+          useFloorPlan: _storage.loadUseFloorPlan(),
           businessName: _storage.loadBusinessName(),
         ),
       );
@@ -85,9 +86,9 @@ class SettingsController extends StateNotifier<SettingsState> {
     state = state.copyWith(shouldAutoResend: value);
   }
 
-  Future<void> setPreferTableGrid(bool value) async {
-    await _storage.savePreferTableGrid(value);
-    state = state.copyWith(preferTableGrid: value);
+  Future<void> setUseFloorPlan(bool value) async {
+    await _storage.saveUseFloorPlan(value);
+    state = state.copyWith(useFloorPlan: value);
   }
 
   Future<void> setBusinessName(String? name) async {

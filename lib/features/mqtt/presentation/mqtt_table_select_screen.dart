@@ -267,17 +267,13 @@ class _MqttTableSelectScreenState extends ConsumerState<MqttTableSelectScreen> {
     };
     final settings = ref.watch(settingsProvider);
     final columns = _columns(settings.tableViewSize);
-    // The venue's own floor plan, when the kasa publishes one and the waiter
-    // hasn't chosen the grid on this phone.
-    final floorPlan = ref.watch(mqttFloorPlanProvider);
-    final planAvailable =
-        floorPlan.enabled &&
-        zones.isNotEmpty &&
-        floorPlan.forTerrace(
-              zones[_selectedZone.clamp(0, zones.length - 1)].id,
-            ) !=
-            null;
-    final showPlan = planAvailable && !settings.preferTableGrid;
+    // The venue's own floor plan — drawn only where the kasa publishes one AND
+    // this phone has been set to it in "Postavke uređaja" ("Prikaz stolova").
+    // The grid stays the default everywhere; a zone with no layout of its own
+    // falls back to it even when the plan is chosen.
+    final floorPlan = settings.useFloorPlan
+        ? ref.watch(mqttFloorPlanProvider)
+        : null;
 
     return Scaffold(
       key: _scaffoldKey,
@@ -285,16 +281,6 @@ class _MqttTableSelectScreenState extends ConsumerState<MqttTableSelectScreen> {
       appBar: AppBar(
         title: const Text('Odabir stola'),
         actions: [
-          // Only where there is something to switch between: a venue without a
-          // plan never sees this.
-          if (planAvailable)
-            IconButton(
-              icon: Icon(showPlan ? Icons.grid_view : Icons.map_outlined),
-              tooltip: showPlan ? 'Prikaži mrežu' : 'Prikaži tlocrt',
-              onPressed: () => ref
-                  .read(settingsProvider.notifier)
-                  .setPreferTableGrid(showPlan),
-            ),
           IconButton(
             icon: const Icon(Icons.settings_outlined),
             tooltip: 'Postavke',
@@ -333,7 +319,7 @@ class _MqttTableSelectScreenState extends ConsumerState<MqttTableSelectScreen> {
                             ),
                             canOpenAll,
                             columns,
-                            showPlan ? floorPlan : null,
+                            floorPlan,
                           ),
                   ),
                 ],
@@ -364,7 +350,11 @@ class _MqttTableSelectScreenState extends ConsumerState<MqttTableSelectScreen> {
     final selected = _selectedZone.clamp(0, zones.length - 1);
     final zone = zones[selected];
     final tables = zone.tables;
-    final planned = plan?.forTerrace(zone.id);
+    // `enabled` is the kasa's own switch (TLOCRT_ON): off means "draw the
+    // grid", whatever this phone is set to.
+    final planned = plan != null && plan.enabled
+        ? plan.forTerrace(zone.id)
+        : null;
 
     return Column(
       children: [

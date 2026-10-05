@@ -65,8 +65,9 @@ class CrashReporting {
         // console dump everywhere. Overriding onError without this would
         // silently swallow errors during development.
         FlutterError.presentError(details);
+        // Same rule as [record]: connectivity is a breadcrumb, not an issue.
         if (isNetworkError(details.exception)) {
-          FirebaseCrashlytics.instance.recordFlutterError(details);
+          log('mreža: ${details.exception}');
           return;
         }
         FirebaseCrashlytics.instance.recordFlutterFatalError(details);
@@ -114,16 +115,38 @@ class CrashReporting {
   static void setConnected(bool connected) =>
       _setKey('mqtt', connected ? 'spojen' : 'nije spojen');
 
+  /// Adds a line to the trail shown under "Logs & Breadcrumbs" on a report —
+  /// the last things that happened before it. Nothing is sent on its own, so
+  /// this costs nothing until there is a report to attach it to, and it needs
+  /// no Google Analytics (which this project deliberately doesn't use).
+  ///
+  /// Never pass an order, a price, or a waiter's name or code: the privacy
+  /// policy says crash reports carry none of those.
+  static void log(String message) {
+    if (!_ready) return;
+    unawaited(FirebaseCrashlytics.instance.log(message));
+  }
+
   static void _setKey(String key, String value) {
     if (!_ready) return;
     unawaited(FirebaseCrashlytics.instance.setCustomKey(key, value));
   }
 
-  /// Records one error, fatal unless it looks like a network problem.
-  /// Safe to call at any time: with Crashlytics unavailable it just prints.
+  /// Records one error. A network problem becomes a breadcrumb rather than an
+  /// issue of its own (see [isNetworkError]); everything else is reported as
+  /// fatal. Safe to call at any time: with Crashlytics unavailable it prints.
   static void record(Object error, StackTrace stack, {String? reason}) {
     if (!_ready) {
       debugPrint('Greška (Crashlytics nedostupan): $error\n$stack');
+      return;
+    }
+    // A dropped connection is the app's normal weather, not a defect: the
+    // broker cuts a phone off whenever the screen sleeps, and one venue did
+    // that 267 times in a week. Filed as issues these would bury every real
+    // bug, so they are written to the log instead — still visible under
+    // "Logs & Breadcrumbs" on a report that matters, with nothing filed.
+    if (isNetworkError(error)) {
+      log('mreža: $error');
       return;
     }
     unawaited(
@@ -131,7 +154,7 @@ class CrashReporting {
         error,
         stack,
         reason: reason,
-        fatal: !isNetworkError(error),
+        fatal: true,
       ),
     );
   }
