@@ -23,6 +23,7 @@ class SettingsStorage {
   /// and land on the floor plan by itself after the update. The old key is
   /// abandoned, and every device starts on the grid.
   static const _useFloorPlanKey = 'use_floor_plan_v1';
+  static const _followKasaMenuKey = 'follow_kasa_menu_v1';
   static const _businessNameKey = 'business_name_v1';
   static const _currentUserCodeKey = 'current_user_code_v1';
 
@@ -70,6 +71,17 @@ class SettingsStorage {
 
   Future<void> saveUseFloorPlan(bool value) async {
     await _prefs.setBool(_useFloorPlanKey, value);
+  }
+
+  /// Whether the price list follows the layout the venue arranged on the kasa
+  /// ("Raspored na mobitelu", the `prikaz` object) — its grid, its squares and
+  /// its empty places. Defaults to **true**: someone designed that layout
+  /// deliberately, so it is what a phone shows unless this waiter needs their
+  /// own tile size (long names, poor light), which they choose per device.
+  bool loadFollowKasaMenu() => _prefs.getBool(_followKasaMenuKey) ?? true;
+
+  Future<void> saveFollowKasaMenu(bool value) async {
+    await _prefs.setBool(_followKasaMenuKey, value);
   }
 
   /// Venue/business name reported by the `/ping` heartbeat.

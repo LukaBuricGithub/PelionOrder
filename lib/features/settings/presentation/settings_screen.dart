@@ -10,6 +10,7 @@ import '../../mqtt/models/mqtt_connection_config.dart';
 import '../../mqtt/models/mqtt_device_status.dart';
 import '../../mqtt/state/mqtt_config_provider.dart';
 import '../../mqtt/state/mqtt_floor_plan_provider.dart';
+import '../../mqtt/state/mqtt_menu_view_provider.dart';
 import '../../mqtt/state/mqtt_venue_reset.dart';
 import '../../printer/data/printer_service.dart';
 import '../../shared/platform/open_app_settings.dart';
@@ -65,6 +66,11 @@ class SettingsScreen extends ConsumerWidget {
     // enough, since a plan can be withdrawn while this phone is still set to
     // it (the table screen falls back to the grid in that case too).
     final showFloorPlan = hasFloorPlan && settings.useFloorPlan;
+    // "Prikaz artikala" likewise only exists where the venue has arranged the
+    // price list on the kasa (the `prikaz` object in podaci/artikli).
+    final hasKasaMenuLayout =
+        ref.watch(mqttMenuViewProvider).menu.layout != null;
+    final followsKasaMenu = hasKasaMenuLayout && settings.followKasaMenu;
 
     return Scaffold(
       appBar: AppBar(title: const Text('Postavke uređaja')),
@@ -195,38 +201,83 @@ class SettingsScreen extends ConsumerWidget {
                   ),
                   const SizedBox(height: 18),
                 ],
-                Text(
-                  'Veličina prikaza artikala',
-                  style: theme.textTheme.bodyLarge,
-                ),
-                const SizedBox(height: 12),
-                SizedBox(
-                  width: double.infinity,
-                  child: SegmentedButton<MenuViewSize>(
-                    showSelectedIcon: false,
-                    style: SegmentedButton.styleFrom(
-                      visualDensity: VisualDensity.compact,
-                      padding: const EdgeInsets.symmetric(horizontal: 4),
-                      textStyle: const TextStyle(fontSize: 13),
-                      selectedBackgroundColor: theme.colorScheme.primary,
-                      selectedForegroundColor: theme.colorScheme.onPrimary,
-                    ),
-                    segments: [
-                      for (final size in MenuViewSize.values)
+                // Only where the venue has arranged the price list on the
+                // kasa. Without a layout there is nothing to follow, and the
+                // card stays exactly as it was.
+                if (hasKasaMenuLayout) ...[
+                  Text('Prikaz artikala', style: theme.textTheme.bodyLarge),
+                  const SizedBox(height: 12),
+                  SizedBox(
+                    width: double.infinity,
+                    child: SegmentedButton<bool>(
+                      showSelectedIcon: false,
+                      style: SegmentedButton.styleFrom(
+                        visualDensity: VisualDensity.compact,
+                        padding: const EdgeInsets.symmetric(horizontal: 4),
+                        textStyle: const TextStyle(fontSize: 13),
+                        selectedBackgroundColor: theme.colorScheme.primary,
+                        selectedForegroundColor: theme.colorScheme.onPrimary,
+                      ),
+                      segments: const [
                         ButtonSegment(
-                          value: size,
+                          value: true,
                           label: FittedBox(
                             fit: BoxFit.scaleDown,
-                            child: Text(size.label, maxLines: 1),
+                            child: Text('Kao na kasi', maxLines: 1),
                           ),
                         ),
-                    ],
-                    selected: {settings.menuViewSize},
-                    onSelectionChanged: (s) => ref
-                        .read(settingsProvider.notifier)
-                        .setMenuViewSize(s.first),
+                        ButtonSegment(
+                          value: false,
+                          label: FittedBox(
+                            fit: BoxFit.scaleDown,
+                            child: Text('Moja veličina', maxLines: 1),
+                          ),
+                        ),
+                      ],
+                      selected: {settings.followKasaMenu},
+                      onSelectionChanged: (s) => ref
+                          .read(settingsProvider.notifier)
+                          .setFollowKasaMenu(s.first),
+                    ),
                   ),
-                ),
+                  const SizedBox(height: 18),
+                ],
+                // The kasa's layout brings its own grid, so there is no size
+                // left to choose while it is being followed.
+                if (!followsKasaMenu) ...[
+                  Text(
+                    'Veličina prikaza artikala',
+                    style: theme.textTheme.bodyLarge,
+                  ),
+                  const SizedBox(height: 12),
+                  SizedBox(
+                    width: double.infinity,
+                    child: SegmentedButton<MenuViewSize>(
+                      showSelectedIcon: false,
+                      style: SegmentedButton.styleFrom(
+                        visualDensity: VisualDensity.compact,
+                        padding: const EdgeInsets.symmetric(horizontal: 4),
+                        textStyle: const TextStyle(fontSize: 13),
+                        selectedBackgroundColor: theme.colorScheme.primary,
+                        selectedForegroundColor: theme.colorScheme.onPrimary,
+                      ),
+                      segments: [
+                        for (final size in MenuViewSize.values)
+                          ButtonSegment(
+                            value: size,
+                            label: FittedBox(
+                              fit: BoxFit.scaleDown,
+                              child: Text(size.label, maxLines: 1),
+                            ),
+                          ),
+                      ],
+                      selected: {settings.menuViewSize},
+                      onSelectionChanged: (s) => ref
+                          .read(settingsProvider.notifier)
+                          .setMenuViewSize(s.first),
+                    ),
+                  ),
+                ],
               ],
             ),
           ),

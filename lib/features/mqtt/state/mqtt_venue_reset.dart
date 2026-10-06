@@ -7,6 +7,7 @@ import '../../shared/state/shared_preferences_provider.dart';
 import '../data/mqtt_service.dart';
 import 'mqtt_floor_plan_provider.dart';
 import 'mqtt_menu_provider.dart';
+import 'mqtt_menu_view_provider.dart';
 import 'mqtt_orders_provider.dart';
 import 'mqtt_outbox_provider.dart';
 import 'mqtt_pending_transfers_provider.dart';
@@ -42,10 +43,12 @@ Future<void> forgetVenueData(WidgetRef ref) async {
     ...mqttUsersStorageKeys,
     ...mqttTablesStorageKeys,
     ...mqttFloorPlanStorageKeys,
+    // (the per-waiter price lists are keyed by cuser — cleared below)
     ...MqttOutboxNotifier.storageKeys,
   ]) {
     await prefs.remove(key);
   }
+  await clearUserMenuStorage(prefs);
 
   // The signed-in waiter (and the saved code that would restore them).
   await ref.read(authControllerProvider).logout();
@@ -54,6 +57,7 @@ Future<void> forgetVenueData(WidgetRef ref) async {
   // holds the in-transit tracker it was created with, so both go together.
   ref
     ..invalidate(mqttMenuProvider)
+    ..invalidate(mqttMenuViewProvider)
     ..invalidate(mqttUsersProvider)
     ..invalidate(mqttTablesProvider)
     ..invalidate(mqttFloorPlanProvider)

@@ -782,9 +782,17 @@ class _MqttExistingSkeletonTileState extends State<MqttExistingSkeletonTile>
 /// the kasa (Stol X and Detalji narudžbe): a small spinner and a line of
 /// text, centred, fading in so it never pops.
 class MqttExistingLoader extends StatelessWidget {
-  const MqttExistingLoader({super.key, required this.scale});
+  const MqttExistingLoader({
+    super.key,
+    required this.scale,
+    this.label = 'Učitavanje stavki…',
+  });
 
   final double scale;
+
+  /// What is being waited for — the table's items by default, the waiter's own
+  /// price list on the order screen.
+  final String label;
 
   /// Once shown, the loader stays at least this long, so a quick answer from
   /// the kasa reads as a short load instead of a one-frame flicker.
@@ -809,7 +817,7 @@ class MqttExistingLoader extends StatelessWidget {
             ),
             SizedBox(height: 14 * s),
             Text(
-              'Učitavanje stavki…',
+              label,
               style: TextStyle(
                 fontSize: 14 * s,
                 color: scheme.onSurfaceVariant,

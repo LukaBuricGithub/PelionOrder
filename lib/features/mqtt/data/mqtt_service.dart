@@ -114,6 +114,10 @@ class MqttService {
   /// reconnects — only a new run (or a new device identity) starts it again.
   int? _spojen;
 
+  /// The waiter whose own price list is being followed, see
+  /// [setUserMenuSource].
+  String? _userMenuCuser;
+
   /// The raw `podaci/artikli` payload (the menu: groups + articles), updated
   /// whenever the broker delivers it (it's retained, so it arrives on connect).
   /// The menu provider listens to this, parses + persists it.
@@ -122,6 +126,14 @@ class MqttService {
   /// The raw `podaci/korisnici` payload (staff/users used for PIN login),
   /// updated whenever the broker delivers it (retained → arrives on connect).
   final ValueNotifier<String?> korisniciRawJson = ValueNotifier<String?>(null);
+
+  /// The raw `podaci/artikli/{cuser}` payload — the price list arranged for
+  /// ONE waiter, when the venue has given them their own. Only ever the topic
+  /// of the waiter named in [setUserMenuSource]; everyone else's is never
+  /// subscribed, and `podaci/+` cannot reach it (it is two levels deep).
+  final ValueNotifier<String?> userArtikliRawJson = ValueNotifier<String?>(
+    null,
+  );
 
   /// The raw `podaci/stolovi` payload (tables grouped by zone/terrace).
   final ValueNotifier<String?> stoloviRawJson = ValueNotifier<String?>(null);
@@ -211,6 +223,8 @@ class MqttService {
   /// of the previous venue can be applied again while the new one connects.
   void forgetVenueData() {
     artikliRawJson.value = null;
+    userArtikliRawJson.value = null;
+    _userMenuCuser = null;
     korisniciRawJson.value = null;
     stoloviRawJson.value = null;
     stanjeRawJson.value = null;
@@ -260,6 +274,11 @@ class MqttService {
       'kasa/${_cfg.licenca}/podaci/stolovi_stanje'; // occupancy (retained)
   String get _tTlocrt =>
       'kasa/${_cfg.licenca}/podaci/tlocrt'; // floor plan (retained)
+
+  /// The signed-in waiter's own price list, while they have one.
+  String? get _tUserArtikli => _userMenuCuser == null || _config == null
+      ? null
+      : 'kasa/${_cfg.licenca}/podaci/artikli/$_userMenuCuser';
   String get _tVerzija =>
       'kasa/${_cfg.licenca}/podaci/verzija'; // per-section version hashes
 
@@ -289,7 +308,68 @@ class MqttService {
     _tVerzija,
     _tMob,
     _tStatusAll,
+    // Only while a waiter with their own price list is signed in — and so
+    // re-subscribed on every reconnect without any extra bookkeeping.
+    ?_tUserArtikli,
   ];
+
+  /// Which waiter's own price list to follow (`cuser`), or null for the
+  /// venue's shared one. Subscribes and unsubscribes as waiters come and go;
+  /// the topic is also in [_subscriptionTopics], so a reconnect restores it.
+  ///
+  /// Switching waiters drops the previous payload immediately: one waiter must
+  /// never see a price list arranged for another.
+  void setUserMenuSource(String? cuser) {
+    final next = (cuser != null && cuser.trim().isNotEmpty)
+        ? cuser.trim()
+        : null;
+    if (next == _userMenuCuser) return;
+
+    final previous = _tUserArtikli;
+    _userMenuCuser = next;
+    userArtikliRawJson.value = null;
+
+    final client = _client;
+    if (client == null || !isConnected) return; // the next connect subscribes
+    if (previous != null) {
+      try {
+        client.unsubscribe(previous);
+      } catch (e) {
+        debugPrint('MQTT ✗ unsubscribe "$previous" failed: $e');
+      }
+    }
+    final topic = _tUserArtikli;
+    if (topic != null) {
+      try {
+        client.subscribe(topic, MqttQos.atLeastOnce);
+        _trace('cjenik konobara: $topic');
+      } catch (e) {
+        debugPrint('MQTT ✗ subscribe "$topic" failed: $e');
+      }
+    }
+  }
+
+  /// The hash of [cuser]'s own price list from `podaci/verzija`
+  /// (`artikli_korisnika`), or null when they don't have one.
+  ///
+  /// This list — not the retained message — decides. Deleting a waiter's
+  /// layout clears their topic, but if the kasa was offline at the time a
+  /// stale message can survive on the broker, and it must be ignored while
+  /// the waiter is absent from here (spec §"Raspored po konobaru", rule 3).
+  String? userMenuHashFor(String cuser) {
+    final raw = verzijaRawJson.value;
+    if (raw == null || raw.isEmpty) return null;
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is! Map) return null;
+      final map = decoded['artikli_korisnika'];
+      if (map is! Map) return null;
+      final hash = map[cuser];
+      return hash?.toString();
+    } catch (_) {
+      return null;
+    }
+  }
 
   /// Our MQTT client-id — this is the `od` field of an order, and the last
   /// segment of the reply topic.
@@ -683,6 +763,7 @@ class MqttService {
     if (e.topic == _tStolovi) stoloviRawJson.value = payload;
     if (e.topic == _tStanje) stanjeRawJson.value = payload;
     if (e.topic == _tTlocrt) tlocrtRawJson.value = payload;
+    if (e.topic == _tUserArtikli) userArtikliRawJson.value = payload;
     // Our private reply topic carries every answer the kasa sends us: order
     // confirmations (no `tip`, or `tip: "nalog"`), table-query answers
     // (`tip: "stol"`) and table-lock answers (`tip: "ulaz" | "izlaz"`). Each

@@ -15,7 +15,7 @@ import '../models/mqtt_menu.dart';
 import '../models/mqtt_table_lock.dart';
 import '../models/mqtt_tables.dart';
 import '../state/mqtt_cart.dart';
-import '../state/mqtt_menu_provider.dart';
+import '../state/mqtt_menu_view_provider.dart';
 import '../state/mqtt_orders_provider.dart';
 import '../state/mqtt_outbox_provider.dart';
 import '../state/mqtt_pending_transfers_provider.dart';
@@ -507,7 +507,7 @@ class _MqttOrderScreenState extends ConsumerState<MqttOrderScreen> {
             builder: (_) => MqttOrderDetailsScreen(
               cart: _cart,
               byCode: _byCode,
-              remarks: ref.read(mqttMenuProvider).remarks,
+              remarks: ref.read(mqttMenuViewProvider).menu.remarks,
               money: _money,
               tableBroj: widget.tableBroj,
               tableNaziv: widget.tableNaziv,
@@ -585,7 +585,8 @@ class _MqttOrderScreenState extends ConsumerState<MqttOrderScreen> {
     // After a successful send the screen shows its ✓ frame until it has left.
     final frozen = _frozen;
     if (frozen != null) return frozen;
-    _menu = ref.watch(mqttMenuProvider);
+    final menuView = ref.watch(mqttMenuViewProvider);
+    _menu = menuView.menu;
     final groups = _menu.groups;
     _byCode
       ..clear()
@@ -594,8 +595,19 @@ class _MqttOrderScreenState extends ConsumerState<MqttOrderScreen> {
           for (final a in g.articles) MapEntry(a.code, a),
       ]);
 
-    // Grid density ("Veličina artikala u narudžbi" in Postavke uređaja).
-    final menuSize = ref.watch(settingsProvider).menuViewSize;
+    // How the price list is laid out. The venue may have arranged it on the
+    // kasa ("Raspored na mobitelu"); when it has, and this phone is set to
+    // follow it, the kasa's grid wins — including the tile size that belongs
+    // with it, so a 4 × 4 layout isn't drawn with tiles meant for 3 × 3.
+    // Otherwise the waiter's own density decides, and the venue's reading
+    // order and empty places are reflowed into it (see MqttDisplayLayout).
+    final settings = ref.watch(settingsProvider);
+    final layout = _menu.layout;
+    final followKasa = layout != null && settings.followKasaMenu;
+    final menuSize = followKasa
+        ? (MenuViewSize.forGrid(layout.columns, layout.rows) ??
+              settings.menuViewSize)
+        : settings.menuViewSize;
 
     // The table's existing order: lines already on it (from the kasa) plus lines
     // this phone sent that are still travelling.
@@ -751,29 +763,51 @@ class _MqttOrderScreenState extends ConsumerState<MqttOrderScreen> {
                           child: AnimatedOpacity(
                             opacity: _reordering ? 0.4 : 1,
                             duration: const Duration(milliseconds: 180),
-                            child: Column(
-                              children: [
-                                _PickerBar(
-                                  groups: groups,
-                                  size: menuSize,
-                                  selectedId: selectedId,
-                                  searching: _searching,
-                                  searchController: _searchController,
-                                  onSelectGroup: (id) => setState(() {
-                                    _selectedGroupId = id;
-                                    _query = '';
-                                  }),
-                                  onQuery: (q) => setState(() => _query = q),
-                                ),
-                                Expanded(
-                                  child: _ArticleGrid(
-                                    articles: articles,
-                                    size: menuSize,
-                                    onAdd: _cart.addLine,
+                            // This waiter has a price list of their own and it
+                            // is still on its way: wait for it rather than
+                            // show the shared one, which would be replaced
+                            // under their fingers a moment later. It never
+                            // waits for ever — see
+                            // MqttMenuViewNotifier.fallbackAfter.
+                            child: menuView.loading
+                                ? MqttExistingLoader(
+                                    scale: _screenScale(context),
+                                    label: 'Učitavanje cjenika…',
+                                  )
+                                : Column(
+                                    children: [
+                                      _PickerBar(
+                                        groups: groups,
+                                        size: menuSize,
+                                        selectedId: selectedId,
+                                        searching: _searching,
+                                        searchController: _searchController,
+                                        onSelectGroup: (id) => setState(() {
+                                          _selectedGroupId = id;
+                                          _query = '';
+                                        }),
+                                        onQuery: (q) =>
+                                            setState(() => _query = q),
+                                      ),
+                                      Expanded(
+                                        child: _ArticleGrid(
+                                          articles: articles,
+                                          size: menuSize,
+                                          // Only while the venue's own layout
+                                          // is being followed AND nothing is
+                                          // being searched for: a search
+                                          // result is a list of matches, not
+                                          // the designer's screen.
+                                          layout: _query.isEmpty
+                                              ? layout
+                                              : null,
+                                          followKasa:
+                                              followKasa && _query.isEmpty,
+                                          onAdd: _cart.addLine,
+                                        ),
+                                      ),
+                                    ],
                                   ),
-                                ),
-                              ],
-                            ),
                           ),
                         ),
                       ),
@@ -1949,11 +1983,23 @@ class _ArticleGrid extends StatelessWidget {
     required this.articles,
     required this.onAdd,
     required this.size,
+    this.layout,
+    this.followKasa = false,
   });
 
   final List<MqttArticle> articles;
   final ValueChanged<int> onAdd;
   final MenuViewSize size;
+
+  /// The venue's arrangement, when it sent one. Null means the app lays the
+  /// articles out itself, packed in `rbr` order, as it always has.
+  final MqttDisplayLayout? layout;
+
+  /// Whether to reproduce the designer's screen exactly (its grid, its empty
+  /// places, its page breaks). False with a [layout] present means the waiter
+  /// chose their own tile size: the reading order and the holes are kept, but
+  /// reflowed into their grid.
+  final bool followKasa;
 
   @override
   Widget build(BuildContext context) {
@@ -1966,9 +2012,31 @@ class _ArticleGrid extends StatelessWidget {
     final hPad = 8.0 * s;
     final vPad = 4.0 * s;
     final tileHeight = size.articleTileHeight * s;
-    final columns = size.articleColumns;
-    final perPage = size.articlesPerPage;
-    final pageCount = (articles.length + perPage - 1) ~/ perPage;
+    final plan = layout;
+    final columns = followKasa && plan != null
+        ? plan.columns
+        : size.articleColumns;
+    final rows = followKasa && plan != null ? plan.rows : size.articleRows;
+
+    // With a layout, squares are kept even when empty, so an article never
+    // moves because another was deactivated. Without one, nothing to place:
+    // the articles simply fill the pages in order.
+    final pages = plan != null
+        ? MqttDisplayLayout.placeInGrid(
+            articles,
+            columns: columns,
+            rows: rows,
+            // The waiter's own grid always scrolls — their screen holds a
+            // different number of squares, so "one screen" cannot be honoured.
+            scroll: followKasa ? plan.scroll : true,
+          )
+        : [
+            for (var i = 0; i < articles.length; i += columns * rows)
+              articles.sublist(
+                i,
+                (i + columns * rows).clamp(0, articles.length),
+              ),
+          ];
 
     return LayoutBuilder(
       builder: (context, c) {
@@ -1976,11 +2044,11 @@ class _ArticleGrid extends StatelessWidget {
           _tileWidth(c.maxWidth, columns, hPad, spacing),
         );
         return PageView.builder(
-          itemCount: pageCount,
+          // A layout without scrolling is one screen by definition; the
+          // builder below never produces more, so there is nothing to swipe.
+          itemCount: pages.length,
           itemBuilder: (context, page) {
-            final start = page * perPage;
-            final end = (start + perPage).clamp(0, articles.length);
-            final pageItems = articles.sublist(start, end);
+            final pageItems = pages[page];
             return GridView.builder(
               physics: const NeverScrollableScrollPhysics(),
               padding: EdgeInsets.symmetric(horizontal: hPad, vertical: vPad),
@@ -1993,6 +2061,9 @@ class _ArticleGrid extends StatelessWidget {
               itemCount: pageItems.length,
               itemBuilder: (context, i) {
                 final a = pageItems[i];
+                // An empty square: it holds its place so the articles around
+                // it stay where the waiter expects them.
+                if (a == null) return const SizedBox.shrink();
                 return _ArticleTile(
                   name: a.name,
                   fontSize: fontSize,

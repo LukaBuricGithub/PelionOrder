@@ -7,6 +7,7 @@ import '../../settings/state/settings_provider.dart';
 import '../models/mqtt_menu.dart';
 import '../state/mqtt_cart.dart';
 import '../state/mqtt_menu_provider.dart';
+import '../state/mqtt_menu_view_provider.dart';
 import '../state/mqtt_orders_provider.dart';
 import '../state/mqtt_outbox_provider.dart';
 import '../state/mqtt_send_gate_provider.dart';
@@ -42,9 +43,17 @@ class MqttOutboxScreen extends ConsumerWidget {
       for (final o in ref.watch(mqttOutboxProvider))
         if (allowed(o)) o,
     ];
+    // Both price lists: with a layout saved on the kasa, an article arranged
+    // only for this waiter is missing from the shared message, and one that
+    // was dropped from their own arrangement is still in the shared one. An
+    // unsent order can name either, so look in both rather than leave a line
+    // without its article's name.
     final menu = ref.watch(mqttMenuProvider);
+    final waiterMenu = ref.watch(mqttMenuViewProvider).menu;
     final byCode = <int, MqttArticle>{
       for (final g in menu.groups)
+        for (final a in g.articles) a.code: a,
+      for (final g in waiterMenu.groups)
         for (final a in g.articles) a.code: a,
     };
     final names = {
@@ -104,10 +113,10 @@ class MqttOutboxScreen extends ConsumerWidget {
                     remarkName: menu.remarkName,
                     names: names,
                     canSend: sendGate.isOpen,
-                    onResend: () =>
-                        _confirmResend(context, ref, stol, allowed),
+                    onResend: () => _confirmResend(context, ref, stol, allowed),
                     onDelete: () => _confirmDelete(context, ref, stol, [
-                      for (final o in byTable[stol] ?? const <MqttOutboxOrder>[])
+                      for (final o
+                          in byTable[stol] ?? const <MqttOutboxOrder>[])
                         if (o.isProblem) o,
                     ]),
                     onOpenTable: () =>
@@ -405,10 +414,7 @@ class _Empty extends StatelessWidget {
           children: [
             Icon(Icons.cloud_done_outlined, size: 56, color: scheme.outline),
             const SizedBox(height: 12),
-            const Text(
-              'Sve je poslano',
-              textAlign: TextAlign.center,
-            ),
+            const Text('Sve je poslano', textAlign: TextAlign.center),
           ],
         ),
       ),
@@ -775,8 +781,7 @@ class _DraftBlock extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 4),
-          for (final l in draft.lines)
-            _lineTile(l, scheme, byCode, remarkName),
+          for (final l in draft.lines) _lineTile(l, scheme, byCode, remarkName),
           const SizedBox(height: 4),
           Row(
             mainAxisAlignment: MainAxisAlignment.end,

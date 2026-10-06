@@ -21,17 +21,17 @@ enum MenuViewSize {
 
   /// Columns in the article grid.
   int get articleColumns => switch (this) {
-        MenuViewSize.small => 4,
-        MenuViewSize.medium => 3,
-        MenuViewSize.large => 3,
-      };
+    MenuViewSize.small => 4,
+    MenuViewSize.medium => 3,
+    MenuViewSize.large => 3,
+  };
 
   /// Rows of articles per page.
   int get articleRows => switch (this) {
-        MenuViewSize.small => 4,
-        MenuViewSize.medium => 4,
-        MenuViewSize.large => 3,
-      };
+    MenuViewSize.small => 4,
+    MenuViewSize.medium => 4,
+    MenuViewSize.large => 3,
+  };
 
   int get articlesPerPage => articleColumns * articleRows;
 
@@ -39,33 +39,48 @@ enum MenuViewSize {
   /// vertical space — dropping a row without growing the tiles would just leave
   /// a gap under the grid.
   double get articleTileHeight => switch (this) {
-        MenuViewSize.small => 58,
-        MenuViewSize.medium => 58,
-        MenuViewSize.large => 79,
-      };
+    MenuViewSize.small => 58,
+    MenuViewSize.medium => 58,
+    MenuViewSize.large => 79,
+  };
 
   /// Columns in the group strip. Kept in step with the articles: if the article
   /// tiles grow and the group tiles don't, the two halves stop looking like one
   /// screen.
   int get groupColumns => switch (this) {
-        MenuViewSize.small => 4,
-        MenuViewSize.medium => 3,
-        MenuViewSize.large => 3,
-      };
+    MenuViewSize.small => 4,
+    MenuViewSize.medium => 3,
+    MenuViewSize.large => 3,
+  };
 
   /// Unscaled group tile height.
   double get groupRowHeight => switch (this) {
-        MenuViewSize.small => 44,
-        MenuViewSize.medium => 44,
-        MenuViewSize.large => 52,
-      };
+    MenuViewSize.small => 44,
+    MenuViewSize.medium => 44,
+    MenuViewSize.large => 52,
+  };
 
   /// Croatian label for the settings selector.
   String get label => switch (this) {
-        MenuViewSize.small => 'Mali',
-        MenuViewSize.medium => 'Srednji',
-        MenuViewSize.large => 'Veliki',
-      };
+    MenuViewSize.small => 'Mali',
+    MenuViewSize.medium => 'Srednji',
+    MenuViewSize.large => 'Veliki',
+  };
+
+  /// The density matching a grid the kasa sent in `prikaz` — its three grids
+  /// (9 = 3 × 3, 12 = 3 × 4, 16 = 4 × 4) are exactly these three levels.
+  ///
+  /// Used so that following the venue's layout also brings the tile heights
+  /// and the group strip that belong with it, rather than drawing a 4 × 4 grid
+  /// with tiles sized for 3 × 3. Null for a grid this app has no density for,
+  /// and then the caller keeps the waiter's own size for the measurements
+  /// while still using the kasa's columns and rows.
+  static MenuViewSize? forGrid(int columns, int rows) {
+    if (columns == 4 && rows == 4) return MenuViewSize.small;
+    if (columns == 3 && rows == 4) return MenuViewSize.medium;
+    if (columns == 3 && rows == 3) return MenuViewSize.large;
+    return null;
+  }
 
   static MenuViewSize fromName(String? name) {
     return MenuViewSize.values.firstWhere(

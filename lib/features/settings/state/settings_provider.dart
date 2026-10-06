@@ -18,6 +18,7 @@ class SettingsState {
     this.shouldGroupArticles = false,
     this.shouldAutoResend = false,
     this.useFloorPlan = false,
+    this.followKasaMenu = true,
     this.businessName,
   });
 
@@ -29,6 +30,10 @@ class SettingsState {
   /// Draw the venue's own floor plan instead of the generic grid. Only ever
   /// acted on where the venue actually sends one.
   final bool useFloorPlan;
+
+  /// Lay the price list out as the venue arranged it on the kasa. Only ever
+  /// acted on where the venue actually sends a layout (`prikaz`).
+  final bool followKasaMenu;
   final String? businessName;
 
   SettingsState copyWith({
@@ -37,6 +42,7 @@ class SettingsState {
     bool? shouldGroupArticles,
     bool? shouldAutoResend,
     bool? useFloorPlan,
+    bool? followKasaMenu,
     String? businessName,
   }) {
     return SettingsState(
@@ -45,6 +51,7 @@ class SettingsState {
       shouldGroupArticles: shouldGroupArticles ?? this.shouldGroupArticles,
       shouldAutoResend: shouldAutoResend ?? this.shouldAutoResend,
       useFloorPlan: useFloorPlan ?? this.useFloorPlan,
+      followKasaMenu: followKasaMenu ?? this.followKasaMenu,
       businessName: businessName ?? this.businessName,
     );
   }
@@ -60,6 +67,7 @@ class SettingsController extends StateNotifier<SettingsState> {
           shouldGroupArticles: _storage.loadShouldGroupArticles(),
           shouldAutoResend: _storage.loadShouldAutoResend(),
           useFloorPlan: _storage.loadUseFloorPlan(),
+          followKasaMenu: _storage.loadFollowKasaMenu(),
           businessName: _storage.loadBusinessName(),
         ),
       );
@@ -89,6 +97,11 @@ class SettingsController extends StateNotifier<SettingsState> {
   Future<void> setUseFloorPlan(bool value) async {
     await _storage.saveUseFloorPlan(value);
     state = state.copyWith(useFloorPlan: value);
+  }
+
+  Future<void> setFollowKasaMenu(bool value) async {
+    await _storage.saveFollowKasaMenu(value);
+    state = state.copyWith(followKasaMenu: value);
   }
 
   Future<void> setBusinessName(String? name) async {
