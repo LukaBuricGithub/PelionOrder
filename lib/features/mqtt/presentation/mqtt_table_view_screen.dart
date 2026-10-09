@@ -2,6 +2,8 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+import '../../../app/page_transitions.dart';
 import 'package:intl/intl.dart';
 
 import '../data/mqtt_service.dart';
@@ -94,8 +96,10 @@ class _MqttTableViewScreenState extends ConsumerState<MqttTableViewScreen> {
           if (mounted) _ask(silent: true);
         });
       } else {
-        debugPrint('MQTT ▸ table $_broj still has ${reply.naCekanju} pending '
-            'after $_maxPendingAsks asks — the kasa is not draining it');
+        debugPrint(
+          'MQTT ▸ table $_broj still has ${reply.naCekanju} pending '
+          'after $_maxPendingAsks asks — the kasa is not draining it',
+        );
       }
     }
   }
@@ -108,12 +112,11 @@ class _MqttTableViewScreenState extends ConsumerState<MqttTableViewScreen> {
   /// what is being added; it is never seeded with the lines already on the
   /// table, which the kasa would happily book a second time.
   Future<void> _addItems() async {
-    await Navigator.of(context).push(MaterialPageRoute<void>(
-      builder: (_) => MqttOrderScreen(
-        tableBroj: _broj,
-        tableNaziv: widget.tableNaziv,
+    await Navigator.of(context).push(
+      appSlideRoute<void>(
+        (_) => MqttOrderScreen(tableBroj: _broj, tableNaziv: widget.tableNaziv),
       ),
-    ));
+    );
     if (!mounted) return;
     // Whatever happened over there, re-read the table — and watch from scratch,
     // since an order that just landed is exactly what we want to see arrive.
@@ -132,7 +135,8 @@ class _MqttTableViewScreenState extends ConsumerState<MqttTableViewScreen> {
     ref.listen<Map<int, MqttTableState>>(mqttOccupiedProvider, (prev, next) {
       final before = prev?[_broj];
       final after = next[_broj];
-      final changed = before?.stavki != after?.stavki ||
+      final changed =
+          before?.stavki != after?.stavki ||
           before?.iznos != after?.iznos ||
           before?.cuser != after?.cuser;
       if (changed) _ask(silent: true, refill: true);
@@ -147,13 +151,13 @@ class _MqttTableViewScreenState extends ConsumerState<MqttTableViewScreen> {
           children: [
             Text(
               title,
-              style: Theme.of(context).appBarTheme.titleTextStyle ??
+              style:
+                  Theme.of(context).appBarTheme.titleTextStyle ??
                   Theme.of(context).textTheme.titleLarge,
             ),
             Text(
               'Sadržaj stola',
-              style:
-                  TextStyle(fontSize: 13.5, color: scheme.onSurfaceVariant),
+              style: TextStyle(fontSize: 13.5, color: scheme.onSurfaceVariant),
             ),
           ],
         ),
@@ -185,7 +189,8 @@ class _MqttTableViewScreenState extends ConsumerState<MqttTableViewScreen> {
       return _Message(
         icon: Icons.cloud_off,
         title: result?.message ?? 'Glavni program ne odgovara.',
-        detail: 'Glavni program odgovara samo dok je uključen i dok je '
+        detail:
+            'Glavni program odgovara samo dok je uključen i dok je '
             'povezan s bazom.',
         onRetry: () => _ask(),
       );
@@ -272,23 +277,27 @@ class _StatusBanner extends StatelessWidget {
 
     if (reply.naCekanju > 0) {
       final mine = reply.pendingForDevice(myOd);
-      rows.add(_Chip(
-        icon: Icons.sync,
-        color: const Color(0xFF4A78B4),
-        text: mine
-            ? 'Vaša narudžba se prenosi na stol (${reply.naCekanju}), '
-                'popis se još mijenja.'
-            : 'Glavni program prenosi ${reply.naCekanju} stavaka na stol, popis se '
-                'još '
-                'mijenja.',
-      ));
+      rows.add(
+        _Chip(
+          icon: Icons.sync,
+          color: const Color(0xFF4A78B4),
+          text: mine
+              ? 'Vaša narudžba se prenosi na stol (${reply.naCekanju}), '
+                    'popis se još mijenja.'
+              : 'Glavni program prenosi ${reply.naCekanju} stavaka na stol, popis se '
+                    'još '
+                    'mijenja.',
+        ),
+      );
     }
     if (reply.heldByKasa) {
-      rows.add(_Chip(
-        icon: Icons.lock_outline,
-        color: const Color(0xFFD46A5A),
-        text: 'Stol je otvoren u glavnom programu (${reply.otvorenNa}).',
-      ));
+      rows.add(
+        _Chip(
+          icon: Icons.lock_outline,
+          color: const Color(0xFFD46A5A),
+          text: 'Stol je otvoren u glavnom programu (${reply.otvorenNa}).',
+        ),
+      );
     }
 
     if (rows.isEmpty) return const SizedBox.shrink();
@@ -327,9 +336,14 @@ class _Chip extends StatelessWidget {
           Icon(icon, size: 18, color: color),
           const SizedBox(width: 10),
           Expanded(
-            child: Text(text,
-                style: TextStyle(
-                    fontSize: 13, height: 1.3, fontWeight: FontWeight.w500)),
+            child: Text(
+              text,
+              style: TextStyle(
+                fontSize: 13,
+                height: 1.3,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
           ),
         ],
       ),
@@ -352,18 +366,22 @@ class _BillHeader extends StatelessWidget {
       padding: const EdgeInsets.only(bottom: 6, top: 2),
       child: Row(
         children: [
-          Text('Račun ${racun.crac}',
-              style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700)),
+          Text(
+            'Račun ${racun.crac}',
+            style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700),
+          ),
           if (who.isNotEmpty) ...[
             const SizedBox(width: 8),
-            Text('· $who',
-                style:
-                    TextStyle(fontSize: 12.5, color: scheme.onSurfaceVariant)),
+            Text(
+              '· $who',
+              style: TextStyle(fontSize: 12.5, color: scheme.onSurfaceVariant),
+            ),
           ],
           const Spacer(),
-          Text(money.format(racun.ukupno),
-              style:
-                  const TextStyle(fontSize: 13, fontWeight: FontWeight.w700)),
+          Text(
+            money.format(racun.ukupno),
+            style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700),
+          ),
         ],
       ),
     );
@@ -383,14 +401,17 @@ class _BillCard extends StatelessWidget {
       decoration: BoxDecoration(
         color: scheme.surface,
         borderRadius: BorderRadius.circular(14),
-        border:
-            Border.all(color: scheme.outlineVariant.withValues(alpha: 0.5)),
+        border: Border.all(color: scheme.outlineVariant.withValues(alpha: 0.5)),
       ),
       clipBehavior: Clip.antiAlias,
       child: Column(
         children: [
           for (var i = 0; i < racun.stavke.length; i++) ...[
-            if (i > 0) Divider(height: 1, color: scheme.outlineVariant.withValues(alpha: 0.4)),
+            if (i > 0)
+              Divider(
+                height: 1,
+                color: scheme.outlineVariant.withValues(alpha: 0.4),
+              ),
             _StavkaRow(stavka: racun.stavke[i], money: money),
           ],
         ],
@@ -427,21 +448,33 @@ class _StavkaRow extends StatelessWidget {
             children: [
               SizedBox(
                 width: 38,
-                child: Text('$_kol×',
-                    style: const TextStyle(
-                        fontSize: 14, fontWeight: FontWeight.w700)),
+                child: Text(
+                  '$_kol×',
+                  style: const TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
               ),
               Expanded(
                 child: Text(
-                  stavka.naziv.isEmpty ? 'Artikl ${stavka.cartikl}' : stavka.naziv,
+                  stavka.naziv.isEmpty
+                      ? 'Artikl ${stavka.cartikl}'
+                      : stavka.naziv,
                   style: const TextStyle(
-                      fontSize: 14.5, fontWeight: FontWeight.w600),
+                    fontSize: 14.5,
+                    fontWeight: FontWeight.w600,
+                  ),
                 ),
               ),
               const SizedBox(width: 10),
-              Text(money.format(stavka.iznos),
-                  style: const TextStyle(
-                      fontSize: 14, fontWeight: FontWeight.w700)),
+              Text(
+                money.format(stavka.iznos),
+                style: const TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
             ],
           ),
           Padding(
@@ -460,15 +493,19 @@ class _StavkaRow extends StatelessWidget {
                 ),
                 Text(
                   '${money.format(stavka.mc)} / kom',
-                  style:
-                      TextStyle(fontSize: 12, color: scheme.onSurfaceVariant),
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: scheme.onSurfaceVariant,
+                  ),
                 ),
                 if (stavka.hasPopust)
                   Text(
                     'popust ${stavka.popust}% '
                     '(${money.format(stavka.cijenaBezPopusta)})',
                     style: TextStyle(
-                        fontSize: 12, color: scheme.onSurfaceVariant),
+                      fontSize: 12,
+                      color: scheme.onSurfaceVariant,
+                    ),
                   ),
               ],
             ),
@@ -505,9 +542,14 @@ class _Tag extends StatelessWidget {
         color: color.withValues(alpha: 0.12),
         borderRadius: BorderRadius.circular(6),
       ),
-      child: Text(text,
-          style: TextStyle(
-              fontSize: 11, fontWeight: FontWeight.w700, color: color)),
+      child: Text(
+        text,
+        style: TextStyle(
+          fontSize: 11,
+          fontWeight: FontWeight.w700,
+          color: color,
+        ),
+      ),
     );
   }
 }
@@ -528,12 +570,15 @@ class _TotalRow extends StatelessWidget {
       ),
       child: Row(
         children: [
-          const Text('Ukupno',
-              style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
+          const Text(
+            'Ukupno',
+            style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+          ),
           const Spacer(),
-          Text(total,
-              style: const TextStyle(
-                  fontSize: 20, fontWeight: FontWeight.w800)),
+          Text(
+            total,
+            style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w800),
+          ),
         ],
       ),
     );
@@ -572,7 +617,10 @@ class _Message extends StatelessWidget {
           detail,
           textAlign: TextAlign.center,
           style: TextStyle(
-              fontSize: 13, height: 1.35, color: scheme.onSurfaceVariant),
+            fontSize: 13,
+            height: 1.35,
+            color: scheme.onSurfaceVariant,
+          ),
         ),
         const SizedBox(height: 20),
         Center(

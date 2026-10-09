@@ -4,6 +4,8 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+import '../../../app/page_transitions.dart';
 import 'package:intl/intl.dart';
 
 import '../../auth/state/session_provider.dart';
@@ -503,8 +505,11 @@ class _MqttOrderScreenState extends ConsumerState<MqttOrderScreen> {
     _detailsOpen = true;
     Navigator.of(context)
         .push(
-          MaterialPageRoute<String>(
-            builder: (_) => MqttOrderDetailsScreen(
+          // The app's own motion, same as every routed screen — a plain
+          // MaterialPageRoute would arrive with Android's default here and
+          // disagree with the screen sliding out underneath it.
+          appSlideRoute<String>(
+            (_) => MqttOrderDetailsScreen(
               cart: _cart,
               byCode: _byCode,
               remarks: ref.read(mqttMenuViewProvider).menu.remarks,

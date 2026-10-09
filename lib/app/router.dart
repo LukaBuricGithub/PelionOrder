@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import 'page_transitions.dart';
+
 import '../features/auth/presentation/login_screen.dart';
 import '../features/auth/presentation/pin_screen.dart';
 import '../features/auth/presentation/splash_screen.dart';
@@ -116,41 +118,32 @@ final routerProvider = Provider<GoRouter>((ref) {
         // Reached by REPLACING login + PIN once the waiter signs in: it slides
         // in from the right, fully opaque, covering the PIN screen — its title
         // travels with it instead of appearing next to where "Prijava" was.
-        // On logout it slides back out to the right, revealing the login.
-        pageBuilder: (context, state) => CustomTransitionPage<void>(
-          key: state.pageKey,
-          transitionDuration: const Duration(milliseconds: 280),
-          reverseTransitionDuration: const Duration(milliseconds: 260),
-          transitionsBuilder: (context, animation, secondaryAnimation, child) =>
-              SlideTransition(
-                position: Tween(begin: const Offset(1, 0), end: Offset.zero)
-                    .animate(
-                      CurvedAnimation(
-                        parent: animation,
-                        curve: Curves.easeOutCubic,
-                        reverseCurve: Curves.easeInCubic,
-                      ),
-                    ),
-                child: child,
-              ),
-          child: const CashRegisterScreen(),
-        ),
+        // On logout it slides back out to the right, revealing the login. And
+        // now it also moves aside when a screen is pushed over it, which it
+        // did not before (see [_slidePage]).
+        pageBuilder: (context, state) =>
+            appSlidePage(state.pageKey, const CashRegisterScreen()),
       ),
       GoRoute(
         path: '/mqtt-tables',
-        builder: (context, state) => const MqttTableSelectScreen(),
+        pageBuilder: (context, state) =>
+            appSlidePage(state.pageKey, const MqttTableSelectScreen()),
       ),
       GoRoute(
         path: '/mqtt-outbox',
-        builder: (context, state) => const MqttOutboxScreen(),
+        pageBuilder: (context, state) =>
+            appSlidePage(state.pageKey, const MqttOutboxScreen()),
       ),
       GoRoute(
         path: '/mqtt-menu/:broj',
-        builder: (context, state) {
+        pageBuilder: (context, state) {
           final broj = int.tryParse(state.pathParameters['broj'] ?? '');
-          return MqttOrderScreen(
-            tableBroj: broj,
-            tableNaziv: state.uri.queryParameters['naziv'],
+          return appSlidePage(
+            state.pageKey,
+            MqttOrderScreen(
+              tableBroj: broj,
+              tableNaziv: state.uri.queryParameters['naziv'],
+            ),
           );
         },
       ),
