@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart';
 import 'package:mqtt_client/mqtt_client.dart';
 import 'package:mqtt_client/mqtt_server_client.dart';
 
+import '../../shared/platform/background_time.dart';
 import '../../shared/services/crash_reporting.dart';
 import '../models/mqtt_connection_config.dart';
 import '../models/mqtt_device_status.dart';
@@ -117,6 +118,11 @@ class MqttService {
   /// The waiter whose own price list is being followed, see
   /// [setUserMenuSource].
   String? _userMenuCuser;
+
+  /// Orders published and not yet answered, by `msg_id`, with the moment they
+  /// went out. Kept so the connection can be held open for a few seconds when
+  /// the app is backgrounded — see [waitForOrderReplies].
+  final _awaitedReplies = <String, DateTime>{};
 
   /// The raw `podaci/artikli` payload (the menu: groups + articles), updated
   /// whenever the broker delivers it (it's retained, so it arrives on connect).
@@ -233,6 +239,9 @@ class MqttService {
     devices.value = const {};
     statusesReady.value = false;
     lastOrderReply = null;
+    // Answers for the old venue's orders can never arrive now, and must not
+    // hold the connection open on the way out.
+    _awaitedReplies.clear();
   }
 
   /// The current version hash for [section] (from the last `podaci/verzija`),
@@ -347,6 +356,85 @@ class MqttService {
         debugPrint('MQTT ✗ subscribe "$topic" failed: $e');
       }
     }
+  }
+
+  /// How long an unanswered order keeps the connection open after the app has
+  /// been put away, counted from the moment it was published.
+  ///
+  /// The kasa answers in one to five seconds, so this is rarely reached. It
+  /// covers the seconds AFTER the sender has given up at 10 s, because a late
+  /// confirmation still resolves the order ("Nije potvrđena" → "Primljena")
+  /// and the waiter never has to deal with it.
+  static const orderReplyHold = Duration(seconds: 30);
+
+  /// How much quiet is needed before the connection is let go: thirty seconds
+  /// with nothing outstanding. Every answer restarts it, so a burst of orders
+  /// keeps the socket until thirty seconds after the LAST one is settled.
+  ///
+  /// It also spares the broker a disconnect/reconnect pair every time a
+  /// waiter glances at another app for a few seconds.
+  static const idleHold = Duration(seconds: 30);
+
+  /// The outer bound, so a kasa that never answers cannot keep a pocketed
+  /// phone online indefinitely.
+  static const maxHold = Duration(minutes: 2);
+
+  /// When something last happened worth staying connected for: the app being
+  /// put away, an order going out, or an answer arriving.
+  DateTime _lastHoldActivity = DateTime.now();
+
+  /// Remembers that the order [msgId] is waiting for the kasa's answer.
+  ///
+  /// Called once the broker has confirmed the publish — before that there is
+  /// nothing to wait for.
+  void awaitOrderReply(String msgId) {
+    _awaitedReplies[msgId] = DateTime.now();
+    _lastHoldActivity = DateTime.now();
+  }
+
+  /// The kasa has answered [msgId] (or it no longer matters).
+  void _resolveAwaitedReply(String msgId) {
+    if (_awaitedReplies.remove(msgId) == null) return;
+    _lastHoldActivity = DateTime.now();
+  }
+
+  /// Holds the connection open after the app has been put away, until the
+  /// kasa has answered everything and [idleHold] of quiet has passed.
+  ///
+  /// The rule, in order:
+  ///
+  /// * an order still waiting keeps the connection, up to [orderReplyHold]
+  ///   from the moment it went out;
+  /// * every answer — and every new order — restarts the [idleHold] clock, so
+  ///   a burst is seen through to the end rather than cut off in the middle;
+  /// * [maxHold] is the outer bound, in case the kasa never answers at all.
+  ///
+  /// WHY THIS EXISTS: the app used to drop the connection the moment it was
+  /// backgrounded, and the kasa's answer arrives one to five seconds later.
+  /// On 7. 10. 2026 three orders at PLEMA ŠESTINE were answered 0.2–3 s AFTER
+  /// the phone had gone; the broker queued the answers, the phone stayed away
+  /// longer than the broker keeps them, and the orders sat as "Nije
+  /// potvrđena" for days although the kasa had printed them.
+  Future<void> holdForOrderReplies() async {
+    _lastHoldActivity = DateTime.now();
+    final hardStop = DateTime.now().add(maxHold);
+
+    while (DateTime.now().isBefore(hardStop)) {
+      // The waiter came back: the connection is wanted again, so stop
+      // holding and let onAppResumed carry on with it.
+      if (!_pausedByLifecycle) return;
+
+      // An order from an earlier shift can sit unanswered for ever; it must
+      // not keep a pocketed phone online.
+      final stale = DateTime.now().subtract(orderReplyHold);
+      _awaitedReplies.removeWhere((_, sent) => sent.isBefore(stale));
+
+      final quiet = DateTime.now().difference(_lastHoldActivity);
+      if (_awaitedReplies.isEmpty && quiet >= idleHold) return;
+
+      await Future<void>.delayed(const Duration(milliseconds: 500));
+    }
+    _trace('držanje veze isteklo nakon ${maxHold.inMinutes} min');
   }
 
   /// The hash of [cuser]'s own price list from `podaci/verzija`
@@ -466,7 +554,25 @@ class MqttService {
     _trace('app paused → clean shutdown');
     _running = false;
     _pausedByLifecycle = true;
-    await _cleanShutdown();
+    // Stay on the socket until the kasa has answered everything and the line
+    // has been quiet for a while (see [holdForOrderReplies]). On iOS that
+    // needs the OS's permission, or the app is suspended after ~5 s.
+    await BackgroundTime.begin();
+    try {
+      await holdForOrderReplies();
+      // The waiter came back while we waited: the connection is wanted
+      // again, and onAppResumed has already put the service back in the
+      // running state. Tearing it down here would leave the app looking
+      // connected with no socket.
+      if (!_pausedByLifecycle) {
+        _trace('app resumed while holding — connection kept');
+        return;
+      }
+      await _cleanShutdown();
+    } finally {
+      // Never leave the assertion open: that is what makes iOS kill an app.
+      await BackgroundTime.end();
+    }
   }
 
   /// The app returned to the foreground: start again, as a new connection
@@ -801,6 +907,9 @@ class MqttService {
           debugPrint('MQTT ✗ unusable order reply (no msg_id?): $payload');
         } else {
           _trace('potvrda ${reply.msgId}: ${reply.odbijeno ?? "primljena"}');
+          // Nothing waits on this order any more; if the app is being put
+          // away, the socket may close as soon as the last one lands.
+          _resolveAwaitedReply(reply.msgId);
           lastOrderReply = reply;
           _orderReplies.add(reply);
         }

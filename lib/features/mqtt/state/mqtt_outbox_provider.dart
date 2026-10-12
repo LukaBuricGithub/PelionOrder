@@ -6,12 +6,15 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../settings/state/settings_provider.dart';
+import '../../shared/services/crash_reporting.dart';
 import '../../shared/state/shared_preferences_provider.dart';
 import '../data/mqtt_order_sender.dart';
 import '../data/mqtt_service.dart';
 import '../models/mqtt_order_reply.dart';
 import 'mqtt_cart.dart';
 import 'mqtt_config_provider.dart';
+import 'mqtt_housekeeping.dart';
+import 'mqtt_kasa_silence_provider.dart';
 import 'mqtt_pending_transfers_provider.dart';
 import 'mqtt_send_gate_provider.dart';
 
@@ -85,17 +88,44 @@ class MqttOutboxOrder {
   /// Whether the order has been published at least once.
   final bool published;
 
-  /// Didn't get through — not sent, refused or too old ("red"): the waiter may
-  /// send it again or delete it. An order with the broker ("amber": waiting
-  /// for the kasa, or not confirmed) can be neither — the broker hands it to
-  /// the kasa when the kasa comes back.
+  /// Didn't get through — not sent, refused or too old: the kasa either never
+  /// saw it or said no. [isUnconfirmed] is deliberately not one of these: that
+  /// order very probably WAS printed, which is a different story to tell the
+  /// waiter even though both call for the same two buttons.
   bool get isProblem =>
       status == MqttOutboxStatus.notSent ||
       status == MqttOutboxStatus.refused ||
       status == MqttOutboxStatus.stale;
 
-  /// "Pošalji ponovno" may send it — only a [isProblem] order.
-  bool get canResend => isProblem;
+  /// Published, and the kasa said nothing within 10 s. It is NOT in flight any
+  /// more: the broker took it, the kasa very probably printed it, and the
+  /// confirmation was lost on the way back — the usual cause is the phone
+  /// being pocketed a second after sending (see MqttService.holdForOrderReplies).
+  bool get isUnconfirmed => status == MqttOutboxStatus.unconfirmed;
+
+  /// The waiter has to do something about it ("red" everywhere: the table on
+  /// the floor plan, the strip, the tag in the list).
+  ///
+  /// [isUnconfirmed] belongs here: while it shared amber with "Šalje se", a
+  /// dead order looked exactly like one sent a second ago, which is how seven
+  /// of them sat on a floor plan for a whole evening without anyone noticing.
+  bool get needsAttention => isProblem || isUnconfirmed;
+
+  /// "Pošalji ponovno" may send it.
+  ///
+  /// Includes [isUnconfirmed]: the spec's own outcome table says an order
+  /// with no answer in 10 s "ostaje za ponovno slanje", and a repeat carries
+  /// the same `msg_id`, which the kasa recognises — so it can never print
+  /// twice. Withholding the button is what left a venue with seven orders
+  /// nobody could clear.
+  ///
+  /// Only [MqttOutboxStatus.sending] is excluded: its 10 s are not up yet
+  /// (§11.5, rule 4).
+  bool get canResend => needsAttention;
+
+  /// "Obriši" may remove it. Same set as [canResend] — anything the waiter
+  /// can send again, they can also give up on.
+  bool get canDelete => canResend;
 
   /// The kasa may have printed it without us knowing — deleting it doesn't
   /// undo that, so the waiter is warned first.
@@ -268,15 +298,23 @@ class MqttOutboxNotifier extends StateNotifier<List<MqttOutboxOrder>> {
   MqttOutboxNotifier(
     this._prefs,
     this._transfers,
+    this._silence,
     this._canSend,
     this._onNotActivated,
     this._autoResend,
   ) : super(const []) {
     state = _load();
+    // Yesterday's leftovers go before anything is drawn, so the waiter opens
+    // the app on a clean list rather than on orders they can no longer do
+    // anything about.
+    _pruneExpired();
     // Confirmations that arrive outside a send's own wait still settle their
     // order (§11.6) — see [_onReply].
     _replies = MqttService.instance.orderReplies.listen(_onReply);
-    _autoTimer = Timer.periodic(autoResendInterval, (_) => autoResendNow());
+    _autoTimer = Timer.periodic(autoResendInterval, (_) {
+      _pruneExpired();
+      autoResendNow();
+    });
   }
 
   /// How often "Automatsko ponovno slanje" looks for orders to send again.
@@ -295,6 +333,10 @@ class MqttOutboxNotifier extends StateNotifier<List<MqttOutboxOrder>> {
 
   final SharedPreferences _prefs;
   final MqttPendingTransfersNotifier _transfers;
+
+  /// Counts orders the kasa doesn't answer, so the waiter can be warned before
+  /// sending into silence.
+  final MqttKasaSilenceNotifier _silence;
 
   /// Whether sending is open right now (§11.4).
   final bool Function() _canSend;
@@ -539,6 +581,7 @@ class MqttOutboxNotifier extends StateNotifier<List<MqttOutboxOrder>> {
         debugPrint(
           'MQTT ▸ outbox: ${order.msgId} printed (stol ${order.stol})',
         );
+        _silence.answered();
         _removeIds({msgId});
         _transfers.watchTable(
           order.stol,
@@ -550,16 +593,27 @@ class MqttOutboxNotifier extends StateNotifier<List<MqttOutboxOrder>> {
         );
         return;
       case MqttSendOutcome.nijePotvrdena:
+        // A resend of an order that was already unconfirmed is the SAME order
+        // going unanswered again — it must not count twice, or one stuck order
+        // sent again every 30 s ("Automatsko ponovno slanje") would soon claim
+        // the last seven orders were lost.
+        if (!order.isUnconfirmed) _silence.unanswered();
         status = MqttOutboxStatus.unconfirmed;
+      // Never left the phone — says nothing about whether the kasa listens,
+      // so the silence count is left alone (the locked-sending bar covers it).
       case MqttSendOutcome.nijePoslana:
       case MqttSendOutcome.nijeIsporucena:
       case MqttSendOutcome.neispravno:
         status = MqttOutboxStatus.notSent;
+      // The rest are the kasa talking, even when it says no.
       case MqttSendOutcome.zastarjela:
+        _silence.answered();
         status = MqttOutboxStatus.stale;
       case MqttSendOutcome.odbijeno:
+        _silence.answered();
         status = MqttOutboxStatus.refused;
       case MqttSendOutcome.nijeAktiviran:
+        _silence.answered();
         // Only for this device's current code: an answer about an order sent
         // under an earlier code must not wipe the new one.
         if (order.uredaj == MqttService.instance.clientId) _onNotActivated();
@@ -589,6 +643,32 @@ class MqttOutboxNotifier extends StateNotifier<List<MqttOutboxOrder>> {
     if (_find(msgId) == null) return;
     state = [for (final o in state) o.msgId == msgId ? change(o) : o];
     _save();
+  }
+
+  /// Drops orders older than [mqttKeepUnsentFor], so every shift starts on an
+  /// empty list.
+  ///
+  /// Nothing is lost by it: the kasa refuses any order more than ten minutes
+  /// old, so a leftover could never be delivered as it stands, and an
+  /// unconfirmed one from yesterday was printed long ago or never will be.
+  /// Keeping them is the actual risk — a day-old "Zastarjela" sent again goes
+  /// out as a NEW order and would put yesterday's items on today's bill.
+  ///
+  /// An order being sent right now is never touched, however old it looks.
+  void _pruneExpired() {
+    final expired = {
+      for (final o in state)
+        if (!_inFlight.contains(o.msgId) && mqttIsExpired(o.createdAt)) o.msgId,
+    };
+    if (expired.isEmpty) return;
+    // Worth a breadcrumb: "my orders disappeared" is otherwise impossible to
+    // tell apart from "my orders were never saved".
+    final note =
+        'outbox: obrisano ${expired.length} narudžbi starijih od '
+        '${mqttKeepUnsentFor.inHours} h';
+    debugPrint('MQTT ▸ $note');
+    CrashReporting.log(note);
+    _removeIds(expired);
   }
 
   void _removeIds(Set<String> msgIds) {
@@ -630,6 +710,7 @@ final mqttOutboxProvider =
       final notifier = MqttOutboxNotifier(
         ref.watch(sharedPreferencesProvider),
         ref.read(mqttPendingTransfersProvider.notifier),
+        ref.read(mqttKasaSilenceProvider.notifier),
         () => ref.read(mqttSendGateProvider).isOpen,
         () => ref.read(mqttConfigProvider.notifier).forgetDevice(),
         () => ref.read(settingsProvider).shouldAutoResend,
@@ -640,11 +721,11 @@ final mqttOutboxProvider =
       ref.listen<MqttSendGate>(mqttSendGateProvider, (prev, next) {
         if (next.isOpen && prev?.isOpen != true) notifier.autoResendNow();
       });
-      ref.listen<bool>(
-        settingsProvider.select((s) => s.shouldAutoResend),
-        (prev, next) {
-          if (next) notifier.autoResendNow();
-        },
-      );
+      ref.listen<bool>(settingsProvider.select((s) => s.shouldAutoResend), (
+        prev,
+        next,
+      ) {
+        if (next) notifier.autoResendNow();
+      });
       return notifier;
     });

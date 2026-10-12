@@ -17,6 +17,7 @@ import '../models/mqtt_menu.dart';
 import '../models/mqtt_table_lock.dart';
 import '../models/mqtt_tables.dart';
 import '../state/mqtt_cart.dart';
+import '../state/mqtt_kasa_silence_provider.dart';
 import '../state/mqtt_menu_view_provider.dart';
 import '../state/mqtt_orders_provider.dart';
 import '../state/mqtt_outbox_provider.dart';
@@ -26,6 +27,7 @@ import '../state/mqtt_table_contents.dart';
 import '../state/mqtt_table_lock_keeper.dart';
 import '../state/mqtt_tables_provider.dart';
 import 'mqtt_existing_items.dart';
+import 'mqtt_kasa_silent_bar.dart';
 import 'mqtt_napomene.dart';
 import 'mqtt_order_details_screen.dart';
 import 'mqtt_qty_pad.dart';
@@ -388,6 +390,15 @@ class _MqttOrderScreenState extends ConsumerState<MqttOrderScreen> {
       );
       return false;
     }
+    // The kasa has stopped confirming: ask once, then send anyway if the
+    // waiter says so. Deliberately a warning and NOT a block — the order will
+    // almost certainly be printed (that is what the venue's seven unconfirmed
+    // orders turned out to be), and a phone that refuses to send leaves the
+    // waiter with no way to serve the table at all.
+    if (ref.read(mqttKasaSilentProvider)) {
+      final goOn = await _confirmSendWithoutConfirmations();
+      if (!goOn || !mounted) return false;
+    }
 
     _freezing = true;
     final frozen = _outboxNotifier.freeze(
@@ -459,6 +470,38 @@ class _MqttOrderScreenState extends ConsumerState<MqttOrderScreen> {
   }
 
   Future<void> _send() => _sendOrder();
+
+  /// Asks before sending while the kasa isn't answering. True to send anyway.
+  ///
+  /// The wording says exactly what will happen — the order goes out, it will
+  /// very probably be printed, and the phone won't be able to show it as
+  /// confirmed — so the waiter can decide instead of guessing. The default
+  /// (the filled button) is to send: serving the table is the job.
+  Future<bool> _confirmSendWithoutConfirmations() async {
+    final n = ref.read(mqttKasaSilenceProvider);
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Kasa ne potvrđuje narudžbe'),
+        content: Text(
+          '${mqttKasaSilenceText(n)}. Narudžba će vjerojatno biti ispisana, '
+          'ali aplikacija to neće moći potvrditi. Provjerite na kasi.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Odustani'),
+          ),
+          FilledButton.icon(
+            onPressed: () => Navigator.pop(ctx, true),
+            icon: const Icon(Icons.send, size: 18),
+            label: const Text('Svejedno pošalji'),
+          ),
+        ],
+      ),
+    );
+    return ok == true;
+  }
 
   /// A send problem the waiter must see: a dialog, not a snackbar — it has to
   /// be acknowledged, and snackbars don't show on every device.
@@ -669,6 +712,9 @@ class _MqttOrderScreenState extends ConsumerState<MqttOrderScreen> {
     final hasItems = _cart.isNotEmpty;
     // §11.4: whether the kasa takes orders right now, and why not.
     final sendGate = ref.watch(mqttSendGateProvider);
+    // Orders in a row the kasa hasn't answered — the waiter is told before
+    // they key in the next round, not after.
+    final silence = ref.watch(mqttKasaSilenceProvider);
     final selectedId =
         _selectedGroupId ?? (groups.isEmpty ? null : groups.first.id);
     final articles = _visibleArticles(groups);
@@ -686,8 +732,15 @@ class _MqttOrderScreenState extends ConsumerState<MqttOrderScreen> {
         child: Scaffold(
           appBar: AppBar(
             title: Text(title),
-            // Why sending is locked, right under the title — only while it is.
-            bottom: sendGate.isOpen ? null : MqttSendGateBar(gate: sendGate),
+            // Right under the title, and only when there is something to say:
+            // why sending is locked, or — when it isn't — that the kasa has
+            // stopped confirming. The lock wins: it is the reason, this is
+            // only the symptom.
+            bottom: !sendGate.isOpen
+                ? MqttSendGateBar(gate: sendGate)
+                : (silence >= MqttKasaSilenceNotifier.threshold
+                      ? MqttKasaSilentBar(count: silence)
+                      : null),
           ),
           body: groups.isEmpty
               ? const _EmptyMenu()

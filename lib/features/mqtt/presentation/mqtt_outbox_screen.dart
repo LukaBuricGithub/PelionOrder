@@ -23,10 +23,18 @@ import 'mqtt_qty_pad.dart' show formatQtyWithUnit;
 ///
 /// * blue — items added on this phone and not sent yet: they can be opened
 ///   ("Otvori stol") or deleted;
-/// * amber — with the broker, waiting for the kasa (also "Nije potvrđena"):
-///   nothing to do, they can be neither sent again nor deleted;
-/// * red — didn't get through (not sent, refused, too old): "Pošalji
-///   ponovno" (per table, or all at once from the bottom bar) or delete.
+/// * amber — inside the 10-second wait ("Čeka potvrdu"): no buttons, it is
+///   over in seconds;
+/// * red — the waiter has to settle it: it didn't get through (not sent,
+///   refused, too old) or it was never confirmed. "Pošalji ponovno" (per
+///   table, or all at once from the bottom bar) or delete.
+///
+/// "Nije potvrđena" used to be amber and had no buttons at all, on the
+/// reasoning that the broker would deliver it eventually. It doesn't always:
+/// a venue ended up with seven such orders — all of them printed — that
+/// nobody could clear from any phone. A resend carries the same msg_id, so
+/// the kasa can never print one twice, and deleting only clears this phone,
+/// so both buttons are now offered whatever the order's age.
 ///
 /// A waiter sees their own; pravo 008 sees all.
 class MqttOutboxScreen extends ConsumerWidget {
@@ -77,8 +85,7 @@ class MqttOutboxScreen extends ConsumerWidget {
         if (!byTable.containsKey(stol)) stol,
     ];
 
-    // Every red order the waiter could send again right now, across all
-    // tables.
+    // Every order the waiter could send again right now, across all tables.
     final resendable = [
       for (final o in orders)
         if (o.canResend) o,
@@ -117,7 +124,7 @@ class MqttOutboxScreen extends ConsumerWidget {
                     onDelete: () => _confirmDelete(context, ref, stol, [
                       for (final o
                           in byTable[stol] ?? const <MqttOutboxOrder>[])
-                        if (o.isProblem) o,
+                        if (o.canDelete) o,
                     ]),
                     onOpenTable: () =>
                         _openTable(context, stol, tableNames[stol] ?? ''),
@@ -287,7 +294,8 @@ class MqttOutboxScreen extends ConsumerWidget {
     ref.read(mqttOrdersProvider.notifier).clear(stol);
   }
 
-  /// Deletes the table's red orders — amber ones are never deleted here.
+  /// Deletes the table's red orders — one still inside its 10-second wait is
+  /// never deleted here.
   Future<void> _confirmDelete(
     BuildContext context,
     WidgetRef ref,
@@ -313,9 +321,13 @@ class MqttOutboxScreen extends ConsumerWidget {
           title: Text('Obrisati narudžbe za stol $stol?'),
           content: Text(
             risky
-                ? 'Glavni program je možda već ispisao neku od ovih '
-                      'narudžbi. Brisanje je ne poništava, provjerite prije '
-                      'brisanja.'
+                // Says plainly what the waiter should expect: the order is
+                // almost certainly on a bill already, so deleting it is
+                // housekeeping on this phone — not a cancellation, and not a
+                // reason to key the items in again.
+                ? 'Glavni program ih je vjerojatno već zaprimio i ispisao. '
+                      'Brisanje ih uklanja samo s ovog uređaja — ne poništava '
+                      'ih i ne treba ih unositi ponovno.'
                 : 'Glavni program ove narudžbe nije zaprimio. Stavke će biti '
                       'trajno '
                       'obrisane s uređaja.',
@@ -458,7 +470,7 @@ class _Intro extends StatelessWidget {
           Expanded(
             child: Text(
               open
-                  ? 'Plavo: niste poslali. Narančasto: čeka glavni program. '
+                  ? 'Plavo: niste poslali. Narančasto: upravo se šalje. '
                         'Crveno: pošaljite ponovno ili obrišite.'
                   : '${gate.message}, slanje je zaključano. Crvene narudžbe '
                         'možete poslati ponovno kad se slanje otključa.',
@@ -515,9 +527,9 @@ class _TableCard extends StatelessWidget {
       for (final o in orders) names[o.cuser] ?? o.cuser,
       if (draftCuser != null) names[draftCuser] ?? draftCuser,
     }.join(', ');
-    // Only red orders can be sent again or deleted; amber ones wait for the
-    // kasa and get no buttons at all.
-    final hasProblems = orders.any((o) => o.isProblem);
+    // Only an order still inside its 10-second wait gets no buttons; every
+    // red one can be sent again or deleted.
+    final canAct = orders.any((o) => o.canResend);
 
     return Card(
       margin: const EdgeInsets.only(bottom: 12),
@@ -554,7 +566,7 @@ class _TableCard extends StatelessWidget {
                 // hit area filling the card's top-right corner — easy to hit,
                 // like the ✕ on a cart line in Stol X — and well away from
                 // "Pošalji ponovno".
-                if (hasProblems)
+                if (canAct)
                   Semantics(
                     button: true,
                     label: 'Obriši narudžbe za stol $stol',
@@ -596,7 +608,7 @@ class _TableCard extends StatelessWidget {
                       onOpen: onOpenTable,
                       onDelete: onDeleteDraft,
                     ),
-                  if (hasProblems)
+                  if (canAct)
                     Padding(
                       padding: const EdgeInsets.only(top: 10, bottom: 4),
                       child: Align(
@@ -699,7 +711,24 @@ class _OrderBlock extends StatelessWidget {
               ),
             ],
           ),
-          if (order.reason.isNotEmpty)
+          // "Nije potvrđena" carries no reason from the kasa — the kasa never
+          // said anything — so the block explains itself. Without this the tag
+          // alone left waiters with nothing to go on.
+          if (order.isUnconfirmed)
+            Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: Text(
+                'Glavni program ju je vjerojatno zaprimio i ispisao, ali '
+                'potvrda nije stigla do uređaja. Provjerite na kasi, pa je '
+                'pošaljite ponovno ili obrišite.',
+                style: TextStyle(
+                  fontSize: 13,
+                  height: 1.3,
+                  color: scheme.onSurface,
+                ),
+              ),
+            )
+          else if (order.reason.isNotEmpty)
             Padding(
               padding: const EdgeInsets.only(top: 4),
               child: Text(

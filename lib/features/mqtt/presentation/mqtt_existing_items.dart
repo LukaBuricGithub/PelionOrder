@@ -71,8 +71,13 @@ enum MqttExistingStatus {
     'Čeka potvrdu',
     Icons.hourglass_top_rounded,
   ),
+  // Red, not amber: the ten seconds are over and nothing came back. The order
+  // was very probably printed, but the waiter has to settle it (check the
+  // kasa, then send again or delete). While it shared amber with "Čeka
+  // potvrdu" it read as a healthy order sent a moment ago — which is how seven
+  // dead orders sat on a floor plan for a whole evening.
   MqttExistingStatus.nepotvrdena => (
-    dark ? const Color(0xFFF4A83A) : const Color(0xFFE8890C),
+    dark ? const Color(0xFFFF7B72) : const Color(0xFFB03A2E),
     'Nije potvrđena',
     Icons.help_outline,
   ),

@@ -10,20 +10,23 @@ import '../../shared/presentation/bottom_sheet_safe_area.dart';
 import '../data/mqtt_service.dart';
 import '../models/mqtt_menu.dart';
 import '../state/mqtt_cart.dart';
+import '../state/mqtt_kasa_silence_provider.dart';
 import '../state/mqtt_outbox_provider.dart';
 import '../state/mqtt_pending_transfers_provider.dart';
 import '../state/mqtt_send_gate_provider.dart';
 import '../state/mqtt_table_contents.dart';
 import '../state/mqtt_tables_provider.dart';
 import 'mqtt_existing_items.dart';
+import 'mqtt_kasa_silent_bar.dart';
 import 'mqtt_napomene.dart';
 import 'mqtt_qty_pad.dart';
 import 'mqtt_send_gate_bar.dart';
 
 double _screenScale(BuildContext context) {
   final size = MediaQuery.sizeOf(context);
-  final diagonal =
-      math.sqrt(size.width * size.width + size.height * size.height);
+  final diagonal = math.sqrt(
+    size.width * size.width + size.height * size.height,
+  );
   return (diagonal / 928.0).clamp(0.9, 1.4);
 }
 
@@ -210,8 +213,7 @@ class _MqttOrderDetailsScreenState
         clipBehavior: Clip.antiAlias,
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(12 * s),
-          side:
-              BorderSide(color: scheme.outlineVariant.withValues(alpha: 0.5)),
+          side: BorderSide(color: scheme.outlineVariant.withValues(alpha: 0.5)),
         ),
         child: child,
       ),
@@ -225,15 +227,15 @@ class _MqttOrderDetailsScreenState
     final titleTop = broj == null
         ? 'Narudžba'
         : (naziv != null && naziv.isNotEmpty
-            ? 'Stol $broj · $naziv'
-            : 'Stol $broj');
+              ? 'Stol $broj · $naziv'
+              : 'Stol $broj');
 
     // Watched here rather than inside the builder below: travelling lines come
     // from a provider, and a provider must be read in this widget's own build.
     final inTransit = broj == null
         ? const <MqttInTransitOrder>[]
         : (ref.watch(mqttPendingTransfersProvider)[broj] ??
-            const <MqttInTransitOrder>[]);
+              const <MqttInTransitOrder>[]);
     // The kasa's summary of this table from stolovi_stanje — already on the
     // device, so Ukupno and the placeholder rows are right before the first
     // query answer arrives.
@@ -241,6 +243,9 @@ class _MqttOrderDetailsScreenState
     final outbox = ref.watch(mqttOutboxProvider);
     // §11.4: whether the kasa takes orders right now, and why not.
     final sendGate = ref.watch(mqttSendGateProvider);
+    // Orders in a row the kasa hasn't answered — the same strip as on Stol X,
+    // because Pošalji is on this screen too.
+    final silence = ref.watch(mqttKasaSilenceProvider);
     final contents = widget.contents?.call();
 
     return MediaQuery(
@@ -284,7 +289,8 @@ class _MqttOrderDetailsScreenState
           // Waiting for the table's order: a short loader in place of the
           // list, exactly as on Stol X. The lines about to be sent wait behind
           // it and appear together with the order.
-          final waiting = !_landed &&
+          final waiting =
+              !_landed &&
               existing.rows.isEmpty &&
               existing.error == null &&
               (existing.awaiting ||
@@ -297,7 +303,8 @@ class _MqttOrderDetailsScreenState
               !waiting &&
               _loaderSince != null &&
               _loaderTimer == null) {
-            final left = MqttExistingLoader.minVisible -
+            final left =
+                MqttExistingLoader.minVisible -
                 DateTime.now().difference(_loaderSince!);
             if (left > Duration.zero) {
               _holdingLoader = true;
@@ -400,149 +407,163 @@ class _MqttOrderDetailsScreenState
             // answers, so it must not change underneath it.
             ignoring: _confirmed || _sending,
             child: Scaffold(
-            appBar: AppBar(
-              titleSpacing: 0,
-              // Why sending is locked, right under the title — only while it is.
-              bottom:
-                  sendGate.isOpen ? null : MqttSendGateBar(gate: sendGate),
-              title: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(
-                    titleTop,
-                    style: Theme.of(context).appBarTheme.titleTextStyle ??
-                        Theme.of(context).textTheme.titleLarge,
-                  ),
-                  Text(
-                    _reordering ? 'Presloži stavke' : 'Detalji narudžbe',
-                    style: TextStyle(
-                      fontSize: 13.5,
-                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+              appBar: AppBar(
+                titleSpacing: 0,
+                // Why sending is locked, right under the title — only while it
+                // is; otherwise, when the kasa has stopped confirming, that.
+                bottom: !sendGate.isOpen
+                    ? MqttSendGateBar(gate: sendGate)
+                    : (silence >= MqttKasaSilenceNotifier.threshold
+                          ? MqttKasaSilentBar(count: silence)
+                          : null),
+                title: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      titleTop,
+                      style:
+                          Theme.of(context).appBarTheme.titleTextStyle ??
+                          Theme.of(context).textTheme.titleLarge,
                     ),
-                  ),
+                    Text(
+                      _reordering ? 'Presloži stavke' : 'Detalji narudžbe',
+                      style: TextStyle(
+                        fontSize: 13.5,
+                        color: Theme.of(context).colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                  ],
+                ),
+                actions: [
+                  if (_reordering)
+                    TextButton.icon(
+                      onPressed: () => setState(() => _reordering = false),
+                      icon: const Icon(Icons.check),
+                      label: const Text('Gotovo'),
+                    )
+                  else ...[
+                    // Nothing to reorder with a single line.
+                    if (lines.length > 1)
+                      IconButton(
+                        icon: const Icon(Icons.swap_vert),
+                        tooltip: 'Presloži stavke',
+                        onPressed: () => setState(() => _reordering = true),
+                      ),
+                    if (lines.isNotEmpty)
+                      IconButton(
+                        icon: Icon(
+                          Icons.delete_sweep_outlined,
+                          color: Theme.of(context).colorScheme.error,
+                        ),
+                        tooltip: 'Isprazni narudžbu',
+                        onPressed: () => _confirmClear(context),
+                      ),
+                  ],
                 ],
               ),
-              actions: [
-                if (_reordering)
-                  TextButton.icon(
-                    onPressed: () => setState(() => _reordering = false),
-                    icon: const Icon(Icons.check),
-                    label: const Text('Gotovo'),
-                  )
-                else ...[
-                  // Nothing to reorder with a single line.
-                  if (lines.length > 1)
-                    IconButton(
-                      icon: const Icon(Icons.swap_vert),
-                      tooltip: 'Presloži stavke',
-                      onPressed: () => setState(() => _reordering = true),
-                    ),
-                  if (lines.isNotEmpty)
-                    IconButton(
-                      icon: Icon(Icons.delete_sweep_outlined,
-                          color: Theme.of(context).colorScheme.error),
-                      tooltip: 'Isprazni narudžbu',
-                      onPressed: () => _confirmClear(context),
-                    ),
-                ],
-              ],
-            ),
-            body: Column(
-              children: [
-                Expanded(
-                  child: _reordering
-                      ? ReorderableListView.builder(
-                          padding: const EdgeInsets.fromLTRB(12, 12, 12, 8),
-                          // The handle drags at once; the rest of a row after a
-                          // long press — so a plain vertical swipe on a row
-                          // still scrolls a long order.
-                          buildDefaultDragHandles: false,
-                          itemCount: lines.length,
-                          onReorderStart: (_) => HapticFeedback.selectionClick(),
-                          onReorder: cart.moveLine,
-                          // The lifted row keeps its own rounded shape: the
-                          // default lift is a plain rectangle that also covers
-                          // the gap under the row.
-                          proxyDecorator: (child, index, animation) =>
-                              _ReorderProxy(animation: animation, child: child),
-                          itemBuilder: (context, i) {
-                            final line = lines[i];
-                            return _ReorderTile(
-                              key: ObjectKey(line),
-                              index: i,
-                              name: _name(line.code),
-                              qty: line.qty,
-                              lineTotal:
-                                  money.format(_price(line.code) * line.qty),
-                            );
-                          },
-                        )
-                      : showLoader
-                      ? MqttExistingLoader(scale: s)
-                      // Hidden at once while it is being placed at its end,
-                      // then faded in there — the order appears already
-                      // scrolled to its last line.
-                      : AnimatedOpacity(
-                          opacity: _landing ? 0 : 1,
-                          duration: _landing
-                              ? Duration.zero
-                              : const Duration(milliseconds: 160),
-                          curve: Curves.easeOut,
-                          child: ListView.builder(
-                            controller: _scroll,
+              body: Column(
+                children: [
+                  Expanded(
+                    child: _reordering
+                        ? ReorderableListView.builder(
                             padding: const EdgeInsets.fromLTRB(12, 12, 12, 8),
-                            itemCount:
-                                existingWidgets.length + lines.length + 1,
-                            itemBuilder: (context, index) {
-                              // Existing order first, read-only.
-                              if (index < existingWidgets.length) {
-                                return existingWidgets[index];
-                              }
-                              final i = index - existingWidgets.length;
-                              if (i == lines.length) {
-                                return _AddItemButton(
-                                  onTap: () => Navigator.of(context).pop(),
-                                );
-                              }
+                            // The handle drags at once; the rest of a row after a
+                            // long press — so a plain vertical swipe on a row
+                            // still scrolls a long order.
+                            buildDefaultDragHandles: false,
+                            itemCount: lines.length,
+                            onReorderStart: (_) =>
+                                HapticFeedback.selectionClick(),
+                            onReorder: cart.moveLine,
+                            // The lifted row keeps its own rounded shape: the
+                            // default lift is a plain rectangle that also covers
+                            // the gap under the row.
+                            proxyDecorator: (child, index, animation) =>
+                                _ReorderProxy(
+                                  animation: animation,
+                                  child: child,
+                                ),
+                            itemBuilder: (context, i) {
                               final line = lines[i];
-                              return _LineTile(
-                                // Keyed on the line OBJECT, not the index: the
-                                // tile owns its expanded state, so an index
-                                // key would leave the wrong row open after a
-                                // move or a delete.
+                              return _ReorderTile(
                                 key: ObjectKey(line),
                                 index: i,
-                                line: line,
-                                cart: cart,
                                 name: _name(line.code),
-                                unit: byCode[line.code]?.unit ?? '',
-                                lineTotal:
-                                    money.format(_price(line.code) * line.qty),
-                                available: _remarksFor(line.code),
+                                qty: line.qty,
+                                lineTotal: money.format(
+                                  _price(line.code) * line.qty,
+                                ),
                               );
                             },
+                          )
+                        : showLoader
+                        ? MqttExistingLoader(scale: s)
+                        // Hidden at once while it is being placed at its end,
+                        // then faded in there — the order appears already
+                        // scrolled to its last line.
+                        : AnimatedOpacity(
+                            opacity: _landing ? 0 : 1,
+                            duration: _landing
+                                ? Duration.zero
+                                : const Duration(milliseconds: 160),
+                            curve: Curves.easeOut,
+                            child: ListView.builder(
+                              controller: _scroll,
+                              padding: const EdgeInsets.fromLTRB(12, 12, 12, 8),
+                              itemCount:
+                                  existingWidgets.length + lines.length + 1,
+                              itemBuilder: (context, index) {
+                                // Existing order first, read-only.
+                                if (index < existingWidgets.length) {
+                                  return existingWidgets[index];
+                                }
+                                final i = index - existingWidgets.length;
+                                if (i == lines.length) {
+                                  return _AddItemButton(
+                                    onTap: () => Navigator.of(context).pop(),
+                                  );
+                                }
+                                final line = lines[i];
+                                return _LineTile(
+                                  // Keyed on the line OBJECT, not the index: the
+                                  // tile owns its expanded state, so an index
+                                  // key would leave the wrong row open after a
+                                  // move or a delete.
+                                  key: ObjectKey(line),
+                                  index: i,
+                                  line: line,
+                                  cart: cart,
+                                  name: _name(line.code),
+                                  unit: byCode[line.code]?.unit ?? '',
+                                  lineTotal: money.format(
+                                    _price(line.code) * line.qty,
+                                  ),
+                                  available: _remarksFor(line.code),
+                                );
+                              },
+                            ),
                           ),
-                        ),
-                ),
-                if (_reordering)
-                  _ReorderDoneBar(
-                    total: money.format(total),
-                    onDone: () => setState(() => _reordering = false),
-                  )
-                else
-                  _BottomBar(
-                    total: money.format(total),
-                    sending: _sending,
-                    canSend: lines.isNotEmpty &&
-                        !_sending &&
-                        widget.onSend != null &&
-                        sendGate.isOpen,
-                    onSend: _send,
-                    confirmed: _confirmed,
                   ),
-              ],
-            ),
+                  if (_reordering)
+                    _ReorderDoneBar(
+                      total: money.format(total),
+                      onDone: () => setState(() => _reordering = false),
+                    )
+                  else
+                    _BottomBar(
+                      total: money.format(total),
+                      sending: _sending,
+                      canSend:
+                          lines.isNotEmpty &&
+                          !_sending &&
+                          widget.onSend != null &&
+                          sendGate.isOpen,
+                      onSend: _send,
+                      confirmed: _confirmed,
+                    ),
+                ],
+              ),
             ),
           );
           // The first frame showing the ✓ is kept and returned by every later
@@ -632,8 +653,7 @@ class _LineTileState extends State<_LineTile> {
         clipBehavior: Clip.antiAlias,
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(12 * s),
-          side:
-              BorderSide(color: scheme.outlineVariant.withValues(alpha: 0.5)),
+          side: BorderSide(color: scheme.outlineVariant.withValues(alpha: 0.5)),
         ),
         child: Column(
           children: [
@@ -654,7 +674,9 @@ class _LineTileState extends State<_LineTile> {
                             maxLines: 2,
                             overflow: TextOverflow.ellipsis,
                             style: TextStyle(
-                                fontSize: 15 * s, fontWeight: FontWeight.w600),
+                              fontSize: 15 * s,
+                              fontWeight: FontWeight.w600,
+                            ),
                           ),
                         ),
                       ),
@@ -668,7 +690,9 @@ class _LineTileState extends State<_LineTile> {
                             textAlign: TextAlign.right,
                             maxLines: 1,
                             style: TextStyle(
-                                fontSize: 14 * s, fontWeight: FontWeight.w700),
+                              fontSize: 14 * s,
+                              fontWeight: FontWeight.w700,
+                            ),
                           ),
                         ),
                       ),
@@ -690,8 +714,11 @@ class _LineTileState extends State<_LineTile> {
                         icon: AnimatedRotation(
                           turns: _expanded ? 0.5 : 0,
                           duration: const Duration(milliseconds: 180),
-                          child: Icon(Icons.expand_more,
-                              size: 24 * s, color: scheme.onSurfaceVariant),
+                          child: Icon(
+                            Icons.expand_more,
+                            size: 24 * s,
+                            color: scheme.onSurfaceVariant,
+                          ),
                         ),
                       ),
                     ],
@@ -714,14 +741,18 @@ class _LineTileState extends State<_LineTile> {
                               for (final c in line.remarkCodes)
                                 MqttNoteChip(
                                   label: _nameFor(c),
-                                  onRemove: () => widget.cart
-                                      .toggleRemarkCode(widget.index, c),
+                                  onRemove: () => widget.cart.toggleRemarkCode(
+                                    widget.index,
+                                    c,
+                                  ),
                                 ),
                               for (final n in line.customNotes)
                                 MqttNoteChip(
                                   label: n,
-                                  onRemove: () => widget.cart
-                                      .removeCustomNote(widget.index, n),
+                                  onRemove: () => widget.cart.removeCustomNote(
+                                    widget.index,
+                                    n,
+                                  ),
                                 ),
                             ],
                             onOpen: () => _editRemarks(context),
@@ -798,9 +829,7 @@ class _AddItemButton extends StatelessWidget {
         onPressed: onTap,
         icon: const Icon(Icons.add, size: 20),
         label: const Text('Dodaj stavku'),
-        style: OutlinedButton.styleFrom(
-          minimumSize: const Size.fromHeight(46),
-        ),
+        style: OutlinedButton.styleFrom(minimumSize: const Size.fromHeight(46)),
       ),
     );
   }
@@ -890,9 +919,7 @@ class _ReorderTile extends StatelessWidget {
         clipBehavior: Clip.antiAlias,
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(12 * s),
-          side: BorderSide(
-            color: scheme.outlineVariant.withValues(alpha: 0.5),
-          ),
+          side: BorderSide(color: scheme.outlineVariant.withValues(alpha: 0.5)),
         ),
         child: ReorderableDelayedDragStartListener(
           index: index,
@@ -988,20 +1015,32 @@ class _ReorderDoneBar extends StatelessWidget {
         ),
       ),
       child: Padding(
-        padding: EdgeInsets.fromLTRB(16 * s, 12 * s, 16 * s,
-            screenContentBottomPadding(context, extra: 12 * s)),
+        padding: EdgeInsets.fromLTRB(
+          16 * s,
+          12 * s,
+          16 * s,
+          screenContentBottomPadding(context, extra: 12 * s),
+        ),
         child: Row(
           children: [
             Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               mainAxisSize: MainAxisSize.min,
               children: [
-                Text('Ukupno',
-                    style: TextStyle(
-                        fontSize: 12 * s, color: scheme.onSurfaceVariant)),
-                Text(total,
-                    style: TextStyle(
-                        fontSize: 20 * s, fontWeight: FontWeight.w800)),
+                Text(
+                  'Ukupno',
+                  style: TextStyle(
+                    fontSize: 12 * s,
+                    color: scheme.onSurfaceVariant,
+                  ),
+                ),
+                Text(
+                  total,
+                  style: TextStyle(
+                    fontSize: 20 * s,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
               ],
             ),
             const Spacer(),
@@ -1049,20 +1088,32 @@ class _BottomBar extends StatelessWidget {
         ),
       ),
       child: Padding(
-        padding: EdgeInsets.fromLTRB(16 * s, 12 * s, 16 * s,
-            screenContentBottomPadding(context, extra: 12 * s)),
+        padding: EdgeInsets.fromLTRB(
+          16 * s,
+          12 * s,
+          16 * s,
+          screenContentBottomPadding(context, extra: 12 * s),
+        ),
         child: Row(
           children: [
             Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               mainAxisSize: MainAxisSize.min,
               children: [
-                Text('Ukupno',
-                    style: TextStyle(
-                        fontSize: 12 * s, color: scheme.onSurfaceVariant)),
-                Text(total,
-                    style: TextStyle(
-                        fontSize: 20 * s, fontWeight: FontWeight.w800)),
+                Text(
+                  'Ukupno',
+                  style: TextStyle(
+                    fontSize: 12 * s,
+                    color: scheme.onSurfaceVariant,
+                  ),
+                ),
+                Text(
+                  total,
+                  style: TextStyle(
+                    fontSize: 20 * s,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
               ],
             ),
             const Spacer(),
@@ -1084,7 +1135,9 @@ class _BottomBar extends StatelessWidget {
                         width: 18,
                         height: 18,
                         child: CircularProgressIndicator(
-                            strokeWidth: 2, color: sendFg),
+                          strokeWidth: 2,
+                          color: sendFg,
+                        ),
                       )
                     : Icon(
                         confirmed ? Icons.check : Icons.send,

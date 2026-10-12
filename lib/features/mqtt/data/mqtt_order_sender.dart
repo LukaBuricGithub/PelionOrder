@@ -24,8 +24,10 @@ String newQueryId() {
   final b = List<int>.generate(16, (_) => r.nextInt(256));
   b[6] = (b[6] & 0x0f) | 0x40; // version 4
   b[8] = (b[8] & 0x3f) | 0x80; // variant 1
-  String hex(int from, int to) =>
-      b.sublist(from, to).map((x) => x.toRadixString(16).padLeft(2, '0')).join();
+  String hex(int from, int to) => b
+      .sublist(from, to)
+      .map((x) => x.toRadixString(16).padLeft(2, '0'))
+      .join();
   return '${hex(0, 4)}-${hex(4, 6)}-${hex(6, 8)}-${hex(8, 10)}-${hex(10, 16)}';
 }
 
@@ -199,6 +201,11 @@ class MqttOrderSender {
           message: 'Nije poslana, poslužitelj nije potvrdio primitak.',
         );
       }
+      // The broker has it and the kasa owes us an answer. Registered with the
+      // service so that backgrounding the app does not drop the connection
+      // out from under that answer — it arrives 1–5 s later, and the waiter
+      // has usually pocketed the phone by then.
+      svc.awaitOrderReply(msgId);
       onPublished?.call();
       try {
         final reply = await completer.future.timeout(replyTimeout);
@@ -217,37 +224,37 @@ class MqttOrderSender {
   }
 
   MqttSendResult _invalid(String message) => MqttSendResult(
-        outcome: MqttSendOutcome.neispravno,
-        msgId: '',
-        message: message,
-      );
+    outcome: MqttSendOutcome.neispravno,
+    msgId: '',
+    message: message,
+  );
 
   /// What a confirmation means for the order, in the words of §11.6.
   MqttSendResult resultFromReply(MqttOrderReply r) {
     final (outcome, message) = switch (r.odbijeno) {
       null => (MqttSendOutcome.ok, 'Primljena'),
       MqttOrderReply.nijeUProdaji => (
-          MqttSendOutcome.odbijeno,
-          'Nije primljena, glavni program nije u blagajni.',
-        ),
+        MqttSendOutcome.odbijeno,
+        'Nije primljena, glavni program nije u blagajni.',
+      ),
       MqttOrderReply.greskaPisaca => (
-          MqttSendOutcome.odbijeno,
-          'Nije ispisana, provjeri pisač glavnog programa.',
-        ),
+        MqttSendOutcome.odbijeno,
+        'Nije ispisana, provjeri pisač glavnog programa.',
+      ),
       MqttOrderReply.zastarjela => (
-          MqttSendOutcome.zastarjela,
-          'Nije primljena, zastarjela. Pošalji ponovno; ako se ponovi odmah, '
-              'provjeri sat na uređaju.',
-        ),
+        MqttSendOutcome.zastarjela,
+        'Nije primljena, zastarjela. Pošalji ponovno; ako se ponovi odmah, '
+            'provjeri sat na uređaju.',
+      ),
       MqttOrderReply.stolZauzet => (
-          MqttSendOutcome.odbijeno,
-          'Nije primljena, stol je zauzet. Otvorite stol ponovno pa pošaljite '
-              'narudžbu.',
-        ),
+        MqttSendOutcome.odbijeno,
+        'Nije primljena, stol je zauzet. Otvorite stol ponovno pa pošaljite '
+            'narudžbu.',
+      ),
       MqttOrderReply.nijeAktiviran => (
-          MqttSendOutcome.nijeAktiviran,
-          'Pelion Order nije aktiviran, skeniraj kod u glavnom programu.',
-        ),
+        MqttSendOutcome.nijeAktiviran,
+        'Pelion Order nije aktiviran, skeniraj kod u glavnom programu.',
+      ),
       _ => (MqttSendOutcome.odbijeno, 'Nije primljena.'),
     };
     return MqttSendResult(

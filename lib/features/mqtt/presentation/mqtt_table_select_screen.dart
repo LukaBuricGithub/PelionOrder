@@ -242,9 +242,9 @@ class _MqttTableSelectScreenState extends ConsumerState<MqttTableSelectScreen> {
     // Pravo 008: may open a table held by another waiter.
     final canOpenAll = me?.allTablesOpenRight ?? false;
     // Tables with an order in "Neposlane narudžbe" this waiter may see — their
-    // own, or all with pravo 008 — and who placed it: those that didn't get
-    // through ("red"), and those with the broker, waiting for the kasa
-    // ("amber").
+    // own, or all with pravo 008 — and who placed it: those that need the
+    // waiter ("red": not sent, refused, too old, or never confirmed), and
+    // those still inside their 10-second wait ("amber").
     final visibleOutbox = [
       for (final o in ref.watch(mqttOutboxProvider))
         if (mqttOutboxVisibleTo(o, cuser: myCuser, allTables: canOpenAll)) o,
@@ -252,7 +252,10 @@ class _MqttTableSelectScreenState extends ConsumerState<MqttTableSelectScreen> {
     final unsentBy = <int, String>{};
     final sendingBy = <int, String>{};
     for (final o in visibleOutbox) {
-      (o.isProblem ? unsentBy : sendingBy).putIfAbsent(o.stol, () => o.cuser);
+      (o.needsAttention ? unsentBy : sendingBy).putIfAbsent(
+        o.stol,
+        () => o.cuser,
+      );
     }
     final summary = MqttOutboxSummary.of(visibleOutbox, drafts: drafts.length);
     // Tables the kasa has locked ("brave stolova") — a cashier inside a table,

@@ -3,8 +3,9 @@ import 'package:flutter/material.dart';
 import '../state/mqtt_outbox_provider.dart';
 
 /// The colours of "where is my order", the same on the floor plan, in the
-/// status bar and in "Neposlane narudžbe": blue — items not sent yet; amber — with
-/// the broker, waiting for the kasa; red — didn't get through.
+/// status bar and in "Neposlane narudžbe": blue — items not sent yet; amber —
+/// on its way, inside the 10-second wait; red — needs the waiter (didn't get
+/// through, or never confirmed).
 Color mqttDraftColor(bool dark) =>
     dark ? const Color(0xFF7FA6DA) : const Color(0xFF4A78B4);
 Color mqttAwaitingColor(bool dark) =>
@@ -17,8 +18,9 @@ Color mqttProblemColor(bool dark) =>
 class MqttOutboxSummary {
   const MqttOutboxSummary({
     this.drafts = 0,
-    this.awaiting = 0,
     this.notSent = 0,
+    this.sending = 0,
+    this.unconfirmed = 0,
     this.failed = 0,
   });
 
@@ -26,12 +28,13 @@ class MqttOutboxSummary {
     Iterable<MqttOutboxOrder> orders, {
     int drafts = 0,
   }) {
-    var awaiting = 0, notSent = 0, failed = 0;
+    var sending = 0, unconfirmed = 0, notSent = 0, failed = 0;
     for (final o in orders) {
       switch (o.status) {
         case MqttOutboxStatus.sending:
+          sending++;
         case MqttOutboxStatus.unconfirmed:
-          awaiting++;
+          unconfirmed++;
         case MqttOutboxStatus.notSent:
           notSent++;
         case MqttOutboxStatus.refused:
@@ -41,7 +44,8 @@ class MqttOutboxSummary {
     }
     return MqttOutboxSummary(
       drafts: drafts,
-      awaiting: awaiting,
+      sending: sending,
+      unconfirmed: unconfirmed,
       notSent: notSent,
       failed: failed,
     );
@@ -50,10 +54,17 @@ class MqttOutboxSummary {
   /// Tables with items added on this phone and not sent yet (blue).
   final int drafts;
 
-  /// With the broker, waiting for the kasa's confirmation — also "Nije
-  /// potvrđena": the broker hands it to the kasa when the kasa comes back
-  /// (amber).
-  final int awaiting;
+  /// On its way, inside the 10-second window (amber). Normal, and over in
+  /// seconds.
+  final int sending;
+
+  /// Published, and the kasa never answered (red).
+  ///
+  /// Deliberately NOT counted with [sending] any more. Shown together as one
+  /// amber "Čeka potvrdu", a dead order looked like a healthy one that had
+  /// been sent a moment ago — which is how seven unconfirmed orders sat on a
+  /// floor plan for a whole evening without anyone reacting.
+  final int unconfirmed;
 
   /// Didn't reach the broker — to be sent again (red).
   final int notSent;
@@ -62,7 +73,11 @@ class MqttOutboxSummary {
   final int failed;
 
   bool get isEmpty =>
-      drafts == 0 && awaiting == 0 && notSent == 0 && failed == 0;
+      drafts == 0 &&
+      sending == 0 &&
+      unconfirmed == 0 &&
+      notSent == 0 &&
+      failed == 0;
 }
 
 /// The strip above the zones on the floor plan: always there, always the same
@@ -95,9 +110,10 @@ class MqttOutboxStatusBar extends StatelessWidget {
     final amber = mqttAwaitingColor(dark);
     final red = mqttProblemColor(dark);
     // The bar takes the colour of the most serious thing it reports.
-    final accent = summary.notSent > 0 || summary.failed > 0
+    final accent =
+        summary.notSent > 0 || summary.failed > 0 || summary.unconfirmed > 0
         ? red
-        : summary.awaiting > 0
+        : summary.sending > 0
         ? amber
         : summary.drafts > 0
         ? blue
@@ -105,15 +121,20 @@ class MqttOutboxStatusBar extends StatelessWidget {
 
     // Most urgent first: if the line doesn't fit, what is off-screen is the
     // least urgent.
-    // Most urgent first: if the line doesn't fit, what is off-screen is the
-    // least urgent.
     final counts = <(IconData, Color, String, int)>[
       if (summary.failed > 0)
         (Icons.error_outline, red, 'S greškom', summary.failed),
       if (summary.notSent > 0)
         (Icons.cloud_off_outlined, red, 'Nije poslano', summary.notSent),
-      if (summary.awaiting > 0)
-        (Icons.hourglass_top_rounded, amber, 'Čeka potvrdu', summary.awaiting),
+      if (summary.unconfirmed > 0)
+        (
+          Icons.help_outline,
+          red,
+          'Nije potvrđeno · provjerite na kasi',
+          summary.unconfirmed,
+        ),
+      if (summary.sending > 0)
+        (Icons.hourglass_top_rounded, amber, 'Šalje se', summary.sending),
       if (summary.drafts > 0)
         (Icons.edit_note, blue, 'Neposlano', summary.drafts),
     ];
