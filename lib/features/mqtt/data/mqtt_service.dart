@@ -781,7 +781,25 @@ class MqttService {
         'MQTT ▸ connecting to ssl://${config.broker}:${config.port} '
         'as $clientId (user=${config.licenca})…',
       );
-      await client.connect(config.licenca, config.lozinka);
+      // Start connecting WITHOUT awaiting, then listen before the first byte
+      // can arrive. `MqttClient.connect` builds its SubscriptionsManager — and
+      // with it `updates` — synchronously, before it returns the future, so
+      // the stream already exists on the line below.
+      //
+      // WHY THIS ORDER MATTERS: `updates` is a BROADCAST stream, so whatever
+      // is added to it while nobody listens is thrown away. With our
+      // persistent session the broker sends everything it queued for us
+      // immediately after CONNACK, often in the very same socket read, and
+      // the library hands those messages on — and PUBACKs them, so the broker
+      // drops them for good — several microtasks before an awaited connect()
+      // would have returned. Awaiting first is how the kasa's confirmation
+      // could be lost on exactly the reconnect that was meant to deliver it:
+      // the broker's own diagnostics (12. 10. 2026) show 161 of 162 late
+      // confirmations were delivered to the phone, yet the orders stayed
+      // "Nije potvrđena".
+      final connecting = client.connect(config.licenca, config.lozinka);
+      _listen(client, current);
+      await connecting;
     } catch (e) {
       _trace('connect error: $e');
     }
@@ -808,22 +826,6 @@ class MqttService {
     _lastAttemptRefused = false;
     _spojen = attemptSpojen;
 
-    // Attach listeners AFTER connect: `client.updates` is null until the
-    // client has connected, so listening earlier silently no-ops and every
-    // inbound message (including the retained menu) is dropped.
-    client.updates?.listen((events) {
-      if (!current()) return;
-      for (final e in events) {
-        _onMessage(e);
-      }
-    });
-    client.published?.listen((m) {
-      debugPrint(
-        'MQTT ▸ published ACK id=${m.variableHeader?.messageIdentifier}'
-        ' topic=${m.variableHeader?.topicName}',
-      );
-    });
-
     // Subscribe with QoS 1 — the retained data flows to the listener above —
     // and announce "online" only once the broker has confirmed them.
     _expectSubscriptionConfirmations();
@@ -845,6 +847,26 @@ class MqttService {
     await _announceOnline(client);
     connected.value = isConnected;
     return 'MQTT: spojeno kao ${config.uredaj}.';
+  }
+
+  /// Attaches the inbound listeners to [client].
+  ///
+  /// Called the instant `connect()` has been started and never awaited first —
+  /// see the long note at the call site. [current] keeps a replaced or
+  /// shut-down client from touching the service's state.
+  void _listen(MqttServerClient client, bool Function() current) {
+    client.updates?.listen((events) {
+      if (!current()) return;
+      for (final e in events) {
+        _onMessage(e);
+      }
+    });
+    client.published?.listen((m) {
+      debugPrint(
+        'MQTT ▸ published ACK id=${m.variableHeader?.messageIdentifier}'
+        ' topic=${m.variableHeader?.topicName}',
+      );
+    });
   }
 
   /// Routes one inbound message by topic.
