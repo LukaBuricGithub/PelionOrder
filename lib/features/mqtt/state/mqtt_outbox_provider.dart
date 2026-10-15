@@ -755,6 +755,9 @@ class MqttOutboxNotifier extends StateNotifier<List<MqttOutboxOrder>> {
     final order = _find(msgId);
     if (order == null) return;
     final MqttOutboxStatus status;
+    // Set only when the order goes (back) into the queue — it restarts the
+    // half-hour it keeps trying for.
+    DateTime? queuedAt;
     switch (result.outcome) {
       case MqttSendOutcome.ok:
         debugPrint(
@@ -778,10 +781,22 @@ class MqttOutboxNotifier extends StateNotifier<List<MqttOutboxOrder>> {
         // the last seven orders were lost.
         if (!order.isUnconfirmed) _silence.unanswered();
         status = MqttOutboxStatus.unconfirmed;
-      // Never left the phone — says nothing about whether the kasa listens,
-      // so the silence count is left alone (the locked-sending bar covers it).
+      // Never reached the broker — so it goes into the queue and leaves by
+      // itself when the line is back, exactly like an order the waiter sent
+      // with the gate already shut. It says nothing about whether the kasa
+      // listens, so the silence count is left alone.
+      //
+      // WHY NOT "Nije poslana": the gate can read "open" while the network is
+      // already gone — on iOS for up to a minute and a half, since the system
+      // kills sockets silently. The waiter pressed send on a teal button and
+      // got a dead red order that nothing would ever retry. Queued, it simply
+      // goes when the connection does, and the half-hour cap still hands it
+      // back if that never happens.
       case MqttSendOutcome.nijePoslana:
       case MqttSendOutcome.nijeIsporucena:
+        status = MqttOutboxStatus.queued;
+        queuedAt = DateTime.now();
+      // Our own validation refused it: sending it again changes nothing.
       case MqttSendOutcome.neispravno:
         status = MqttOutboxStatus.notSent;
       // The rest are the kasa talking, even when it says no.
@@ -805,8 +820,11 @@ class MqttOutboxNotifier extends StateNotifier<List<MqttOutboxOrder>> {
       msgId,
       (o) => o.copyWith(
         status: status,
-        reason: result.message,
+        // A queued order carries no complaint: it hasn't failed, it is
+        // waiting, and the list explains that state itself.
+        reason: status == MqttOutboxStatus.queued ? '' : result.message,
         published: o.published || wentOut,
+        queuedAt: queuedAt,
       ),
     );
   }

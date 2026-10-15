@@ -546,10 +546,34 @@ class MqttService {
     try {
       id = _publish(_tNarudzbe, payload);
       if (id == null) return null;
-      return await delivered.future.timeout(timeout, onTimeout: () => false);
+      final ok = await delivered.future.timeout(
+        timeout,
+        onTimeout: () => false,
+      );
+      if (!ok) _connectionLooksDead(client);
+      return ok;
     } finally {
       await sub?.cancel();
     }
+  }
+
+  /// A QoS 1 publish the broker never acknowledged — so the socket is gone,
+  /// whatever the client still believes.
+  ///
+  /// This is the FASTEST honest signal we get on iOS, where the system tears
+  /// connections down and `MqttServerClient` goes on reporting `connected`
+  /// until a keepalive fails a minute and a half later. Until then the waiter
+  /// saw no red bar, a teal send button, and an order that failed the moment
+  /// they pressed it. Dropping the client here turns that into "nije spojen"
+  /// within the five seconds the publish waited.
+  void _connectionLooksDead(MqttServerClient client) {
+    if (!identical(_client, client)) return;
+    _trace('publish not acknowledged — treating the connection as dead');
+    _client = null;
+    connected.value = false;
+    _resetDevices();
+    _discard(client);
+    if (_running) _scheduleRetry();
   }
 
   /// Publishes a query payload to `kasa/{LICENCA}/upiti`. QoS 1, retain false —
@@ -599,12 +623,12 @@ class MqttService {
     await BackgroundTime.begin();
     try {
       await holdForOrderReplies();
-      // The waiter came back while we waited: the connection is wanted
-      // again, and onAppResumed has already put the service back in the
-      // running state. Tearing it down here would leave the app looking
-      // connected with no socket.
+      // The waiter came back while we waited. [onAppResumed] has already
+      // taken over — it drops whatever this connection was and opens a fresh
+      // one — so there is nothing left to do here, and running the shutdown
+      // would only tear down the new attempt's work.
       if (!_pausedByLifecycle) {
-        _trace('app resumed while holding — connection kept');
+        _trace('app resumed while holding — onAppResumed has taken over');
         return;
       }
       await _cleanShutdown();
@@ -622,10 +646,28 @@ class MqttService {
     _pausedByLifecycle = false;
     _running = true;
     _resetRetries();
-    // [_hasLiveClient], not [isConnected]: a connection still coming up —
-    // including one the hold in [onAppPaused] kept alive — must not be joined
-    // by a second client.
-    if (_hasLiveClient || _attemptInProgress) return;
+    if (_attemptInProgress) return;
+
+    // A socket that survived the pause CANNOT be trusted — least of all on
+    // iOS, which tears connections down while an app is suspended while the
+    // client goes on reporting `connected` until a keepalive fails. Trusting
+    // it meant waiting up to a minute and a half for that, with the send gate
+    // shut the whole time, so a queued order only went out after the waiter
+    // force-closed and reopened the app. The library's own reconnect used to
+    // hide this; it is off now (see the client setup), so the staleness has
+    // to be handled here.
+    //
+    // Throwing it away costs one reconnect per resume, which is what the app
+    // did before the hold existed — and a reconnect is cheap now that the
+    // broker's session spares us the catalogue.
+    final stale = _client;
+    if (stale != null) {
+      _trace('resume: dropping the pre-pause connection');
+      _client = null;
+      connected.value = false;
+      _resetDevices();
+      _discard(stale);
+    }
     await _attempt();
   }
 

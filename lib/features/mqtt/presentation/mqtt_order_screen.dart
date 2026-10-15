@@ -106,10 +106,6 @@ class _MqttOrderScreenState extends ConsumerState<MqttOrderScreen> {
   /// on screen, so its outbox copy is left out of the existing list.
   String? _submittedMsgId;
 
-  /// The order couldn't be published: it is in "Neposlane narudžbe" and this
-  /// screen is on its way out — frozen, exactly like after ✓.
-  bool _queued = false;
-
   /// The details screen is open on top: it shows its own ✓ and closes both.
   bool _detailsOpen = false;
 
@@ -308,8 +304,7 @@ class _MqttOrderScreenState extends ConsumerState<MqttOrderScreen> {
     final broj = widget.tableBroj;
     if (broj == null || _contents != null) return;
     if (_freezing) return;
-    if (!initial &&
-        (!_inTree || !mounted || _leaving || _confirmed || _queued)) {
+    if (!initial && (!_inTree || !mounted || _leaving || _confirmed)) {
       return;
     }
     if (!_tableHasOrder(broj)) return;
@@ -373,7 +368,7 @@ class _MqttOrderScreenState extends ConsumerState<MqttOrderScreen> {
   /// number (§11.6) — entering the same items again would give them a new
   /// number and could print them twice (§11.7).
   Future<bool> _sendOrder() async {
-    if (_sending || _confirmed || _queued) return false;
+    if (_sending || _confirmed) return false;
     final broj = widget.tableBroj;
     final user = ref.read(currentUserProvider);
     if (broj == null || user == null) {
@@ -479,27 +474,31 @@ class _MqttOrderScreenState extends ConsumerState<MqttOrderScreen> {
       return true;
     }
 
-    // It didn't reach the broker. The order stays frozen in "Neposlane
-    // narudžbe" and only goes out from there, under the same number; this
-    // screen freezes too, so the same items can't be sent again as a new
-    // order.
-    final auto = ref.read(settingsProvider).shouldAutoResend;
+    // It didn't reach the broker — the connection was gone, whatever the bar
+    // said a moment ago. The outbox has already put it in the queue, so this
+    // ends exactly like pressing send with the gate shut: the "Čeka slanje"
+    // mark, no dialog, and the order leaves by itself when the line is back.
+    //
+    // It used to raise a "Nije poslana" dialog and leave the order red and
+    // inert. On iOS that was the normal outcome of switching the network off,
+    // because the gate still read "open" — so the waiter was told the order
+    // had failed when nothing would ever retry it.
     setState(() {
       _sending = false;
-      _queued = true;
+      _queuedForLater = true;
+      _confirmed = true;
     });
+    // Said out loud, unlike a send that was queued deliberately: the waiter
+    // pressed a button that looked ready to send, so they are told it didn't
+    // go — and, in the same breath, that they need do nothing about it.
     await _showSendProblem(
       'Nije poslana',
-      auto
-          ? 'Narudžba nije stigla do poslužitelja (veza je loša ili '
-                'prekinuta). Spremljena je u „Neposlane narudžbe" i poslat '
-                'će se sama kad veza i glavni program budu dostupni.'
-          : 'Narudžba nije stigla do poslužitelja (veza je loša ili '
-                'prekinuta). Pošaljite je ponovno iz „Neposlane narudžbe" '
-                'kad se veza vrati. Ne unosite iste stavke ponovno.',
+      'Narudžba nije stigla do poslužitelja (veza je loša ili prekinuta). '
+          'Spremljena je i poslat će se sama čim veza i glavni program budu '
+          'dostupni.',
     );
     if (mounted) _leave();
-    return false;
+    return true;
   }
 
   Future<void> _send() => _sendOrder();
@@ -762,7 +761,7 @@ class _MqttOrderScreenState extends ConsumerState<MqttOrderScreen> {
       child: IgnorePointer(
         // Also while sending: the cart on screen IS the frozen order until the
         // kasa answers, so it must not change underneath it.
-        ignoring: _confirmed || _sending || _queued,
+        ignoring: _confirmed || _sending,
         child: Scaffold(
           appBar: AppBar(
             title: Text(title),
@@ -916,7 +915,7 @@ class _MqttOrderScreenState extends ConsumerState<MqttOrderScreen> {
       ),
     );
     // The first frame showing the ✓ is kept and returned by every later build.
-    if (_confirmed || _queued) _frozen = screen;
+    if (_confirmed) _frozen = screen;
     return screen;
   }
 }
