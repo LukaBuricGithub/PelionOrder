@@ -13,12 +13,27 @@ Color mqttAwaitingColor(bool dark) =>
 Color mqttProblemColor(bool dark) =>
     dark ? const Color(0xFFFF7B72) : const Color(0xFFD64541);
 
+/// Plum, for a send button that will FREEZE the order rather than publish it
+/// ("Čeka slanje"). The same pair as `_Tone.queued` on the order screen, so
+/// one colour means one thing wherever a send button appears.
+///
+/// The label never changes with it — "Pošalji ponovno" is the waiter's intent
+/// either way; only the mark and the colour say how it will happen.
+ButtonStyle mqttQueuedButtonStyle(BuildContext context) {
+  final dark = Theme.of(context).brightness == Brightness.dark;
+  return FilledButton.styleFrom(
+    backgroundColor: dark ? const Color(0xFFC58BAE) : const Color(0xFF7A3F63),
+    foregroundColor: dark ? const Color(0xFF1E0C17) : Colors.white,
+  );
+}
+
 /// How many of the waiter's orders are still on their way, sorted by what the
 /// waiter should make of them.
 class MqttOutboxSummary {
   const MqttOutboxSummary({
     this.drafts = 0,
     this.notSent = 0,
+    this.queued = 0,
     this.sending = 0,
     this.unconfirmed = 0,
     this.failed = 0,
@@ -28,9 +43,11 @@ class MqttOutboxSummary {
     Iterable<MqttOutboxOrder> orders, {
     int drafts = 0,
   }) {
-    var sending = 0, unconfirmed = 0, notSent = 0, failed = 0;
+    var queued = 0, sending = 0, unconfirmed = 0, notSent = 0, failed = 0;
     for (final o in orders) {
       switch (o.status) {
+        case MqttOutboxStatus.queued:
+          queued++;
         case MqttOutboxStatus.sending:
           sending++;
         case MqttOutboxStatus.unconfirmed:
@@ -44,6 +61,7 @@ class MqttOutboxSummary {
     }
     return MqttOutboxSummary(
       drafts: drafts,
+      queued: queued,
       sending: sending,
       unconfirmed: unconfirmed,
       notSent: notSent,
@@ -53,6 +71,10 @@ class MqttOutboxSummary {
 
   /// Tables with items added on this phone and not sent yet (blue).
   final int drafts;
+
+  /// Frozen while sending was locked, going out by itself (amber). Nothing is
+  /// asked of the waiter, so this never turns the bar red.
+  final int queued;
 
   /// On its way, inside the 10-second window (amber). Normal, and over in
   /// seconds.
@@ -74,6 +96,7 @@ class MqttOutboxSummary {
 
   bool get isEmpty =>
       drafts == 0 &&
+      queued == 0 &&
       sending == 0 &&
       unconfirmed == 0 &&
       notSent == 0 &&
@@ -113,7 +136,7 @@ class MqttOutboxStatusBar extends StatelessWidget {
     final accent =
         summary.notSent > 0 || summary.failed > 0 || summary.unconfirmed > 0
         ? red
-        : summary.sending > 0
+        : summary.sending > 0 || summary.queued > 0
         ? amber
         : summary.drafts > 0
         ? blue
@@ -135,6 +158,8 @@ class MqttOutboxStatusBar extends StatelessWidget {
         ),
       if (summary.sending > 0)
         (Icons.hourglass_top_rounded, amber, 'Šalje se', summary.sending),
+      if (summary.queued > 0)
+        (Icons.schedule_send, amber, 'Čeka slanje', summary.queued),
       if (summary.drafts > 0)
         (Icons.edit_note, blue, 'Neposlano', summary.drafts),
     ];

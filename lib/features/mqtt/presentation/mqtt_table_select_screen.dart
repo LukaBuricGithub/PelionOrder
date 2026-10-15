@@ -19,6 +19,7 @@ import '../state/mqtt_floor_plan_provider.dart';
 import '../state/mqtt_orders_provider.dart';
 import '../state/mqtt_outbox_provider.dart';
 import '../state/mqtt_pending_transfers_provider.dart';
+import '../state/mqtt_send_gate_provider.dart';
 import '../data/mqtt_service.dart';
 import '../data/mqtt_table_lock_sender.dart';
 import '../models/mqtt_table_lock.dart';
@@ -467,6 +468,23 @@ class _MqttTableSelectScreenState extends ConsumerState<MqttTableSelectScreen> {
   /// so the table is claimed as soon as the kasa is back.
   Future<void> _openOrder(MqttTable table) async {
     if (_opening != null) return;
+
+    // Ask the kasa for the table whenever one is ONLINE — in the sales screen
+    // or not. Skip it only when there is no kasa to ask: then the answer can
+    // never come and the wait is pure cost (six seconds, measured), while
+    // [MqttTableLockKeeper] still claims the table from the order screen and
+    // a late refusal comes back through its `onLost`.
+    //
+    // Gated on `isOpen` instead, this let a waiter walk into a table a
+    // cashier was sitting in: a kasa working on a table reports `prima:
+    // false`, so the gate reads "nije u blagajni" — exactly the state where
+    // the lock matters most. Being refused at the door beats being thrown
+    // out of the table a minute later.
+    if (!ref.read(mqttSendGateProvider).canReachKasa) {
+      _enterTable(table);
+      return;
+    }
+
     setState(() => _opening = table.broj);
     final result = await MqttTableLockSender.instance.enter(table.broj);
     if (!mounted) return;
@@ -477,11 +495,15 @@ class _MqttTableSelectScreenState extends ConsumerState<MqttTableSelectScreen> {
       return;
     }
     if (result.isOk) MqttTableLockKeeper.noteGranted(table.broj);
+    _enterTable(table);
+  }
 
+  void _enterTable(MqttTable table) {
+    if (!mounted) return;
     final q = table.naziv.isEmpty
         ? ''
         : '?naziv=${Uri.encodeComponent(table.naziv)}';
-    if (mounted) context.push('/mqtt-menu/${table.broj}$q');
+    context.push('/mqtt-menu/${table.broj}$q');
   }
 }
 

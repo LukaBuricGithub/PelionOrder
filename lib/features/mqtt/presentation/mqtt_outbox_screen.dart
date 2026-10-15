@@ -15,7 +15,8 @@ import '../state/mqtt_tables_provider.dart';
 import '../state/mqtt_users_provider.dart';
 import 'mqtt_existing_items.dart'
     show mqttExistingStatusForOutbox, mqttExistingStatusStyle;
-import 'mqtt_outbox_summary_bar.dart' show mqttDraftColor;
+import 'mqtt_outbox_summary_bar.dart'
+    show mqttDraftColor, mqttQueuedButtonStyle;
 import 'mqtt_qty_pad.dart' show formatQtyWithUnit;
 
 /// "Neposlane narudžbe": everything on its way to the kasa, grouped by table,
@@ -101,7 +102,8 @@ class MqttOutboxScreen extends ConsumerWidget {
           ? null
           : _ResendAllBar(
               count: resendable.length,
-              onPressed: sendGate.isOpen
+              queue: !sendGate.isOpen,
+              onPressed: sendGate.isOpen || sendGate.canQueue
                   ? () => _confirmResendAll(context, ref, resendable, allowed)
                   : null,
             ),
@@ -119,7 +121,10 @@ class MqttOutboxScreen extends ConsumerWidget {
                     byCode: byCode,
                     remarkName: menu.remarkName,
                     names: names,
-                    canSend: sendGate.isOpen,
+                    // Also while sending is locked for a passing reason: the
+                    // order then goes back into the queue instead.
+                    canSend: sendGate.isOpen || sendGate.canQueue,
+                    queue: !sendGate.isOpen,
                     onResend: () => _confirmResend(context, ref, stol, allowed),
                     onDelete: () => _confirmDelete(context, ref, stol, [
                       for (final o
@@ -142,15 +147,25 @@ class MqttOutboxScreen extends ConsumerWidget {
     int stol,
     bool Function(MqttOutboxOrder) allowed,
   ) async {
+    // Locked right now: the order goes back into the queue and leaves on its
+    // own. The dialog says that rather than promising a send that can't
+    // happen yet.
+    final queue = !ref.read(mqttSendGateProvider).isOpen;
     debugPrint(
-      'Outbox ▸ resend stol $stol; glavni program ih prepoznaje po broju, '
-      'narudžba koja je već ispisana neće se ispisati ponovno.',
+      'Outbox ▸ ${queue ? 'requeue' : 'resend'} stol $stol; glavni program '
+      'ih prepoznaje po broju, narudžba koja je već ispisana neće se '
+      'ispisati ponovno.',
     );
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
         title: Text('Stol $stol'),
-        content: const Text('Poslati ponovno narudžbe za ovaj stol?'),
+        content: Text(
+          queue
+              ? 'Narudžbe za ovaj stol poslat će se čim glavni program bude '
+                    'dostupan.'
+              : 'Poslati ponovno narudžbe za ovaj stol?',
+        ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx, false),
@@ -158,27 +173,31 @@ class MqttOutboxScreen extends ConsumerWidget {
           ),
           FilledButton.icon(
             onPressed: () => Navigator.pop(ctx, true),
-            icon: const Icon(Icons.send, size: 18),
+            style: queue ? mqttQueuedButtonStyle(ctx) : null,
+            icon: Icon(queue ? Icons.schedule_send : Icons.send, size: 18),
             label: const Text('Pošalji ponovno'),
           ),
         ],
       ),
     );
     if (ok != true || !context.mounted) return;
-    // §11.5: check again right before sending — the kasa may have left the
-    // sales screen while the dialog was open.
+    // §11.5: check again right before sending — the kasa may have come back,
+    // or gone, while the dialog was open.
     final gate = ref.read(mqttSendGateProvider);
-    if (!gate.isOpen) {
+    final outbox = ref.read(mqttOutboxProvider.notifier);
+    if (gate.isOpen) {
+      outbox.resend(
+        stol: stol,
+        allowed: allowed,
+        groupArticles: ref.read(settingsProvider).shouldGroupArticles,
+      );
+      return;
+    }
+    if (!gate.canQueue) {
       await _showLocked(context, gate);
       return;
     }
-    ref
-        .read(mqttOutboxProvider.notifier)
-        .resend(
-          stol: stol,
-          allowed: allowed,
-          groupArticles: ref.read(settingsProvider).shouldGroupArticles,
-        );
+    outbox.requeue(stol: stol, allowed: allowed);
   }
 
   Future<void> _confirmResendAll(
@@ -197,11 +216,17 @@ class MqttOutboxScreen extends ConsumerWidget {
       'glavni program ih prepoznaje po broju, narudžba koja je već ispisana '
       'neće se ispisati ponovno.',
     );
+    final queue = !ref.read(mqttSendGateProvider).isOpen;
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('Pošalji sve ponovno'),
-        content: Text('Poslati ponovno $count ${_narudzbuForm(count)}?'),
+        content: Text(
+          queue
+              ? '$count ${_narudzbuForm(count)} poslat će se čim glavni '
+                    'program bude dostupan.'
+              : 'Poslati ponovno $count ${_narudzbuForm(count)}?',
+        ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx, false),
@@ -209,18 +234,23 @@ class MqttOutboxScreen extends ConsumerWidget {
           ),
           FilledButton.icon(
             onPressed: () => Navigator.pop(ctx, true),
-            icon: const Icon(Icons.send, size: 18),
+            style: queue ? mqttQueuedButtonStyle(ctx) : null,
+            icon: Icon(queue ? Icons.schedule_send : Icons.send, size: 18),
             label: const Text('Pošalji sve'),
           ),
         ],
       ),
     );
     if (ok != true || !context.mounted) return;
-    // §11.5: check again right before sending — the kasa may have left the
-    // sales screen while the dialog was open.
+    // §11.5: check again right before sending — the kasa may have come back,
+    // or gone, while the dialog was open.
     final gate = ref.read(mqttSendGateProvider);
     if (!gate.isOpen) {
-      await _showLocked(context, gate);
+      if (!gate.canQueue) {
+        await _showLocked(context, gate);
+        return;
+      }
+      ref.read(mqttOutboxProvider.notifier).requeue(allowed: allowed);
       return;
     }
     ref
@@ -372,9 +402,16 @@ String _narudzbuForm(int n) {
 /// The bottom bar sending every red order (not sent, refused, too old) again
 /// at once.
 class _ResendAllBar extends StatelessWidget {
-  const _ResendAllBar({required this.count, required this.onPressed});
+  const _ResendAllBar({
+    required this.count,
+    required this.queue,
+    required this.onPressed,
+  });
 
   final int count;
+
+  /// Sending is locked, so the bar queues instead of sending.
+  final bool queue;
 
   /// Null while sending is locked — the button shows but can't be pressed.
   final VoidCallback? onPressed;
@@ -396,7 +433,8 @@ class _ResendAllBar extends StatelessWidget {
             height: 52,
             child: FilledButton.icon(
               onPressed: onPressed,
-              icon: const Icon(Icons.send),
+              style: queue ? mqttQueuedButtonStyle(context) : null,
+              icon: Icon(queue ? Icons.schedule_send : Icons.send),
               label: Text(
                 'Pošalji sve ponovno ($count)',
                 style: const TextStyle(
@@ -470,10 +508,11 @@ class _Intro extends StatelessWidget {
           Expanded(
             child: Text(
               open
-                  ? 'Plavo: niste poslali. Narančasto: upravo se šalje. '
+                  ? 'Plavo: niste poslali. Narančasto: ide samo. '
                         'Crveno: pošaljite ponovno ili obrišite.'
                   : '${gate.message}, slanje je zaključano. Crvene narudžbe '
-                        'možete poslati ponovno kad se slanje otključa.',
+                        'možete staviti u red — poslat će se same čim glavni '
+                        'program bude dostupan.',
               style: TextStyle(
                 fontSize: 13.5,
                 height: 1.3,
@@ -497,6 +536,7 @@ class _TableCard extends StatelessWidget {
     required this.remarkName,
     required this.names,
     required this.canSend,
+    required this.queue,
     required this.onResend,
     required this.onDelete,
     required this.onOpenTable,
@@ -512,8 +552,12 @@ class _TableCard extends StatelessWidget {
   final String Function(String cnap) remarkName;
   final Map<String, String> names;
 
-  /// Sending is open (§11.4) — otherwise "Pošalji ponovno" can't be pressed.
+  /// Whether the send button can be pressed at all — open sending, or a lock
+  /// that still allows queueing.
   final bool canSend;
+
+  /// Sending is locked, so the button queues instead of sending.
+  final bool queue;
   final VoidCallback onResend;
   final VoidCallback onDelete;
   final VoidCallback onOpenTable;
@@ -527,9 +571,11 @@ class _TableCard extends StatelessWidget {
       for (final o in orders) names[o.cuser] ?? o.cuser,
       if (draftCuser != null) names[draftCuser] ?? draftCuser,
     }.join(', ');
-    // Only an order still inside its 10-second wait gets no buttons; every
-    // red one can be sent again or deleted.
-    final canAct = orders.any((o) => o.canResend);
+    // "Pošalji ponovno" is for the red ones. A "Čeka slanje" order goes out
+    // by itself, so it gets no send button — only the delete target, in case
+    // the table no longer wants it.
+    final canResend = orders.any((o) => o.canResend);
+    final canAct = orders.any((o) => o.canDelete);
 
     return Card(
       margin: const EdgeInsets.only(bottom: 12),
@@ -608,14 +654,24 @@ class _TableCard extends StatelessWidget {
                       onOpen: onOpenTable,
                       onDelete: onDeleteDraft,
                     ),
-                  if (canAct)
+                  if (canResend)
                     Padding(
                       padding: const EdgeInsets.only(top: 10, bottom: 4),
                       child: Align(
                         alignment: Alignment.centerRight,
+                        // One name for one action: the waiter means "send
+                        // this again" either way, and whether that happens
+                        // now or the moment the kasa is back is the app's
+                        // business. Only the mark and the colour change —
+                        // the same convention the Pošalji button on Stol X
+                        // follows.
                         child: FilledButton.icon(
                           onPressed: canSend ? onResend : null,
-                          icon: const Icon(Icons.send, size: 18),
+                          style: queue ? mqttQueuedButtonStyle(context) : null,
+                          icon: Icon(
+                            queue ? Icons.schedule_send : Icons.send,
+                            size: 18,
+                          ),
                           label: const Text('Pošalji ponovno'),
                         ),
                       ),
@@ -711,10 +767,26 @@ class _OrderBlock extends StatelessWidget {
               ),
             ],
           ),
+          // An order frozen while sending was locked: it goes out on its own,
+          // so the block says so rather than leaving the waiter wondering why
+          // there is no button.
+          if (order.isQueued)
+            Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: Text(
+                'Poslat će se čim glavni program bude dostupan. Ne morate '
+                'ništa poduzeti.',
+                style: TextStyle(
+                  fontSize: 13,
+                  height: 1.3,
+                  color: scheme.onSurface,
+                ),
+              ),
+            )
           // "Nije potvrđena" carries no reason from the kasa — the kasa never
           // said anything — so the block explains itself. Without this the tag
           // alone left waiters with nothing to go on.
-          if (order.isUnconfirmed)
+          else if (order.isUnconfirmed)
             Padding(
               padding: const EdgeInsets.only(top: 4),
               child: Text(

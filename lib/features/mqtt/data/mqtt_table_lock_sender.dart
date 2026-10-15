@@ -72,7 +72,12 @@ class MqttTableLockSender {
   static final MqttTableLockSender instance = MqttTableLockSender._();
 
   /// How long to wait for the kasa's answer.
-  static const replyTimeout = Duration(seconds: 6);
+  /// The kasa answers an `ulaz` in about 100 ms when it answers at all, so
+  /// three seconds is thirty times the headroom. Six was punishing the waiter
+  /// for a kasa that was never going to answer — and the table opens
+  /// regardless when the wait runs out, so the only thing the extra three
+  /// seconds bought was a longer stare at a spinner.
+  static const replyTimeout = Duration(seconds: 3);
 
   /// Announces that this phone is working on [stol].
   Future<MqttLockResult> enter(int stol) => _send('ulaz', stol);

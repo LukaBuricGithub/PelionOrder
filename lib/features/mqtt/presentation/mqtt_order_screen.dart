@@ -94,6 +94,11 @@ class _MqttOrderScreenState extends ConsumerState<MqttOrderScreen> {
   /// "šalje se") can be seen before the screen has left.
   Widget? _frozen;
 
+  /// The order was frozen as "Čeka slanje" instead of being published — the
+  /// confirmation then reads differently, because a ✓ would tell the waiter
+  /// the kitchen has it.
+  bool _queuedForLater = false;
+
   /// Leaving after a send has started — guards against leaving twice.
   bool _leaving = false;
 
@@ -380,9 +385,15 @@ class _MqttOrderScreenState extends ConsumerState<MqttOrderScreen> {
     }
     // §11.5: check the send state again right before sending — it may have
     // changed since the button was drawn (the kasa left the sales screen, the
-    // connection dropped). Nothing is frozen or sent then; the cart stays.
+    // connection dropped).
+    //
+    // Locked for a passing reason — this phone offline, the kasa offline, the
+    // kasa out of the sales screen — no longer costs the waiter the order:
+    // it is frozen as "Čeka slanje" and goes out by itself. Only a phone with
+    // no QR code still refuses, because an order built then could not be
+    // addressed to any kasa.
     final sendGate = ref.read(mqttSendGateProvider);
-    if (!sendGate.isOpen) {
+    if (!sendGate.isOpen && !sendGate.canQueue) {
       await _showSendProblem(
         'Slanje je zaključano',
         '${sendGate.message}. Narudžba nije poslana, stavke su ostale u '
@@ -390,6 +401,7 @@ class _MqttOrderScreenState extends ConsumerState<MqttOrderScreen> {
       );
       return false;
     }
+    final queueIt = !sendGate.isOpen;
     // The kasa has stopped confirming: ask once, then send anyway if the
     // waiter says so. Deliberately a warning and NOT a block — the order will
     // almost certainly be printed (that is what the venue's seven unconfirmed
@@ -406,6 +418,7 @@ class _MqttOrderScreenState extends ConsumerState<MqttOrderScreen> {
       cuser: user.code,
       lines: _cart.lines,
       groupArticles: ref.read(settingsProvider).shouldGroupArticles,
+      queued: queueIt,
     );
     final order = frozen.order;
     _freezing = false;
@@ -419,6 +432,26 @@ class _MqttOrderScreenState extends ConsumerState<MqttOrderScreen> {
     }
     _submittedMsgId = order.msgId;
     _ordersNotifier.clear(broj);
+
+    // Frozen, not sent: the outbox publishes it the moment sending opens.
+    // No spinner — nothing is in flight — and the send button shows the
+    // "Čeka slanje" mark instead of the ✓, which is the whole difference the
+    // waiter is given. The screen freezes as it does after a real send, so
+    // the same items can't go out twice under two numbers.
+    if (queueIt) {
+      setState(() {
+        _queuedForLater = true;
+        _confirmed = true;
+      });
+      HapticFeedback.lightImpact();
+      if (!_detailsOpen) {
+        Future<void>.delayed(kMqttSendConfirmHold, () {
+          if (mounted) _leave();
+        });
+      }
+      return true;
+    }
+
     setState(() => _sending = true);
 
     final delivered = await _outboxNotifier.sendNow(order);
@@ -565,6 +598,7 @@ class _MqttOrderScreenState extends ConsumerState<MqttOrderScreen> {
               // while details is open.
               contents: () => _contents,
               sendingMsgId: () => _submittedMsgId,
+              queuedForLater: () => _queuedForLater,
             ),
           ),
         )
@@ -773,6 +807,9 @@ class _MqttOrderScreenState extends ConsumerState<MqttOrderScreen> {
                               _ActionColumn(
                                 sending: _sending,
                                 confirmed: _confirmed,
+                                queuedForLater: _queuedForLater,
+                                willQueue:
+                                    !sendGate.isOpen && sendGate.canQueue,
                                 reordering: _reordering,
                                 onClear: hasItems && !_sending && !_reordering
                                     ? _confirmClear
@@ -789,11 +826,14 @@ class _MqttOrderScreenState extends ConsumerState<MqttOrderScreen> {
                                 onReorder: _cart.lines.length > 1 && !_sending
                                     ? _toggleReorder
                                     : null,
+                                // Also while sending is locked for a passing
+                                // reason: the order is then frozen as "Čeka
+                                // slanje" rather than refused.
                                 onSend:
                                     hasItems &&
                                         !_sending &&
                                         !_reordering &&
-                                        sendGate.isOpen
+                                        (sendGate.isOpen || sendGate.canQueue)
                                     ? _send
                                     : null,
                               ),
@@ -1678,6 +1718,8 @@ class _ActionColumn extends StatelessWidget {
   const _ActionColumn({
     required this.sending,
     required this.confirmed,
+    required this.queuedForLater,
+    required this.willQueue,
     required this.reordering,
     required this.onClear,
     required this.onDetails,
@@ -1689,6 +1731,14 @@ class _ActionColumn extends StatelessWidget {
 
   /// The kasa accepted the order — the send button shows ✓.
   final bool confirmed;
+
+  /// [confirmed], but the order was only frozen: the button shows the
+  /// "will be sent" mark instead of the ✓.
+  final bool queuedForLater;
+
+  /// Sending is locked for a passing reason, so pressing Pošalji will freeze
+  /// the order rather than send it — the button is plum with a clock.
+  final bool willQueue;
   final VoidCallback? onClear;
   final VoidCallback? onDetails;
 
@@ -1743,11 +1793,14 @@ class _ActionColumn extends StatelessWidget {
                 height: btn,
               ),
               roomy ? const Spacer() : SizedBox(height: gap),
+              // Plum with a clock while sending is locked, so the button says
+              // what it will do BEFORE it is pressed, not only after.
               _ActionButton(
-                icon: Icons.send,
-                tone: _Tone.primary,
+                icon: willQueue ? Icons.schedule_send : Icons.send,
+                tone: willQueue ? _Tone.queued : _Tone.primary,
                 busy: sending,
                 confirmed: confirmed,
+                confirmIcon: queuedForLater ? Icons.schedule_send : Icons.check,
                 onTap: onSend,
                 width: width,
                 height: btn,
@@ -1760,7 +1813,7 @@ class _ActionColumn extends StatelessWidget {
   }
 }
 
-enum _Tone { primary, neutral, info, danger }
+enum _Tone { primary, queued, neutral, info, danger }
 
 class _ActionButton extends StatelessWidget {
   const _ActionButton({
@@ -1771,6 +1824,7 @@ class _ActionButton extends StatelessWidget {
     required this.height,
     this.busy = false,
     this.confirmed = false,
+    this.confirmIcon = Icons.check,
   });
 
   final IconData icon;
@@ -1780,6 +1834,10 @@ class _ActionButton extends StatelessWidget {
   final double height;
   final bool busy;
   final bool confirmed;
+
+  /// What [confirmed] draws — ✓ for an order the kasa has, the
+  /// "will be sent" mark for one that is only frozen.
+  final IconData confirmIcon;
 
   @override
   Widget build(BuildContext context) {
@@ -1791,6 +1849,14 @@ class _ActionButton extends StatelessWidget {
         dark
             ? (const Color(0xFF1FA9B6), const Color(0xFF052A2E))
             : (const Color(0xFF0E9AA7), Colors.white),
+      // Plum: pressing this freezes the order instead of sending it. A hue
+      // nothing else on this screen uses — the teal next to it means "goes
+      // now", the amber of the group strip means something else again, and
+      // red would read as destructive when this is the safe thing to do.
+      _Tone.queued =>
+        dark
+            ? (const Color(0xFFC58BAE), const Color(0xFF1E0C17))
+            : (const Color(0xFF7A3F63), Colors.white),
       _Tone.neutral =>
         dark
             ? (const Color(0xFF8677E8), const Color(0xFF140A3A))
@@ -1838,7 +1904,7 @@ class _ActionButton extends StatelessWidget {
                       ),
                     )
                   : Icon(
-                      confirmed ? Icons.check : icon,
+                      confirmed ? confirmIcon : icon,
                       key: ValueKey(confirmed ? 'done' : 'idle'),
                       color: fg,
                       size: iconSize,

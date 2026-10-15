@@ -44,15 +44,11 @@ class _UpdateRequiredGateState extends State<UpdateRequiredGate>
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     WidgetsBinding.instance.addPostFrameCallback((_) => _runCheck());
-    // VERSION_DIAG — lets the diagnostics card ask for a check right now.
-    VersionCheckService.checkRequested.addListener(_onCheckRequested);
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    // VERSION_DIAG
-    VersionCheckService.checkRequested.removeListener(_onCheckRequested);
     super.dispose();
   }
 
@@ -64,14 +60,11 @@ class _UpdateRequiredGateState extends State<UpdateRequiredGate>
     if (state == AppLifecycleState.resumed) _runCheck();
   }
 
-  // VERSION_DIAG
-  void _onCheckRequested() => _runCheck(force: true);
-
-  Future<void> _runCheck({bool force = false}) async {
+  Future<void> _runCheck() async {
     if (_running || _blocking != null) return;
     _running = true;
     try {
-      final result = await const VersionCheckService().check(force: force);
+      final result = await const VersionCheckService().check();
       if (!mounted) return;
       if (!result.updateAvailable || result.storeUrl == null) return;
       setState(() => _blocking = result);

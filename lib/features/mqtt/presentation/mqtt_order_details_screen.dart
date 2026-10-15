@@ -55,6 +55,7 @@ class MqttOrderDetailsScreen extends ConsumerStatefulWidget {
     this.onSent,
     this.contents,
     this.sendingMsgId,
+    this.queuedForLater,
   });
 
   final MqttCart cart;
@@ -81,6 +82,10 @@ class MqttOrderDetailsScreen extends ConsumerStatefulWidget {
   /// The msg_id of the order being sent right now (owned by the order screen).
   /// Its lines are still this cart, so its outbox copy is not listed again.
   final String? Function()? sendingMsgId;
+
+  /// Whether the last send only FROZE the order ("Čeka slanje") instead of
+  /// publishing it — the send button then shows that mark, not the ✓.
+  final bool Function()? queuedForLater;
 
   @override
   ConsumerState<MqttOrderDetailsScreen> createState() =>
@@ -554,13 +559,17 @@ class _MqttOrderDetailsScreenState
                     _BottomBar(
                       total: money.format(total),
                       sending: _sending,
+                      // Also while sending is locked for a passing reason —
+                      // the order is frozen as "Čeka slanje" instead.
                       canSend:
                           lines.isNotEmpty &&
                           !_sending &&
                           widget.onSend != null &&
-                          sendGate.isOpen,
+                          (sendGate.isOpen || sendGate.canQueue),
                       onSend: _send,
                       confirmed: _confirmed,
+                      queuedForLater: widget.queuedForLater?.call() ?? false,
+                      willQueue: !sendGate.isOpen && sendGate.canQueue,
                     ),
                 ],
               ),
@@ -1063,6 +1072,8 @@ class _BottomBar extends StatelessWidget {
     required this.canSend,
     required this.onSend,
     this.confirmed = false,
+    this.queuedForLater = false,
+    this.willQueue = false,
   });
 
   final String total;
@@ -1073,13 +1084,27 @@ class _BottomBar extends StatelessWidget {
   /// The kasa accepted the order — the send button shows ✓.
   final bool confirmed;
 
+  /// [confirmed], but the order was only frozen: the button says "Čeka
+  /// slanje" instead, because a ✓ would mean the kitchen has it.
+  final bool queuedForLater;
+
+  /// Sending is locked for a passing reason — pressing freezes the order, so
+  /// the button is plum with a clock before it is pressed too.
+  final bool willQueue;
+
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final dark = Theme.of(context).brightness == Brightness.dark;
     final s = _screenScale(context);
-    final sendBg = dark ? const Color(0xFF1FA9B6) : const Color(0xFF0E9AA7);
-    final sendFg = dark ? const Color(0xFF052A2E) : Colors.white;
+    // Plum while sending is locked: pressing this freezes the order for
+    // later rather than sending it. Same pair as the order screen's column.
+    final sendBg = willQueue
+        ? (dark ? const Color(0xFFC58BAE) : const Color(0xFF7A3F63))
+        : (dark ? const Color(0xFF1FA9B6) : const Color(0xFF0E9AA7));
+    final sendFg = willQueue
+        ? (dark ? const Color(0xFF1E0C17) : Colors.white)
+        : (dark ? const Color(0xFF052A2E) : Colors.white);
     return Container(
       decoration: BoxDecoration(
         color: scheme.surfaceContainerHigh,
@@ -1140,11 +1165,19 @@ class _BottomBar extends StatelessWidget {
                         ),
                       )
                     : Icon(
-                        confirmed ? Icons.check : Icons.send,
+                        confirmed
+                            ? (queuedForLater
+                                  ? Icons.schedule_send
+                                  : Icons.check)
+                            : (willQueue ? Icons.schedule_send : Icons.send),
                         key: ValueKey(confirmed ? 'done' : 'idle'),
                       ),
               ),
-              label: const Text('Pošalji narudžbu'),
+              label: Text(
+                confirmed && queuedForLater
+                    ? 'Čeka slanje'
+                    : 'Pošalji narudžbu',
+              ),
             ),
           ],
         ),

@@ -25,6 +25,10 @@ enum MqttExistingStatus {
   /// (`MqttRacunStavka.poslano`), a different stage this tag does not show.
   zaprimljeno,
 
+  /// Frozen while sending was locked and not published yet. Shown as "Čeka
+  /// slanje" — it goes out by itself, so there is nothing to do about it.
+  cekaSlanje,
+
   /// In "Neposlane narudžbe", being sent right now (waiting at most 10 s for
   /// the kasa). Shown as "Čeka potvrdu".
   neposlano,
@@ -65,6 +69,14 @@ enum MqttExistingStatus {
     'Poslano',
     Icons.check,
   ),
+  // Amber, and a plane with a clock rather than an hourglass: an hourglass
+  // means "sent, waiting for the answer", while this one has not gone
+  // anywhere yet. Nothing for the waiter to do either way.
+  MqttExistingStatus.cekaSlanje => (
+    dark ? const Color(0xFFF4A83A) : const Color(0xFFE8890C),
+    'Čeka slanje',
+    Icons.schedule_send,
+  ),
   // Amber: with the broker, waiting for the kasa — nothing to do yet.
   MqttExistingStatus.neposlano => (
     dark ? const Color(0xFFF4A83A) : const Color(0xFFE8890C),
@@ -102,6 +114,7 @@ enum MqttExistingStatus {
 /// The tag for an order in "Neposlane narudžbe".
 MqttExistingStatus mqttExistingStatusForOutbox(MqttOutboxStatus status) =>
     switch (status) {
+      MqttOutboxStatus.queued => MqttExistingStatus.cekaSlanje,
       MqttOutboxStatus.sending => MqttExistingStatus.neposlano,
       MqttOutboxStatus.unconfirmed => MqttExistingStatus.nepotvrdena,
       MqttOutboxStatus.notSent => MqttExistingStatus.neposlana,
@@ -349,7 +362,13 @@ class MqttExistingItems {
             status: status,
           ),
         );
-        if (order.status == MqttOutboxStatus.sending) total += amount;
+        // "Šalje se" and "Čeka slanje" both still count towards the table:
+        // the waiter ordered them and they are going. Anything else won't
+        // reach the table unless the waiter sends it again.
+        if (order.status == MqttOutboxStatus.sending ||
+            order.status == MqttOutboxStatus.queued) {
+          total += amount;
+        }
       }
     }
 

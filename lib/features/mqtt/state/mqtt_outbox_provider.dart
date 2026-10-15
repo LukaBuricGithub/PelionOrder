@@ -20,6 +20,14 @@ import 'mqtt_send_gate_provider.dart';
 
 /// Where an order in "Neposlane narudžbe" stands (spec v4.0, §11.6).
 enum MqttOutboxStatus {
+  /// Frozen while sending was locked, and NEVER published — "Čeka slanje".
+  ///
+  /// The waiter pressed Pošalji with the phone offline, the kasa offline, or
+  /// the kasa out of the sales screen. The order goes out by itself the moment
+  /// that changes ([MqttOutboxNotifier.flushQueued]); nothing is asked of the
+  /// waiter, which is why it is amber and carries no buttons but "Obriši".
+  queued,
+
   /// Published and waiting for the kasa's confirmation (at most 10 s). It can't
   /// be sent again until that wait is over (§11.5, rule 4).
   sending,
@@ -60,6 +68,7 @@ class MqttOutboxOrder {
     required this.status,
     this.reason = '',
     this.published = false,
+    this.queuedAt,
   });
 
   final String msgId;
@@ -88,6 +97,18 @@ class MqttOutboxOrder {
   /// Whether the order has been published at least once.
   final bool published;
 
+  /// When this order last entered the "Čeka slanje" queue — the clock
+  /// [MqttOutboxNotifier.queuedMaxWait] runs against.
+  ///
+  /// Separate from [createdAt] so a waiter who puts an expired order back in
+  /// the queue gets the full half hour again, while the list still shows the
+  /// time the items were actually ordered. Null for an order that was never
+  /// queued, and then [createdAt] serves.
+  final DateTime? queuedAt;
+
+  /// The moment the queue clock started for this order.
+  DateTime get queuedSince => queuedAt ?? createdAt;
+
   /// Didn't get through — not sent, refused or too old: the kasa either never
   /// saw it or said no. [isUnconfirmed] is deliberately not one of these: that
   /// order very probably WAS printed, which is a different story to tell the
@@ -102,6 +123,10 @@ class MqttOutboxOrder {
   /// confirmation was lost on the way back — the usual cause is the phone
   /// being pocketed a second after sending (see MqttService.holdForOrderReplies).
   bool get isUnconfirmed => status == MqttOutboxStatus.unconfirmed;
+
+  /// Waiting for sending to open, never published. Nothing for the waiter to
+  /// do — so deliberately NOT part of [needsAttention].
+  bool get isQueued => status == MqttOutboxStatus.queued;
 
   /// The waiter has to do something about it ("red" everywhere: the table on
   /// the floor plan, the strip, the tag in the list).
@@ -123,9 +148,10 @@ class MqttOutboxOrder {
   /// (§11.5, rule 4).
   bool get canResend => needsAttention;
 
-  /// "Obriši" may remove it. Same set as [canResend] — anything the waiter
-  /// can send again, they can also give up on.
-  bool get canDelete => canResend;
+  /// "Obriši" may remove it: anything the waiter can send again, plus one
+  /// that is only waiting for the line to come back — they may always decide
+  /// the table no longer wants it.
+  bool get canDelete => canResend || isQueued;
 
   /// The kasa may have printed it without us knowing — deleting it doesn't
   /// undo that, so the waiter is warned first.
@@ -149,6 +175,7 @@ class MqttOutboxOrder {
     String? reason,
     bool? published,
     String? payload,
+    DateTime? queuedAt,
   }) => MqttOutboxOrder(
     msgId: msgId,
     stol: stol,
@@ -160,6 +187,7 @@ class MqttOutboxOrder {
     status: status ?? this.status,
     reason: reason ?? this.reason,
     published: published ?? this.published,
+    queuedAt: queuedAt ?? this.queuedAt,
   );
 
   Map<String, dynamic> toJson() => {
@@ -181,12 +209,16 @@ class MqttOutboxOrder {
     'status': status.name,
     'reason': reason,
     'published': published,
+    'queued_at': queuedAt?.millisecondsSinceEpoch,
   };
 
   /// A saved status name — including those of earlier app versions. A send the
   /// app was closed in the middle of is "not confirmed": nothing is known.
   static MqttOutboxStatus _statusFrom(Object? name, bool published) =>
       switch (name) {
+        // Survives a restart as itself: it was never published, so there is
+        // nothing to be unsure about — it simply hasn't gone yet.
+        'queued' => MqttOutboxStatus.queued,
         'notSent' => MqttOutboxStatus.notSent,
         'refused' || 'rejected' => MqttOutboxStatus.refused,
         'stale' || 'expired' => MqttOutboxStatus.stale,
@@ -228,6 +260,10 @@ class MqttOutboxOrder {
         status: _statusFrom(raw['status'], published),
         reason: (raw['reason'] ?? '').toString(),
         published: published,
+        queuedAt: switch ((raw['queued_at'] as num?)?.toInt()) {
+          final ms? => DateTime.fromMillisecondsSinceEpoch(ms),
+          _ => null,
+        },
       );
     } catch (_) {
       return null;
@@ -272,6 +308,15 @@ String _withUredaj(String payload, String uredaj) {
   return jsonEncode({...decoded, 'uredaj': uredaj});
 }
 
+/// [payload] with its `poslano` replaced. Only for an order that has NEVER
+/// been published — §11.6 requires a resend to carry the same `poslano` as
+/// the send it repeats. See [MqttOutboxNotifier.flushQueued], which is the
+/// one caller and checks `published` first.
+String _withPoslano(String payload, int poslano) {
+  final decoded = jsonDecode(payload) as Map<String, dynamic>;
+  return jsonEncode({...decoded, 'poslano': poslano});
+}
+
 /// Whether a waiter may see and act on [order]: their own orders, or every
 /// order when they hold pravo 008.
 bool mqttOutboxVisibleTo(
@@ -313,6 +358,8 @@ class MqttOutboxNotifier extends StateNotifier<List<MqttOutboxOrder>> {
     _replies = MqttService.instance.orderReplies.listen(_onReply);
     _autoTimer = Timer.periodic(autoResendInterval, (_) {
       _pruneExpired();
+      _expireQueued();
+      flushQueued();
       autoResendNow();
     });
   }
@@ -324,6 +371,11 @@ class MqttOutboxNotifier extends StateNotifier<List<MqttOutboxOrder>> {
   /// refuses anything more than 10 minutes old as "zastarjela" (§10), and an
   /// order that old may no longer stand — the waiter decides.
   static const autoResendMaxAge = Duration(minutes: 9);
+
+  /// How long an order frozen while sending was locked keeps trying by itself
+  /// ("Čeka slanje") before it is handed back to the waiter. See
+  /// [_expireQueued] for why there has to be a limit at all.
+  static const queuedMaxWait = Duration(minutes: 30);
 
   static const _key = 'mqtt_outbox_v1';
 
@@ -364,6 +416,7 @@ class MqttOutboxNotifier extends StateNotifier<List<MqttOutboxOrder>> {
     required String cuser,
     required List<MqttCartLine> lines,
     required bool groupArticles,
+    bool queued = false,
   }) {
     final problem = MqttOrderSender.instance.precheck(
       cuser: cuser,
@@ -375,6 +428,7 @@ class MqttOutboxNotifier extends StateNotifier<List<MqttOutboxOrder>> {
       cuser: cuser,
       lines: lines,
       groupArticles: groupArticles,
+      status: queued ? MqttOutboxStatus.queued : MqttOutboxStatus.sending,
     );
     state = [...state, order];
     _save();
@@ -426,7 +480,128 @@ class MqttOutboxNotifier extends StateNotifier<List<MqttOutboxOrder>> {
     if (sent > 0) debugPrint('MQTT ▸ outbox: auto-resent $sent order(s)');
   }
 
+  /// Sends every order frozen while sending was locked ("Čeka slanje"),
+  /// oldest first. Called the moment sending opens and on the timer.
+  ///
+  /// The msg_id never changes — one order, one number, from the first attempt
+  /// on. `poslano` depends on whether the order has ever been published:
+  ///
+  /// * **never published** (the ordinary case here) — stamped NOW. Keeping the
+  ///   time the waiter pressed the button would hand the kasa an order already
+  ///   past its ten-minute limit, refused as "zastarjela" for nothing.
+  /// * **published before** — left exactly as it was, per §11.6: a resend
+  ///   carries the same msg_id AND the same `poslano`. This happens when a
+  ///   waiter presses "Pošalji ponovno" on a red order while sending is
+  ///   locked, which puts an already-sent order back in the queue.
+  void flushQueued() {
+    if (!mounted || !_canSend()) return;
+    final uredaj = MqttService.instance.clientId;
+    if (uredaj == null) return;
+
+    final ready = <MqttOutboxOrder>[];
+    final next = <MqttOutboxOrder>[];
+    for (final o in state) {
+      if (!o.isQueued || _inFlight.contains(o.msgId)) {
+        next.add(o);
+        continue;
+      }
+      final addressed = _withUredaj(o.payload, uredaj);
+      final fresh = o.copyWith(
+        payload: o.published
+            ? addressed
+            : _withPoslano(addressed, DateTime.now().millisecondsSinceEpoch),
+      );
+      next.add(fresh);
+      ready.add(fresh);
+    }
+    if (ready.isEmpty) return;
+    state = next;
+    _save();
+    debugPrint('MQTT ▸ outbox: slanje ${ready.length} narudžbi koje su čekale');
+    // In the order the waiter placed them — one connection, QoS 1, so the
+    // kasa receives them in that order and prints a starter before its main.
+    for (final o in ready) {
+      unawaited(_attempt(o));
+    }
+  }
+
+  /// Gives up on queued orders older than [queuedMaxWait]: they stop trying by
+  /// themselves and turn red, for the waiter to send or delete deliberately.
+  ///
+  /// WHY A CAP: a queued order's `poslano` is written when it goes out, so the
+  /// kasa's own ten-minute guard can't catch a stale one — as far as it can
+  /// see the order was placed seconds ago. Only the phone knows it has been
+  /// waiting since half past eight. Without this, a kasa switched on at 23:00
+  /// would print four coffees for a table that left at 20:30.
+  void _expireQueued() {
+    final cutoff = DateTime.now().subtract(queuedMaxWait);
+    var changed = false;
+    final next = [
+      for (final o in state)
+        if (o.isQueued && o.queuedSince.isBefore(cutoff))
+          () {
+            changed = true;
+            return o.copyWith(
+              status: MqttOutboxStatus.notSent,
+              reason:
+                  'Predugo je čekala na vezu i nije poslana. Pošaljite je '
+                  'ponovno ako stol još čeka, ili je obrišite.',
+            );
+          }()
+        else
+          o,
+    ];
+    if (!changed) return;
+    debugPrint(
+      'MQTT ▸ outbox: narudžbe koje su čekale dulje od '
+      '${queuedMaxWait.inMinutes} min prepuštene konobaru',
+    );
+    state = next;
+    _save();
+  }
+
   // ── Called by "Neposlane narudžbe" ────────────────────────────────────────
+
+  /// "Pošalji ponovno" while sending is still locked: puts the orders of
+  /// [stol] — or of every table when [stol] is null — back into the queue,
+  /// with the half hour started afresh. Returns how many went back.
+  ///
+  /// This is what the button has to mean when the gate is shut. The orders it
+  /// acts on are usually ones that expired BECAUSE the gate never opened, and
+  /// disabling the button then left a waiter staring at "pošaljite je
+  /// ponovno" with nothing to press.
+  ///
+  /// [createdAt] is left alone, so the list still shows when the items were
+  /// ordered; only [MqttOutboxOrder.queuedAt] moves.
+  int requeue({
+    int? stol,
+    required bool Function(MqttOutboxOrder order) allowed,
+  }) {
+    final now = DateTime.now();
+    var count = 0;
+    final next = [
+      for (final o in state)
+        if ((stol == null || o.stol == stol) &&
+            o.canResend &&
+            !_inFlight.contains(o.msgId) &&
+            allowed(o))
+          () {
+            count++;
+            return o.copyWith(
+              status: MqttOutboxStatus.queued,
+              reason: '',
+              queuedAt: now,
+            );
+          }()
+        else
+          o,
+    ];
+    if (count == 0) return 0;
+    state = next;
+    _save();
+    debugPrint('MQTT ▸ outbox: $count narudžbi vraćeno u red za slanje');
+    return count;
+  }
 
   /// "Pošalji ponovno" (§11.6, rule 1) for the orders of [stol] — or of every
   /// table when [stol] is null — that [allowed] permits and that aren't waiting
@@ -510,9 +685,12 @@ class MqttOutboxNotifier extends StateNotifier<List<MqttOutboxOrder>> {
     required String cuser,
     required List<MqttCartLine> lines,
     required bool groupArticles,
+    MqttOutboxStatus status = MqttOutboxStatus.sending,
   }) {
     // msg_id and `poslano` are set once, here — the order is built only right
-    // before it is sent — and never change on a resend of the same order.
+    // before it is sent — and never change on a resend of the same order. A
+    // QUEUED order is the exception: it isn't sent now, so its `poslano` is
+    // rewritten when it finally goes out (see [flushQueued]).
     final msgId = newMsgId();
     final now = DateTime.now();
     final copies = [for (final l in lines) l.copy()];
@@ -533,7 +711,8 @@ class MqttOutboxNotifier extends StateNotifier<List<MqttOutboxOrder>> {
       lines: copies,
       sentLineCount: sent.length,
       createdAt: now,
-      status: MqttOutboxStatus.sending,
+      status: status,
+      queuedAt: status == MqttOutboxStatus.queued ? now : null,
     );
   }
 
@@ -719,7 +898,12 @@ final mqttOutboxProvider =
       // opens again (kasa back in the sales screen, connection back) or when
       // the setting is switched on.
       ref.listen<MqttSendGate>(mqttSendGateProvider, (prev, next) {
-        if (next.isOpen && prev?.isOpen != true) notifier.autoResendNow();
+        if (next.isOpen && prev?.isOpen != true) {
+          // Orders that were only waiting for this go first, and without any
+          // setting to turn them on: the waiter already pressed Pošalji.
+          notifier.flushQueued();
+          notifier.autoResendNow();
+        }
       });
       ref.listen<bool>(settingsProvider.select((s) => s.shouldAutoResend), (
         prev,

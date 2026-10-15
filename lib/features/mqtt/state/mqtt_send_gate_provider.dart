@@ -24,6 +24,17 @@ enum MqttSendGate {
   /// asked for what is on it — also while the kasa is out of the sales screen.
   bool get canReachKasa =>
       this == MqttSendGate.otkljucano || this == MqttSendGate.kasaNijeUProdaji;
+
+  /// Sending is locked, but the order may still be frozen now and sent by
+  /// itself the moment it isn't ("Čeka slanje"). True for all three passing
+  /// reasons: this phone offline, the kasa offline, the kasa out of the sales
+  /// screen.
+  ///
+  /// NOT for [skenirajKod]: without the QR code there is no `uredaj` to send
+  /// under, no licence and no broker — an order built then could not even be
+  /// addressed, and the kasa drops an order with a bad `uredaj` without a
+  /// word. That one keeps refusing, as before.
+  bool get canQueue => this != otkljucano && this != skenirajKod;
 }
 
 /// §11.4, checked top-down — the first condition that holds decides, so the

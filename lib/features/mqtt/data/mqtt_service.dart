@@ -902,25 +902,31 @@ class MqttService {
     // out. A topic set that CHANGED (a different waiter's price list, a topic
     // added by an app update) is covered by the same comparison.
     //
-    // TWO are always re-subscribed, whatever we believe:
+    // THREE are always re-subscribed, whatever we believe — together under a
+    // kilobyte, against the 37.8 KB this is here to avoid:
     //
     // * `mob/{id}` carries the kasa's order confirmations — the one topic
     //   going deaf on would be serious — and it has no retained payload, so
     //   asking again is free;
     // * `status/+` because [onDisconnected] empties the device table, and
     //   only a NEW subscription makes the broker resend the retained statuses
-    //   that refill it. Those are a few hundred bytes.
+    //   that refill it;
+    // * `stolovi_stanje` because it is the freshest thing in the app — who
+    //   holds which table, changing minute by minute — and a stale copy is
+    //   felt immediately: a locked table drawn as free, and a waiter thrown
+    //   out of a table late instead of being refused at the door.
     //
-    // What is skipped is `podaci/*`, and `artikli` alone is 35 of the 37.8 KB
-    // — so this keeps essentially all of the saving while leaving ordering
-    // and the send gate working even if the assumption above were ever wrong.
+    // What is skipped is the rest of `podaci/*`, and `artikli` alone is 35 of
+    // the 37.8 KB — so this keeps essentially all of the saving while leaving
+    // ordering, the send gate and the table locks working even if the
+    // assumption above were ever wrong.
     if (!_sessionPresent(client)) {
       if (_subscribedTopics.isNotEmpty) {
         _trace('broker has no session for us — subscribing to everything');
       }
       _subscribedTopics.clear();
     }
-    final always = {_tMob, _tStatusAll};
+    final always = {_tMob, _tStatusAll, _tStanje};
     final missing = [
       for (final topic in _subscriptionTopics)
         if (always.contains(topic) || !_subscribedTopics.contains(topic)) topic,
