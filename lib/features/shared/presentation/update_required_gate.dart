@@ -28,23 +28,56 @@ class UpdateRequiredGate extends StatefulWidget {
   State<UpdateRequiredGate> createState() => _UpdateRequiredGateState();
 }
 
-class _UpdateRequiredGateState extends State<UpdateRequiredGate> {
+class _UpdateRequiredGateState extends State<UpdateRequiredGate>
+    with WidgetsBindingObserver {
   VersionCheckResult? _blocking;
-  bool _checked = false;
+
+  /// One check at a time. NOT a "ran once" flag any more: the check used to
+  /// run exactly once per process, so a phone that is only ever backgrounded
+  /// and resumed — which is every waiter's phone, all shift — never looked
+  /// again after the first frame. The service decides how often a real query
+  /// goes out; this only stops two running at once.
+  bool _running = false;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     WidgetsBinding.instance.addPostFrameCallback((_) => _runCheck());
+    // VERSION_DIAG — lets the diagnostics card ask for a check right now.
+    VersionCheckService.checkRequested.addListener(_onCheckRequested);
   }
 
-  Future<void> _runCheck() async {
-    if (_checked) return;
-    _checked = true;
-    final result = await const VersionCheckService().check();
-    if (!mounted) return;
-    if (!result.updateAvailable || result.storeUrl == null) return;
-    setState(() => _blocking = result);
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    // VERSION_DIAG
+    VersionCheckService.checkRequested.removeListener(_onCheckRequested);
+    super.dispose();
+  }
+
+  /// Back from the background: ask again. A version published during the
+  /// shift is then picked up when the waiter next picks the phone up, instead
+  /// of waiting for someone to kill and reopen the app.
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) _runCheck();
+  }
+
+  // VERSION_DIAG
+  void _onCheckRequested() => _runCheck(force: true);
+
+  Future<void> _runCheck({bool force = false}) async {
+    if (_running || _blocking != null) return;
+    _running = true;
+    try {
+      final result = await const VersionCheckService().check(force: force);
+      if (!mounted) return;
+      if (!result.updateAvailable || result.storeUrl == null) return;
+      setState(() => _blocking = result);
+    } finally {
+      _running = false;
+    }
   }
 
   String _message(VersionCheckResult r) {

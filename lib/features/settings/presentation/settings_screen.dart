@@ -19,6 +19,8 @@ import '../../profiles/models/api_entry.dart';
 import '../../profiles/state/profiles_provider.dart';
 import '../../shared/presentation/app_bottom_sheet.dart';
 import '../../shared/presentation/bottom_sheet_safe_area.dart';
+// VERSION_DIAG
+import '../../shared/services/version_check_service.dart';
 import '../models/menu_view_size.dart';
 import '../models/table_view_size.dart';
 import '../state/settings_provider.dart';
@@ -50,6 +52,13 @@ class SettingsScreen extends ConsumerWidget {
   /// bundled, so iOS uploads still need NSBluetoothAlwaysUsageDescription in
   /// ios/Runner/Info.plist (Apple's ITMS-90683).
   bool get _showPrinterCard => false;
+
+  /// VERSION_DIAG — "Provjera verzije": shows what the update check last
+  /// answered, and long-press forces the update overlay so it can be tried
+  /// without publishing anything. TEMPORARY, added 13. 10. 2026 to find out
+  /// why the "nova verzija" message never appeared. Flip to false to hide it;
+  /// to remove it for good, grep the project for VERSION_DIAG.
+  bool get _showVersionCard => true;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -363,6 +372,12 @@ class SettingsScreen extends ConsumerWidget {
             const SizedBox(height: 16),
             const _PisacCard(),
           ],
+
+          // ── VERSION_DIAG: Provjera verzije (privremeno) ──────────────────
+          if (_showVersionCard) ...[
+            const SizedBox(height: 16),
+            const _VerzijaCard(),
+          ],
         ],
       ),
     );
@@ -428,6 +443,53 @@ class SettingsScreen extends ConsumerWidget {
 }
 
 /// A titled settings card: a blue uppercase header over its content.
+/// VERSION_DIAG — TEMPORARY card (13. 10. 2026). Says what the update check
+/// last answered, because until now a check that failed and a check that said
+/// "you are up to date" both showed nothing at all.
+///
+/// Long-press anywhere on the card turns on [VersionCheckService.debugForceUpdate]
+/// and asks for a new check, so the blocking "Dostupna je nova verzija"
+/// overlay can be seen and its buttons tried without publishing a build.
+/// Long-press again to turn it off (the overlay stays until the app is
+/// restarted — it never hides itself by design).
+///
+/// To remove: delete this class, the `_showVersionCard` getter and its block
+/// in the list above, then grep VERSION_DIAG for the rest.
+class _VerzijaCard extends StatelessWidget {
+  const _VerzijaCard();
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return GestureDetector(
+      onLongPress: () {
+        VersionCheckService.debugForceUpdate =
+            !VersionCheckService.debugForceUpdate;
+        VersionCheckService.checkRequested.value++;
+      },
+      child: _SettingsCard(
+        header: 'Provjera verzije',
+        child: ValueListenableBuilder<String>(
+          valueListenable: VersionCheckService.lastOutcome,
+          builder: (context, outcome, _) => Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(outcome, style: theme.textTheme.bodyMedium),
+              const SizedBox(height: 8),
+              Text(
+                'Dugi pritisak: prisilno prikaži poruku o novoj verziji (test).',
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _SettingsCard extends StatelessWidget {
   const _SettingsCard({required this.header, required this.child});
 

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../shared/state/app_info_provider.dart';
 import '../../theme/state/theme_mode_provider.dart';
 
 /// Right-side settings drawer (opened from the app-bar cog), holding the
@@ -32,7 +33,45 @@ class SettingsDrawer extends ConsumerWidget {
               onChanged: (m) =>
                   ref.read(themeModeProvider.notifier).setThemeMode(m),
             ),
+            const Spacer(),
+            const _VersionLine(),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+/// The installed version at the foot of the drawer, as in the ikasa app:
+/// "v1.0.18 (22)". Quiet enough to ignore, there whenever someone asks which
+/// build a phone is running — the first question on every support call.
+///
+/// Nothing is drawn until [appInfoProvider] has answered, so the line never
+/// flashes in empty and then fills.
+class _VersionLine extends ConsumerWidget {
+  const _VersionLine();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final theme = Theme.of(context);
+    final label = ref
+        .watch(appInfoProvider)
+        .maybeWhen(
+          data: (i) => 'v${i.version} (${i.buildNumber})',
+          orElse: () => '',
+        );
+    if (label.isEmpty) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
+      child: SizedBox(
+        width: double.infinity,
+        child: Text(
+          label,
+          textAlign: TextAlign.center,
+          style: theme.textTheme.bodySmall?.copyWith(
+            color: theme.colorScheme.onSurfaceVariant.withValues(alpha: 0.65),
+            fontWeight: FontWeight.w500,
+          ),
         ),
       ),
     );

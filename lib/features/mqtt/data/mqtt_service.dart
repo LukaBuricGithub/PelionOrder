@@ -24,9 +24,11 @@ import '../models/mqtt_table_query.dart';
 ///   15 s connection timeout. The FIRST connection of a session is retried
 ///   forever by [_scheduleRetry]: 5 s, 10 s, 20 s, 40 s, then every 60 s, each
 ///   plus a random 0–5 s; when the broker refuses the login (return code 4/5)
-///   the pace drops to 1 min, 2 min, 5 min, then every 10 min. Once connected,
-///   drops are recovered by the client's own auto-reconnect.
-/// * **After every connection** (the first one and every auto-reconnect):
+///   the pace drops to 1 min, 2 min, 5 min, then every 10 min. A drop after
+///   that is recovered the same way: [onDisconnected] schedules a retry, and
+///   [_attempt] is the ONE path that may ever open a connection. The
+///   library's own auto-reconnect is deliberately off — see the client setup.
+/// * **After every connection**:
 ///   subscribe with QoS 1, wait for the broker to confirm the subscriptions,
 ///   and only then publish our status "online" — so nothing announces us as
 ///   reachable before our reply topic really exists.
@@ -107,6 +109,23 @@ class MqttService {
   /// Subscriptions still waiting for the broker's confirmation (SUBACK) on the
   /// current connection, and the signal that they have all settled.
   final _pendingSubscriptions = <String>{};
+
+  /// Topics the broker is holding for our session, as far as THIS process
+  /// knows — every one of them acknowledged with a SUBACK we saw.
+  ///
+  /// With `clean session = false` a subscription outlives the connection, so
+  /// re-subscribing to one the broker already has only makes it resend the
+  /// retained message: 37.8 KB of article list, table list and staff on every
+  /// reconnect, measured. On a weak link that is the difference between
+  /// working and not (the broker's 14. 10. 2026 report, §4.5: 155 s needed at
+  /// 2 kbit/s, the app gave up after 19 with 12 % of it — while an order is
+  /// ~200 bytes).
+  ///
+  /// Deliberately NOT persisted. A fresh process subscribes to everything
+  /// once, which costs one catalogue at launch and means no stored belief can
+  /// ever leave the app deaf. Within a process — where the reconnects
+  /// actually happen, dozens a day — nothing is re-sent.
+  final _subscribedTopics = <String>{};
   Completer<void>? _subscriptionsSettled;
 
   /// `spojen` in our status (ms since epoch): when the connection attempt that
@@ -228,6 +247,9 @@ class MqttService {
   /// statuses. For a new device identity (a different QR code) — so nothing
   /// of the previous venue can be applied again while the new one connects.
   void forgetVenueData() {
+    // Another venue means other topics entirely — nothing we believed the
+    // broker holds still applies.
+    _subscribedTopics.clear();
     artikliRawJson.value = null;
     userArtikliRawJson.value = null;
     _userMenuCuser = null;
@@ -260,6 +282,19 @@ class MqttService {
 
   bool get isConnected =>
       _client?.connectionStatus?.state == MqttConnectionState.connected;
+
+  /// A client that is connected OR still negotiating — i.e. one that must not
+  /// be joined by a second.
+  ///
+  /// The guards used to ask [isConnected] alone, which is false while a
+  /// connection is still coming up. A waiter unlocking the phone in that
+  /// window built a SECOND client for the same client-id, and two clients
+  /// with one id is how the connect loop of 14. 10. 2026 started.
+  bool get _hasLiveClient {
+    final state = _client?.connectionStatus?.state;
+    return state == MqttConnectionState.connected ||
+        state == MqttConnectionState.connecting;
+  }
 
   /// The licenca of the active connection (null until connected once).
   String? get licenca => _config?.licenca;
@@ -341,6 +376,8 @@ class MqttService {
     final client = _client;
     if (client == null || !isConnected) return; // the next connect subscribes
     if (previous != null) {
+      // The broker no longer holds it, so a later connect must ask again.
+      _subscribedTopics.remove(previous);
       try {
         client.unsubscribe(previous);
       } catch (e) {
@@ -532,7 +569,9 @@ class MqttService {
     _running = true;
     _pausedByLifecycle = false;
     if (isConnected) return 'MQTT: spojeno kao ${config.uredaj}.';
-    if (_attemptInProgress) return 'MQTT: spajanje je u tijeku…';
+    if (_attemptInProgress || _hasLiveClient) {
+      return 'MQTT: spajanje je u tijeku…';
+    }
     return _attempt();
   }
 
@@ -542,7 +581,7 @@ class MqttService {
     await _adopt(config);
     _running = true;
     _pausedByLifecycle = false;
-    if (isConnected || _attemptInProgress) return;
+    if (_hasLiveClient || _attemptInProgress) return;
     await _attempt();
   }
 
@@ -583,7 +622,10 @@ class MqttService {
     _pausedByLifecycle = false;
     _running = true;
     _resetRetries();
-    if (isConnected || _attemptInProgress) return;
+    // [_hasLiveClient], not [isConnected]: a connection still coming up —
+    // including one the hold in [onAppPaused] kept alive — must not be joined
+    // by a second client.
+    if (_hasLiveClient || _attemptInProgress) return;
     await _attempt();
   }
 
@@ -662,7 +704,7 @@ class MqttService {
     );
     _retryTimer = Timer(wait, () {
       _retryTimer = null;
-      if (_running && !isConnected && !_attemptInProgress) _attempt();
+      if (_running && !_hasLiveClient && !_attemptInProgress) _attempt();
     });
   }
 
@@ -698,10 +740,17 @@ class MqttService {
       ..keepAlivePeriod = config.keepalive
       // An attempt that hangs must not hold up the next one.
       ..connectTimeoutPeriod = _connectTimeout.inMilliseconds
-      // After the first success, drops are recovered by the client itself,
-      // with the same options and the same last will.
-      ..autoReconnect = true
-      ..resubscribeOnAutoReconnect = true
+      // DELIBERATELY OFF. The library's own reconnect dials again the moment
+      // a connection drops, with NO delay, invisibly to us — a second engine
+      // beside [_scheduleRetry]. That is what turned a stale client into a
+      // disaster at one venue on 14. 10. 2026: an orphaned object kept
+      // reconnecting under the same client-id, the broker evicted the live
+      // connection each time (it must, by spec), and the two took turns at
+      // 5.5 connections a SECOND — 887 of them in one day, 12 MB/min of
+      // re-sent catalogue, and an orderman nobody could use until the app was
+      // force-closed. Every reconnect now goes through [_attempt], which is
+      // guarded, paced (§7) and logged. See [onDisconnected].
+      ..autoReconnect = false
       // The client's own log prints every message — orders, staff names —
       // so only in debug builds, never in what ships to the stores.
       ..logging(on: kDebugMode)
@@ -719,29 +768,27 @@ class MqttService {
         _trace('connected as $clientId');
         connected.value = true;
       })
+      // The ONLY place a drop turns into a new connection, now that the
+      // library's own reconnect is off. It schedules rather than dials: the
+      // retry runs through [_attempt] like every other attempt, so there is
+      // exactly one code path that can ever open a connection.
+      //
+      // A client that is no longer [current] falls out here — a clean
+      // shutdown detaches it first, and [_openConnection] adopts the new one
+      // before discarding the old — so neither can schedule anything.
       ..onDisconnected = (() {
         if (!current()) return;
         _trace('disconnected');
         connected.value = false;
         _resetDevices();
-      })
-      ..onAutoReconnect = (() {
-        if (!current()) return;
-        _trace('connection lost — reconnecting');
-        connected.value = false;
-        // The client resubscribes on its own once back; wait for those
-        // confirmations before announcing "online" again.
-        _expectSubscriptionConfirmations();
-      })
-      ..onAutoReconnected = (() {
-        if (!current()) return;
-        _trace('reconnected');
-        connected.value = true;
-        unawaited(_announceOnline(client));
+        _scheduleRetry();
       })
       ..onSubscribed = ((String topic) {
         if (!current()) return;
         debugPrint('MQTT ▸ subscribed: $topic');
+        // The broker now holds this one for our session, so the next connect
+        // need not ask for it again (see [_subscribedTopics]).
+        _subscribedTopics.add(topic);
         // The device table can be trusted from here: the broker now sends
         // every retained status with this subscription.
         if (topic == _tStatusAll) statusesReady.value = true;
@@ -750,6 +797,8 @@ class MqttService {
       ..onSubscribeFail = ((String topic) {
         if (!current()) return;
         _trace('subscribe DENIED (ACL): $topic');
+        // Denied is not held: ask again next time rather than assume it.
+        _subscribedTopics.remove(topic);
         _subscriptionSettled(topic);
       })
       // Supplying this makes a failed attempt return instead of throwing.
@@ -774,7 +823,25 @@ class MqttService {
         .withWillMessage(_statusJson(config, 'offline', attemptSpojen))
         .withWillQos(MqttQos.atLeastOnce)
         .withWillRetain();
+
+    // Adopt the new client FIRST, then kill whatever was here before.
+    //
+    // Dropping the reference alone never stopped the old object: the library
+    // keeps its socket, its keepalive timer and its stream subscriptions, so
+    // an unreferenced client carries on living — a second phone redialling
+    // the same number with our SIM in it. The broker then has to evict
+    // whichever connection is live (MQTT requires that of a repeated
+    // client-id), and the two take turns forever.
+    //
+    // The order matters: once [_client] is the new one, the old one is no
+    // longer `current`, so the `disconnect()` below can't be mistaken for a
+    // real drop and schedule a retry.
+    final previous = _client;
     _client = client;
+    if (previous != null && !identical(previous, client)) {
+      _trace('discarding the previous client before connecting');
+      _discard(previous);
+    }
 
     try {
       debugPrint(
@@ -828,9 +895,46 @@ class MqttService {
 
     // Subscribe with QoS 1 — the retained data flows to the listener above —
     // and announce "online" only once the broker has confirmed them.
-    _expectSubscriptionConfirmations();
+    //
+    // A session the broker did NOT have is a blank slate: whatever we think
+    // it holds is wrong, so everything is subscribed again. With a session it
+    // does have, only topics this process has not already got a SUBACK for go
+    // out. A topic set that CHANGED (a different waiter's price list, a topic
+    // added by an app update) is covered by the same comparison.
+    //
+    // TWO are always re-subscribed, whatever we believe:
+    //
+    // * `mob/{id}` carries the kasa's order confirmations — the one topic
+    //   going deaf on would be serious — and it has no retained payload, so
+    //   asking again is free;
+    // * `status/+` because [onDisconnected] empties the device table, and
+    //   only a NEW subscription makes the broker resend the retained statuses
+    //   that refill it. Those are a few hundred bytes.
+    //
+    // What is skipped is `podaci/*`, and `artikli` alone is 35 of the 37.8 KB
+    // — so this keeps essentially all of the saving while leaving ordering
+    // and the send gate working even if the assumption above were ever wrong.
+    if (!_sessionPresent(client)) {
+      if (_subscribedTopics.isNotEmpty) {
+        _trace('broker has no session for us — subscribing to everything');
+      }
+      _subscribedTopics.clear();
+    }
+    final always = {_tMob, _tStatusAll};
+    final missing = [
+      for (final topic in _subscriptionTopics)
+        if (always.contains(topic) || !_subscribedTopics.contains(topic)) topic,
+    ];
+    _expectSubscriptionConfirmations(missing);
+    if (missing.length < _subscriptionTopics.length) {
+      _trace(
+        'broker already holds '
+        '${_subscriptionTopics.length - missing.length} subscriptions '
+        '— catalogue not re-sent',
+      );
+    }
     try {
-      for (final topic in _subscriptionTopics) {
+      for (final topic in missing) {
         client.subscribe(topic, MqttQos.atLeastOnce);
       }
     } catch (e) {
@@ -942,16 +1046,35 @@ class MqttService {
     if (e.topic == _tVerzija) verzijaRawJson.value = payload;
   }
 
-  void _expectSubscriptionConfirmations() {
-    // Every (re)connection starts from an empty device table (§11.2, rule 3):
-    // statuses that changed while we were away may arrive late, out of order,
-    // or not at all — the retained ones sent with the new subscription are the
-    // only reliable picture.
-    _resetDevices();
+  /// Waits for the SUBACKs of [topics] — the ones actually being subscribed on
+  /// this connection, which may be none when the broker already holds them.
+  void _expectSubscriptionConfirmations(List<String> topics) {
+    // A NEW subscription to `status/+` makes the broker resend every retained
+    // status, and only then is an empty device table safe to start from
+    // (§11.2, rule 3): statuses that changed while we were away may arrive
+    // late, out of order, or not at all.
+    //
+    // When we do NOT re-subscribe, the retained statuses are not resent — so
+    // clearing the table would leave it empty for good. The table we already
+    // have is the right one to keep: the broker queued every change for our
+    // persistent session and delivers them on this connection.
+    if (topics.contains(_tStatusAll)) _resetDevices();
     _pendingSubscriptions
       ..clear()
-      ..addAll(_subscriptionTopics);
-    _subscriptionsSettled = Completer<void>();
+      ..addAll(topics);
+    final settled = Completer<void>();
+    _subscriptionsSettled = settled;
+    // Nothing to wait for: "online" must not sit behind a 10-second timeout
+    // for SUBACKs that are never coming.
+    if (topics.isEmpty) settled.complete();
+  }
+
+  /// Whether the broker reported it already had a session for our client-id
+  /// (CONNACK's `session present`). True means our subscriptions are still
+  /// registered there and publishes will reach us without subscribing again.
+  bool _sessionPresent(MqttServerClient client) {
+    final ack = client.connectionStatus?.connectAckMessage;
+    return ack is MqttConnectAckMessage && ack.variableHeader.sessionPresent;
   }
 
   void _resetDevices() {
