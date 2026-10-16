@@ -7,6 +7,7 @@ import 'package:mqtt_client/mqtt_client.dart';
 import 'package:mqtt_client/mqtt_server_client.dart';
 
 import '../../shared/platform/background_time.dart';
+import '../../shared/services/connectivity_service.dart';
 import '../../shared/services/crash_reporting.dart';
 import '../models/mqtt_connection_config.dart';
 import '../models/mqtt_device_status.dart';
@@ -46,7 +47,9 @@ import '../models/mqtt_table_query.dart';
 /// `readwrite kasa/%u/#` (`%u` = licenca / username). The phone does NOT take
 /// part in `poruka`/`ack` (PelionAdmin → kasa popups) and sends no `dojava`.
 class MqttService {
-  MqttService._();
+  MqttService._() {
+    _watchTransport();
+  }
   static final MqttService instance = MqttService._();
 
   MqttServerClient? _client;
@@ -105,6 +108,11 @@ class MqttService {
 
   /// How long a clean shutdown waits for "offline" to be delivered.
   static const _offlineDeliveryWait = Duration(seconds: 3);
+
+  /// How long a keepalive ping may go unanswered before the client gives the
+  /// connection up — the last line of defence behind [_watchTransport] and
+  /// [_connectionLooksDead].
+  static const _noPingResponse = Duration(seconds: 30);
 
   /// Subscriptions still waiting for the broker's confirmation (SUBACK) on the
   /// current connection, and the signal that they have all settled.
@@ -557,6 +565,38 @@ class MqttService {
     }
   }
 
+  /// Watches the phone's own network state, so losing it is noticed at once
+  /// rather than whenever a keepalive finally fails.
+  ///
+  /// This is what Android gives us for free — a dead interface errors its
+  /// sockets, `onDisconnected` fires, the bar goes red. iOS does not: it
+  /// leaves the socket hanging silently, so the app went on believing it was
+  /// connected long after the waiter had switched wifi off.
+  ///
+  /// Only the OFF edge is trusted. "A transport exists" says nothing about
+  /// the broker being reachable, so a returning network merely prompts an
+  /// attempt — it never marks us connected.
+  ///
+  /// Never cancelled: the subscription belongs to the singleton and lives as
+  /// long as the app does.
+  void _watchTransport() {
+    ConnectivityService().onConnectionChanged.listen((online) {
+      if (!online) {
+        final client = _client;
+        _trace('phone has no network');
+        if (client != null) _connectionLooksDead(client);
+        return;
+      }
+      // Back on a network: try now instead of sitting out the backoff, so a
+      // queued order leaves as soon as it can.
+      if (_running && !_hasLiveClient && !_attemptInProgress) {
+        _trace('network is back — connecting now');
+        _resetRetries();
+        unawaited(_attempt());
+      }
+    });
+  }
+
   /// A QoS 1 publish the broker never acknowledged — so the socket is gone,
   /// whatever the client still believes.
   ///
@@ -780,6 +820,16 @@ class MqttService {
     client
       ..secure = config.tls
       ..keepAlivePeriod = config.keepalive
+      // Without this the keepalive is a ping that never concludes anything:
+      // the client pings every 60 s and, when the answers stop coming, goes
+      // on believing it is connected FOREVER. The library's default is 0,
+      // which disables the check — so on iOS, where a dead socket raises no
+      // error, nothing ever noticed the connection had gone.
+      //
+      // 30 s after an unanswered ping is the backstop; the phone's own
+      // network state ([_watchTransport]) and an unacknowledged publish
+      // ([_connectionLooksDead]) both catch it far sooner.
+      ..disconnectOnNoResponsePeriod = _noPingResponse.inSeconds
       // An attempt that hangs must not hold up the next one.
       ..connectTimeoutPeriod = _connectTimeout.inMilliseconds
       // DELIBERATELY OFF. The library's own reconnect dials again the moment
