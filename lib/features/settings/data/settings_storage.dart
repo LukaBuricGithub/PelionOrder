@@ -1,6 +1,7 @@
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/menu_view_size.dart';
+import '../models/order_entry_layout.dart';
 import '../models/table_view_size.dart';
 
 /// Persists device display / sending preferences in [SharedPreferences],
@@ -14,6 +15,7 @@ class SettingsStorage {
 
   static const _tableViewSizeKey = 'table_view_size_v1';
   static const _menuViewSizeKey = 'menu_view_size_v1';
+  static const _orderEntryLayoutKey = 'order_entry_layout_v1';
   static const _shouldGroupArticlesKey = 'should_group_articles_v1';
   static const _autoResendKey = 'auto_resend_orders_v1';
 
@@ -42,6 +44,15 @@ class SettingsStorage {
 
   Future<void> saveMenuViewSize(MenuViewSize size) async {
     await _prefs.setString(_menuViewSizeKey, size.name);
+  }
+
+  /// How "Stol X" is laid out. Defaults to the tile grid the app has always
+  /// had, so no existing device changes on its own.
+  OrderEntryLayout loadOrderEntryLayout() =>
+      OrderEntryLayout.fromName(_prefs.getString(_orderEntryLayoutKey));
+
+  Future<void> saveOrderEntryLayout(OrderEntryLayout layout) async {
+    await _prefs.setString(_orderEntryLayoutKey, layout.name);
   }
 
   /// Whether identical items are combined into a single line when an order is

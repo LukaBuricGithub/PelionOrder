@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../shared/state/shared_preferences_provider.dart';
 import '../data/settings_storage.dart';
 import '../models/menu_view_size.dart';
+import '../models/order_entry_layout.dart';
 import '../models/table_view_size.dart';
 
 final settingsStorageProvider = Provider<SettingsStorage>((ref) {
@@ -15,6 +16,7 @@ class SettingsState {
   const SettingsState({
     this.tableViewSize = TableViewSize.medium,
     this.menuViewSize = MenuViewSize.small,
+    this.orderEntryLayout = OrderEntryLayout.grid,
     this.shouldGroupArticles = false,
     this.shouldAutoResend = false,
     this.useFloorPlan = false,
@@ -24,6 +26,9 @@ class SettingsState {
 
   final TableViewSize tableViewSize;
   final MenuViewSize menuViewSize;
+
+  /// How the order-entry screen is laid out on this phone.
+  final OrderEntryLayout orderEntryLayout;
   final bool shouldGroupArticles;
   final bool shouldAutoResend;
 
@@ -39,6 +44,7 @@ class SettingsState {
   SettingsState copyWith({
     TableViewSize? tableViewSize,
     MenuViewSize? menuViewSize,
+    OrderEntryLayout? orderEntryLayout,
     bool? shouldGroupArticles,
     bool? shouldAutoResend,
     bool? useFloorPlan,
@@ -48,6 +54,7 @@ class SettingsState {
     return SettingsState(
       tableViewSize: tableViewSize ?? this.tableViewSize,
       menuViewSize: menuViewSize ?? this.menuViewSize,
+      orderEntryLayout: orderEntryLayout ?? this.orderEntryLayout,
       shouldGroupArticles: shouldGroupArticles ?? this.shouldGroupArticles,
       shouldAutoResend: shouldAutoResend ?? this.shouldAutoResend,
       useFloorPlan: useFloorPlan ?? this.useFloorPlan,
@@ -64,6 +71,7 @@ class SettingsController extends StateNotifier<SettingsState> {
         SettingsState(
           tableViewSize: _storage.loadTableViewSize(),
           menuViewSize: _storage.loadMenuViewSize(),
+          orderEntryLayout: _storage.loadOrderEntryLayout(),
           shouldGroupArticles: _storage.loadShouldGroupArticles(),
           shouldAutoResend: _storage.loadShouldAutoResend(),
           useFloorPlan: _storage.loadUseFloorPlan(),
@@ -87,6 +95,11 @@ class SettingsController extends StateNotifier<SettingsState> {
   Future<void> setShouldGroupArticles(bool value) async {
     await _storage.saveShouldGroupArticles(value);
     state = state.copyWith(shouldGroupArticles: value);
+  }
+
+  Future<void> setOrderEntryLayout(OrderEntryLayout layout) async {
+    await _storage.saveOrderEntryLayout(layout);
+    state = state.copyWith(orderEntryLayout: layout);
   }
 
   Future<void> setShouldAutoResend(bool value) async {

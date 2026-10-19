@@ -81,6 +81,56 @@ class MqttCart extends ChangeNotifier {
     _touch();
   }
 
+  // ── By article, for the "Popis" layout ────────────────────────────────────
+  //
+  // That layout has one row per ARTICLE, not per tap: pressing the same
+  // article again raises its quantity instead of starting a second line, and
+  // the article drops out of the order when the quantity reaches zero. The
+  // lines themselves are unchanged, so everything downstream — napomene,
+  // grouping, the payload — works exactly as before.
+
+  /// How many of [code] the order holds, across every line.
+  double quantityOf(int code) =>
+      lines.where((l) => l.code == code).fold(0.0, (sum, l) => sum + l.qty);
+
+  /// One more of [code], merged into the line already there rather than a new
+  /// one. Falls back to a new line when the article isn't in the order yet.
+  void addQuantity(int code) {
+    final i = lines.lastIndexWhere((l) => l.code == code);
+    if (i < 0) {
+      addLine(code);
+      return;
+    }
+    incrementLine(i);
+  }
+
+  /// One fewer of [code]; at zero the article leaves the order. Works on the
+  /// most recent line, so a cart built in the other layout degrades sensibly.
+  void removeQuantity(int code) {
+    final i = lines.lastIndexWhere((l) => l.code == code);
+    if (i >= 0) decrementLine(i);
+  }
+
+  /// The line [code] is ordered on, or -1. The napomene editor needs it: that
+  /// editor works per line, while the "Popis" layout speaks per article.
+  int lineIndexOf(int code) => lines.lastIndexWhere((l) => l.code == code);
+
+  /// Sets the quantity of [code] outright — what the number pad returns.
+  ///
+  /// Anything sold by weight or measure needs this: 300 g of steak is one
+  /// entry, not three hundred presses of +. Creates the line when the article
+  /// isn't in the order yet, and removes it at zero.
+  void setQuantityOf(int code, double q) {
+    final i = lines.lastIndexWhere((l) => l.code == code);
+    if (i >= 0) {
+      setQuantity(i, q);
+      return;
+    }
+    if (q <= 0) return;
+    lines.add(MqttCartLine(code)..qty = q);
+    _touch();
+  }
+
   void setQuantity(int i, double q) {
     if (i < 0 || i >= lines.length) return;
     if (q <= 0) {

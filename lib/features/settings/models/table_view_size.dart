@@ -7,10 +7,10 @@ enum TableViewSize {
 
   /// Croatian label for the settings selector.
   String get label => switch (this) {
-        TableViewSize.small => 'Male',
-        TableViewSize.medium => 'Srednje',
-        TableViewSize.large => 'Velike',
-      };
+    TableViewSize.small => 'Male',
+    TableViewSize.medium => 'Srednje',
+    TableViewSize.large => 'Velike',
+  };
 
   static TableViewSize fromName(String? name) {
     return TableViewSize.values.firstWhere(

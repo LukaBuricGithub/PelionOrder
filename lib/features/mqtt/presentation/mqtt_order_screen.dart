@@ -10,6 +10,7 @@ import 'package:intl/intl.dart';
 
 import '../../auth/state/session_provider.dart';
 import '../../settings/models/menu_view_size.dart';
+import '../../settings/models/order_entry_layout.dart';
 import '../../settings/state/settings_provider.dart';
 import '../../shared/presentation/system_bars.dart';
 import '../data/mqtt_service.dart';
@@ -501,6 +502,99 @@ class _MqttOrderScreenState extends ConsumerState<MqttOrderScreen> {
     return true;
   }
 
+  /// The "Popis" layout: group picker, the price list as one column, the
+  /// total of what is being added, and the two actions.
+  ///
+  /// Deliberately WITHOUT the table's existing items. That is the whole point
+  /// of this layout — waiters coming from the older orderman asked to open a
+  /// table on the price list, not on what is already on the bill — so the
+  /// total here counts only the new order, and "Detalji" is where the table
+  /// is seen in full.
+  Widget _listBody(
+    BuildContext context, {
+    required List<MqttArticleGroup> groups,
+    required int? selectedId,
+    required List<MqttArticle> articles,
+    required MenuViewSize menuSize,
+    required bool menuLoading,
+    required MqttSendGate sendGate,
+    required bool hasItems,
+  }) {
+    final willQueue = !sendGate.isOpen && sendGate.canQueue;
+    return Column(
+      children: [
+        _PickerBar(
+          groups: groups,
+          size: menuSize,
+          selectedId: selectedId,
+          searching: _searching,
+          searchController: _searchController,
+          onSelectGroup: (id) => setState(() {
+            _selectedGroupId = id;
+            _query = '';
+          }),
+          onQuery: (q) => setState(() => _query = q),
+        ),
+        Expanded(
+          child: menuLoading
+              ? MqttExistingLoader(
+                  scale: _screenScale(context),
+                  label: 'Učitavanje cjenika…',
+                )
+              : _ArticleList(
+                  articles: articles,
+                  cart: _cart,
+                  money: _money,
+                  remarksFor: _remarksFor,
+                  remarkName: _menu.remarkName,
+                ),
+        ),
+        _TotalBar(
+          // Only what is being added now — the table's own total belongs to
+          // the bill, and this layout never shows it.
+          total: _money.format(_cartTotal),
+          searching: _searching,
+          onToggleSearch: _toggleSearch,
+        ),
+        // The same tones as the grid's button column — purple for Detalji,
+        // teal for Pošalji, plum when pressing it will queue — so a waiter
+        // who switches layouts recognises the buttons by colour.
+        Padding(
+          padding: const EdgeInsets.fromLTRB(10, 8, 10, 10),
+          child: Row(
+            children: [
+              Expanded(
+                child: _ListAction(
+                  tone: _Tone.neutral,
+                  icon: Icons.list_alt,
+                  label: 'Detalji',
+                  onPressed: _sending ? null : _openDetails,
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: _ListAction(
+                  tone: willQueue ? _Tone.queued : _Tone.primary,
+                  icon: _confirmed
+                      ? (_queuedForLater ? Icons.schedule_send : Icons.check)
+                      : (willQueue ? Icons.schedule_send : Icons.send),
+                  label: 'Pošalji',
+                  busy: _sending,
+                  onPressed:
+                      hasItems &&
+                          !_sending &&
+                          (sendGate.isOpen || sendGate.canQueue)
+                      ? _send
+                      : null,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
   Future<void> _send() => _sendOrder();
 
   /// Asks before sending while the kasa isn't answering. True to send anyway.
@@ -743,6 +837,10 @@ class _MqttOrderScreenState extends ConsumerState<MqttOrderScreen> {
               : 'Stol $broj');
 
     final hasItems = _cart.isNotEmpty;
+    // "Popis": the price list in one column, quantities on the row itself and
+    // the table's existing items left to "Detalji" — the way the older Pelion
+    // orderman worked. A per-device choice; the grid stays the default.
+    final listLayout = settings.orderEntryLayout == OrderEntryLayout.list;
     // §11.4: whether the kasa takes orders right now, and why not.
     final sendGate = ref.watch(mqttSendGateProvider);
     // Orders in a row the kasa hasn't answered — the waiter is told before
@@ -764,7 +862,28 @@ class _MqttOrderScreenState extends ConsumerState<MqttOrderScreen> {
         ignoring: _confirmed || _sending,
         child: Scaffold(
           appBar: AppBar(
-            title: Text(title),
+            // "Popis" loses title width to the bin on its right, and its
+            // tables are the ones with long names — so there the name drops
+            // to a second line instead of being cut. The grid keeps the
+            // single ellipsized line it has always had.
+            titleSpacing: listLayout ? 0 : null,
+            title: listLayout
+                ? _ListTitle(broj: broj, naziv: naziv)
+                : Text(title),
+            // "Popis" has no cart panel, so clearing the order lives here.
+            // Only while there is something to clear. Same mark and the same
+            // error colour as the one on the details screen.
+            actions: [
+              if (listLayout && hasItems && !_reordering)
+                IconButton(
+                  tooltip: 'Isprazni narudžbu',
+                  icon: Icon(
+                    Icons.delete_sweep_outlined,
+                    color: Theme.of(context).colorScheme.error,
+                  ),
+                  onPressed: _confirmClear,
+                ),
+            ],
             // Right under the title, and only when there is something to say:
             // why sending is locked, or — when it isn't — that the kasa has
             // stopped confirming. The lock wins: it is the reason, this is
@@ -777,6 +896,19 @@ class _MqttOrderScreenState extends ConsumerState<MqttOrderScreen> {
           ),
           body: groups.isEmpty
               ? const _EmptyMenu()
+              : listLayout
+              ? SafeArea(
+                  child: _listBody(
+                    context,
+                    groups: groups,
+                    selectedId: selectedId,
+                    articles: articles,
+                    menuSize: menuSize,
+                    menuLoading: menuView.loading,
+                    sendGate: sendGate,
+                    hasItems: hasItems,
+                  ),
+                )
               : SafeArea(
                   child: Column(
                     children: [
@@ -1814,6 +1946,38 @@ class _ActionColumn extends StatelessWidget {
 
 enum _Tone { primary, queued, neutral, info, danger }
 
+/// The button column's palette, shared with the two actions at the foot of
+/// the "Popis" layout so one tone means one thing wherever it is drawn.
+(Color, Color) _toneColors(_Tone tone, bool dark) => switch (tone) {
+  _Tone.primary =>
+    dark
+        ? (const Color(0xFF1FA9B6), const Color(0xFF052A2E))
+        : (const Color(0xFF0E9AA7), Colors.white),
+  // Plum: pressing this freezes the order instead of sending it. A hue
+  // nothing else on this screen uses — the teal next to it means "goes
+  // now", the amber of the group strip means something else again, and
+  // red would read as destructive when this is the safe thing to do.
+  _Tone.queued =>
+    dark
+        ? (const Color(0xFFC58BAE), const Color(0xFF1E0C17))
+        : (const Color(0xFF7A3F63), Colors.white),
+  _Tone.neutral =>
+    dark
+        ? (const Color(0xFF8677E8), const Color(0xFF140A3A))
+        : (const Color(0xFF6A57D8), Colors.white),
+  // Solid blue: filled like Detalji and Pošalji, and the one hue the
+  // button column doesn't use yet. The dark shade is deliberately a clear
+  // blue — a softer one read as a second teal next to "Pošalji".
+  _Tone.info =>
+    dark
+        ? (const Color(0xFF4F8BE8), const Color(0xFF04152E))
+        : (const Color(0xFF2F6FB3), Colors.white),
+  _Tone.danger =>
+    dark
+        ? (const Color(0xFF5A2A2A), const Color(0xFFF0B5B5))
+        : (const Color(0xFFF4D7D7), const Color(0xFF8A2E2E)),
+};
+
 class _ActionButton extends StatelessWidget {
   const _ActionButton({
     required this.icon,
@@ -1843,35 +2007,7 @@ class _ActionButton extends StatelessWidget {
     final dark = Theme.of(context).brightness == Brightness.dark;
     final s = _screenScale(context);
     final iconSize = math.min(26.0 * s, height * 0.46);
-    final (bg, fg) = switch (tone) {
-      _Tone.primary =>
-        dark
-            ? (const Color(0xFF1FA9B6), const Color(0xFF052A2E))
-            : (const Color(0xFF0E9AA7), Colors.white),
-      // Plum: pressing this freezes the order instead of sending it. A hue
-      // nothing else on this screen uses — the teal next to it means "goes
-      // now", the amber of the group strip means something else again, and
-      // red would read as destructive when this is the safe thing to do.
-      _Tone.queued =>
-        dark
-            ? (const Color(0xFFC58BAE), const Color(0xFF1E0C17))
-            : (const Color(0xFF7A3F63), Colors.white),
-      _Tone.neutral =>
-        dark
-            ? (const Color(0xFF8677E8), const Color(0xFF140A3A))
-            : (const Color(0xFF6A57D8), Colors.white),
-      // Solid blue: filled like Detalji and Pošalji, and the one hue the
-      // button column doesn't use yet. The dark shade is deliberately a clear
-      // blue — a softer one read as a second teal next to "Pošalji".
-      _Tone.info =>
-        dark
-            ? (const Color(0xFF4F8BE8), const Color(0xFF04152E))
-            : (const Color(0xFF2F6FB3), Colors.white),
-      _Tone.danger =>
-        dark
-            ? (const Color(0xFF5A2A2A), const Color(0xFFF0B5B5))
-            : (const Color(0xFFF4D7D7), const Color(0xFF8A2E2E)),
-    };
+    final (bg, fg) = _toneColors(tone, dark);
     final enabled = onTap != null;
     return Opacity(
       opacity: enabled ? 1 : 0.4,
@@ -2197,6 +2333,395 @@ class _ArticleGrid extends StatelessWidget {
           },
         );
       },
+    );
+  }
+}
+
+/// The "Popis" app-bar title: the table's number on one line, its name on
+/// the next — the same shape the details screen uses.
+///
+/// A single line would cut "Terasa uz more" to "Terasa uz m…", and this
+/// layout has less room for it than the grid does: the bin sits to its right.
+/// Two lines are only built when there is a name to put on the second one.
+class _ListTitle extends StatelessWidget {
+  const _ListTitle({required this.broj, required this.naziv});
+
+  final int? broj;
+  final String? naziv;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final titleStyle =
+        theme.appBarTheme.titleTextStyle ?? theme.textTheme.titleLarge;
+    final top = broj == null ? 'Narudžba' : 'Stol $broj';
+    final name = naziv?.trim() ?? '';
+    if (name.isEmpty) return Text(top, style: titleStyle);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text(top, style: titleStyle),
+        Text(
+          name,
+          // Two lines of a venue name is already generous; beyond that the
+          // app bar would start eating the price list.
+          maxLines: 2,
+          overflow: TextOverflow.ellipsis,
+          style: TextStyle(
+            fontSize: 13.5,
+            height: 1.15,
+            color: theme.colorScheme.onSurfaceVariant,
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+/// One of the two wide actions at the foot of the "Popis" layout, painted
+/// from the same [_toneColors] table as the grid's button column.
+class _ListAction extends StatelessWidget {
+  const _ListAction({
+    required this.tone,
+    required this.icon,
+    required this.label,
+    required this.onPressed,
+    this.busy = false,
+  });
+
+  final _Tone tone;
+  final IconData icon;
+  final String label;
+  final VoidCallback? onPressed;
+  final bool busy;
+
+  @override
+  Widget build(BuildContext context) {
+    final dark = Theme.of(context).brightness == Brightness.dark;
+    final (bg, fg) = _toneColors(tone, dark);
+    final s = _screenScale(context);
+    return FilledButton.icon(
+      onPressed: onPressed,
+      style: FilledButton.styleFrom(
+        backgroundColor: bg,
+        foregroundColor: fg,
+        disabledBackgroundColor: bg.withValues(alpha: 0.4),
+        disabledForegroundColor: fg.withValues(alpha: 0.6),
+        minimumSize: Size.fromHeight(50 * s),
+        textStyle: TextStyle(fontSize: 15 * s, fontWeight: FontWeight.w600),
+      ),
+      icon: busy
+          ? SizedBox(
+              width: 18 * s,
+              height: 18 * s,
+              child: CircularProgressIndicator(strokeWidth: 2, color: fg),
+            )
+          : Icon(icon, size: 20 * s),
+      label: Text(label),
+    );
+  }
+}
+
+/// The price list as one scrolling column — the "Popis" layout.
+///
+/// One row per ARTICLE, not per tap: pressing the same article again raises
+/// its quantity instead of adding a second line, and at zero it simply leaves
+/// the order while the row stays where it was. The price shown is always for
+/// one, so the column reads as a price list rather than a running bill.
+class _ArticleList extends StatelessWidget {
+  const _ArticleList({
+    required this.articles,
+    required this.cart,
+    required this.money,
+    required this.remarksFor,
+    required this.remarkName,
+  });
+
+  final List<MqttArticle> articles;
+  final MqttCart cart;
+  final NumberFormat money;
+
+  /// The napomene this article offers, for the sheet behind the note button.
+  final List<MqttRemark> Function(int code) remarksFor;
+
+  /// Turns a stored `cnap` into the name the waiter reads.
+  final String Function(String cnap) remarkName;
+
+  @override
+  Widget build(BuildContext context) {
+    if (articles.isEmpty) {
+      return const Center(child: Text('Nema artikala.'));
+    }
+    final s = _screenScale(context);
+    return ListView.separated(
+      padding: EdgeInsets.fromLTRB(10 * s, 6 * s, 10 * s, 6 * s),
+      itemCount: articles.length,
+      separatorBuilder: (_, _) => SizedBox(height: 6 * s),
+      itemBuilder: (context, i) {
+        final a = articles[i];
+        final index = cart.lineIndexOf(a.code);
+        return _ArticleRow(
+          article: a,
+          line: index < 0 ? null : cart.lines[index],
+          cart: cart,
+          price: money.format(a.price),
+          scale: s,
+          available: remarksFor(a.code),
+          remarkName: remarkName,
+        );
+      },
+    );
+  }
+}
+
+/// One row of the price list. Tapping anywhere adds one; once the article is
+/// in the order the row gains a − / quantity / + stepper and an accent edge,
+/// so what is ordered can be read down the column at a glance.
+class _ArticleRow extends StatefulWidget {
+  const _ArticleRow({
+    required this.article,
+    required this.line,
+    required this.cart,
+    required this.price,
+    required this.scale,
+    required this.available,
+    required this.remarkName,
+  });
+
+  final MqttArticle article;
+
+  /// The order's line for this article, or null when it isn't ordered yet.
+  final MqttCartLine? line;
+  final MqttCart cart;
+  final String price;
+  final double scale;
+  final List<MqttRemark> available;
+  final String Function(String cnap) remarkName;
+
+  @override
+  State<_ArticleRow> createState() => _ArticleRowState();
+}
+
+class _ArticleRowState extends State<_ArticleRow> {
+  int get _code => widget.article.code;
+
+  Future<void> _editQty() async {
+    final v = await showMqttQtyPad(
+      context: context,
+      articleName: widget.article.name,
+      unit: widget.article.unit,
+      initial: widget.cart.quantityOf(_code),
+    );
+    if (v == null || !mounted) return;
+    widget.cart.setQuantityOf(_code, v);
+  }
+
+  void _editRemarks() {
+    final line = widget.line;
+    if (line == null) return;
+    // The index is read fresh in every callback: the sheet stays open while
+    // the order changes underneath it.
+    showMqttRemarksSheet(
+      context: context,
+      available: widget.available,
+      selectedCodes: line.remarkCodes,
+      customNotes: line.customNotes,
+      onToggleCode: (c) =>
+          widget.cart.toggleRemarkCode(widget.cart.lineIndexOf(_code), c),
+      onAddNote: (n) =>
+          widget.cart.addCustomNote(widget.cart.lineIndexOf(_code), n),
+      onRemoveNote: (n) =>
+          widget.cart.removeCustomNote(widget.cart.lineIndexOf(_code), n),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final dark = Theme.of(context).brightness == Brightness.dark;
+    final s = widget.scale;
+    final line = widget.line;
+    final qty = widget.cart.quantityOf(_code);
+    final notes = line == null
+        ? const <String>[]
+        : [...line.remarkCodes.map(widget.remarkName), ...line.customNotes];
+    final inOrder = qty > 0;
+    final fill = inOrder
+        ? (dark ? const Color(0xFF2C3F52) : const Color(0xFFD7E6F2))
+        : (dark ? const Color(0xFF25303C) : const Color(0xFFE4EBF3));
+    final accent = dark ? const Color(0xFF1FA9B6) : const Color(0xFF0E9AA7);
+    final text = dark ? const Color(0xFFE3EAF2) : const Color(0xFF22303F);
+    final sub = dark ? const Color(0xFF93A6B9) : const Color(0xFF5B6D7E);
+
+    return Material(
+      color: fill,
+      borderRadius: BorderRadius.circular(10 * s),
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: () => widget.cart.addQuantity(_code),
+        child: Container(
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(10 * s),
+            border: Border.all(
+              color: inOrder ? accent : Colors.transparent,
+              width: 1.5,
+            ),
+          ),
+          padding: EdgeInsets.fromLTRB(12 * s, 10 * s, 8 * s, 10 * s),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Row(
+                children: [
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          widget.article.name,
+                          style: TextStyle(
+                            fontSize: 14 * s,
+                            fontWeight: FontWeight.w600,
+                            color: text,
+                          ),
+                        ),
+                        SizedBox(height: 4 * s),
+                        // The price, and beside it the two editors — where
+                        // the unit used to be. A quantity entered rather than
+                        // counted needs a button of its own: a number that is
+                        // secretly tappable is a number nobody taps.
+                        Row(
+                          children: [
+                            Text(
+                              widget.price,
+                              style: TextStyle(fontSize: 12 * s, color: sub),
+                            ),
+                            if (inOrder) ...[
+                              SizedBox(width: 10 * s),
+                              _QtyButton(onTap: _editQty),
+                              SizedBox(width: 6 * s),
+                              _NoteButton(
+                                count: notes.length,
+                                onTap: _editRemarks,
+                              ),
+                            ],
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                  if (inOrder) ...[
+                    SizedBox(width: 6 * s),
+                    _StepButton(
+                      icon: Icons.remove,
+                      onTap: () => widget.cart.removeQuantity(_code),
+                      scale: s,
+                    ),
+                    SizedBox(
+                      width: 42 * s,
+                      child: Text(
+                        formatQtyWithUnit(qty, ''),
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                          fontSize: 15 * s,
+                          fontWeight: FontWeight.w700,
+                          color: text,
+                        ),
+                      ),
+                    ),
+                    _StepButton(
+                      icon: Icons.add,
+                      onTap: () => widget.cart.addQuantity(_code),
+                      scale: s,
+                    ),
+                  ],
+                ],
+              ),
+              // What the kitchen will read, under the price — otherwise the
+              // only sign of a napomena is a badge on a button.
+              if (notes.isNotEmpty)
+                Padding(
+                  padding: EdgeInsets.only(top: 5 * s),
+                  child: SizedBox(
+                    width: double.infinity,
+                    child: Text(
+                      notes.join(', '),
+                      style: TextStyle(
+                        fontSize: 12 * s,
+                        fontStyle: FontStyle.italic,
+                        color: sub,
+                      ),
+                    ),
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Opens the number pad for a price-list row. Drawn to match [_NoteButton]
+/// beside it, so the two editors on that line read as a pair.
+class _QtyButton extends StatelessWidget {
+  const _QtyButton({required this.onTap});
+
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final s = _screenScale(context);
+    return Material(
+      color: scheme.surface,
+      borderRadius: BorderRadius.circular(8 * s),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(8 * s),
+        child: Container(
+          height: 28 * s,
+          padding: EdgeInsets.symmetric(horizontal: 8 * s),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(8 * s),
+            border: Border.all(color: scheme.outlineVariant),
+          ),
+          child: Icon(
+            Icons.dialpad,
+            size: 16 * s,
+            color: scheme.onSurfaceVariant,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// The − / + target on a price-list row: a big enough tap area for a thumb,
+/// drawn small.
+class _StepButton extends StatelessWidget {
+  const _StepButton({
+    required this.icon,
+    required this.onTap,
+    required this.scale,
+  });
+
+  final IconData icon;
+  final VoidCallback onTap;
+  final double scale;
+
+  @override
+  Widget build(BuildContext context) {
+    final dark = Theme.of(context).brightness == Brightness.dark;
+    final fg = dark ? const Color(0xFFE3EAF2) : const Color(0xFF22303F);
+    return InkResponse(
+      onTap: onTap,
+      radius: 22 * scale,
+      child: Padding(
+        padding: EdgeInsets.symmetric(horizontal: 6 * scale, vertical: 4),
+        child: Icon(icon, size: 22 * scale, color: fg),
+      ),
     );
   }
 }
