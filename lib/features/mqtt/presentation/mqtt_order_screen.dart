@@ -502,6 +502,26 @@ class _MqttOrderScreenState extends ConsumerState<MqttOrderScreen> {
     return true;
   }
 
+  /// How many DIFFERENT articles of each group the order holds, by group id —
+  /// the digit on the group buttons of the "Popis" layout. Groups with nothing
+  /// ordered are absent rather than zero.
+  ///
+  /// Counted by article, not by quantity: the digit answers "have I put
+  /// anything from here on", so it must not jump every time + is pressed.
+  Map<int, int> _groupSelectionCounts(List<MqttArticleGroup> groups) {
+    if (_cart.isEmpty) return const {};
+    final ordered = {for (final l in _cart.lines) l.code};
+    final counts = <int, int>{};
+    for (final g in groups) {
+      var n = 0;
+      for (final a in g.articles) {
+        if (ordered.contains(a.code)) n++;
+      }
+      if (n > 0) counts[g.id] = n;
+    }
+    return counts;
+  }
+
   /// The "Popis" layout: group picker, the price list as one column, the
   /// total of what is being added, and the two actions.
   ///
@@ -519,6 +539,7 @@ class _MqttOrderScreenState extends ConsumerState<MqttOrderScreen> {
     required bool menuLoading,
     required MqttSendGate sendGate,
     required bool hasItems,
+    required bool splitUnits,
   }) {
     final willQueue = !sendGate.isOpen && sendGate.canQueue;
     return Column(
@@ -529,6 +550,10 @@ class _MqttOrderScreenState extends ConsumerState<MqttOrderScreen> {
           selectedId: selectedId,
           searching: _searching,
           searchController: _searchController,
+          // How many of a group's articles the order holds. The price list
+          // scrolls and this layout shows no cart, so without it a waiter has
+          // to walk back through the groups to see what they already put on.
+          counts: _groupSelectionCounts(groups),
           onSelectGroup: (id) => setState(() {
             _selectedGroupId = id;
             _query = '';
@@ -547,6 +572,7 @@ class _MqttOrderScreenState extends ConsumerState<MqttOrderScreen> {
                   money: _money,
                   remarksFor: _remarksFor,
                   remarkName: _menu.remarkName,
+                  splitUnits: splitUnits,
                 ),
         ),
         _TotalBar(
@@ -907,6 +933,7 @@ class _MqttOrderScreenState extends ConsumerState<MqttOrderScreen> {
                     menuLoading: menuView.loading,
                     sendGate: sendGate,
                     hasItems: hasItems,
+                    splitUnits: settings.splitsOrderUnits,
                   ),
                 )
               : SafeArea(
@@ -2112,6 +2139,7 @@ class _PickerBar extends StatelessWidget {
     required this.searchController,
     required this.onSelectGroup,
     required this.onQuery,
+    this.counts = const {},
   });
 
   final List<MqttArticleGroup> groups;
@@ -2121,6 +2149,11 @@ class _PickerBar extends StatelessWidget {
   final TextEditingController searchController;
   final ValueChanged<int> onSelectGroup;
   final ValueChanged<String> onQuery;
+
+  /// How many of a group's articles the order holds, by group id — drawn as a
+  /// digit in the button's corner. Left empty by the grid layout, which has
+  /// the cart on screen beside the articles and needs no such mark.
+  final Map<int, int> counts;
 
   @override
   Widget build(BuildContext context) {
@@ -2199,29 +2232,74 @@ class _PickerBar extends StatelessWidget {
                   itemBuilder: (context, i) {
                     final g = pageItems[i];
                     final selected = g.id == selectedId;
+                    final count = counts[g.id] ?? 0;
+                    final fill = selected ? selectedFill : unselectedFill;
+                    final ink = selected ? selectedText : unselectedText;
                     return Material(
-                      color: selected ? selectedFill : unselectedFill,
+                      color: fill,
                       borderRadius: BorderRadius.circular(8 * s),
                       clipBehavior: Clip.antiAlias,
                       child: InkWell(
                         onTap: () => onSelectGroup(g.id),
-                        child: Container(
-                          alignment: Alignment.center,
-                          padding: EdgeInsets.symmetric(
-                            horizontal: 4 * s,
-                            vertical: 2 * s,
-                          ),
-                          child: Text(
-                            g.name,
-                            textAlign: TextAlign.center,
-                            maxLines: 2,
-                            overflow: TextOverflow.ellipsis,
-                            style: TextStyle(
-                              fontSize: groupFontSize,
-                              fontWeight: FontWeight.w600,
-                              color: selected ? selectedText : unselectedText,
+                        // Expand, so the name's box still fills the button
+                        // exactly as it did before the badge was put over it.
+                        child: Stack(
+                          fit: StackFit.expand,
+                          children: [
+                            Container(
+                              alignment: Alignment.center,
+                              // Room kept on the right for the digit, so a
+                              // two-line group name never runs under it.
+                              padding: EdgeInsets.fromLTRB(
+                                4 * s,
+                                2 * s,
+                                (count > 0 ? 16 : 4) * s,
+                                2 * s,
+                              ),
+                              child: Text(
+                                g.name,
+                                textAlign: TextAlign.center,
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(
+                                  fontSize: groupFontSize,
+                                  fontWeight: FontWeight.w600,
+                                  color: ink,
+                                ),
+                              ),
                             ),
-                          ),
+                            // The button's own two colours, swapped: legible on
+                            // either state and in either theme, with nothing
+                            // new introduced to the bar.
+                            if (count > 0)
+                              Positioned(
+                                top: 2 * s,
+                                right: 2 * s,
+                                child: Container(
+                                  constraints: BoxConstraints(
+                                    minWidth: 15 * s,
+                                    minHeight: 15 * s,
+                                  ),
+                                  alignment: Alignment.center,
+                                  padding: EdgeInsets.symmetric(
+                                    horizontal: 3 * s,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    color: ink,
+                                    borderRadius: BorderRadius.circular(8 * s),
+                                  ),
+                                  child: Text(
+                                    '$count',
+                                    style: TextStyle(
+                                      fontSize: 10 * s,
+                                      height: 1.1,
+                                      fontWeight: FontWeight.w800,
+                                      color: fill,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                          ],
                         ),
                       ),
                     );
@@ -2436,6 +2514,7 @@ class _ArticleList extends StatelessWidget {
     required this.money,
     required this.remarksFor,
     required this.remarkName,
+    required this.splitUnits,
   });
 
   final List<MqttArticle> articles;
@@ -2447,6 +2526,9 @@ class _ArticleList extends StatelessWidget {
 
   /// Turns a stored `cnap` into the name the waiter reads.
   final String Function(String cnap) remarkName;
+
+  /// The order will be sent unit by unit ("Grupiraj artikle narudžbe" off).
+  final bool splitUnits;
 
   @override
   Widget build(BuildContext context) {
@@ -2469,6 +2551,7 @@ class _ArticleList extends StatelessWidget {
           scale: s,
           available: remarksFor(a.code),
           remarkName: remarkName,
+          splitUnits: splitUnits,
         );
       },
     );
@@ -2487,6 +2570,7 @@ class _ArticleRow extends StatefulWidget {
     required this.scale,
     required this.available,
     required this.remarkName,
+    required this.splitUnits,
   });
 
   final MqttArticle article;
@@ -2499,12 +2583,27 @@ class _ArticleRow extends StatefulWidget {
   final List<MqttRemark> available;
   final String Function(String cnap) remarkName;
 
+  /// The order will be sent unit by unit, so an article counted above one is
+  /// several portions rather than one — see `_several` in the state.
+  final bool splitUnits;
+
   @override
   State<_ArticleRow> createState() => _ArticleRowState();
 }
 
 class _ArticleRowState extends State<_ArticleRow> {
   int get _code => widget.article.code;
+
+  /// One more of this article. Ungrouped that is a portion of its own; grouped
+  /// it raises the count, unless the portion it would raise carries a napomena
+  /// — a new portion never inherits one.
+  void _add() {
+    if (widget.splitUnits) {
+      widget.cart.addUnit(_code);
+    } else {
+      widget.cart.addPlainQuantity(_code);
+    }
+  }
 
   Future<void> _editQty() async {
     final v = await showMqttQtyPad(
@@ -2542,10 +2641,23 @@ class _ArticleRowState extends State<_ArticleRow> {
     final s = widget.scale;
     final line = widget.line;
     final qty = widget.cart.quantityOf(_code);
-    final notes = line == null
+    final inOrder = qty > 0;
+    // The order holds this article as several portions, which may differ.
+    //
+    // One row cannot speak for them: it reads and writes only the LAST of them,
+    // so the napomena button, the notes under the price and the number pad all
+    // step aside while there are several — a napomena belongs to a portion and
+    // is written per portion in "Detalji narudžbe", and "set the quantity to
+    // five" has no single meaning once three portions read differently. The
+    // stepper still counts the whole article, which is unambiguous.
+    //
+    // A single line is always ONE entry, whatever it counts — 3 pieces or
+    // 2.5 kg — so it keeps both controls and they stay exact.
+    final several =
+        widget.cart.lines.where((l) => l.code == _code).length > 1;
+    final notes = (line == null || several)
         ? const <String>[]
         : [...line.remarkCodes.map(widget.remarkName), ...line.customNotes];
-    final inOrder = qty > 0;
     final fill = inOrder
         ? (dark ? const Color(0xFF2C3F52) : const Color(0xFFD7E6F2))
         : (dark ? const Color(0xFF25303C) : const Color(0xFFE4EBF3));
@@ -2558,7 +2670,7 @@ class _ArticleRowState extends State<_ArticleRow> {
       borderRadius: BorderRadius.circular(10 * s),
       clipBehavior: Clip.antiAlias,
       child: InkWell(
-        onTap: () => widget.cart.addQuantity(_code),
+        onTap: _add,
         child: Container(
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(10 * s),
@@ -2597,7 +2709,7 @@ class _ArticleRowState extends State<_ArticleRow> {
                               widget.price,
                               style: TextStyle(fontSize: 12 * s, color: sub),
                             ),
-                            if (inOrder) ...[
+                            if (inOrder && !several) ...[
                               SizedBox(width: 10 * s),
                               _QtyButton(onTap: _editQty),
                               SizedBox(width: 6 * s),
@@ -2632,7 +2744,7 @@ class _ArticleRowState extends State<_ArticleRow> {
                     ),
                     _StepButton(
                       icon: Icons.add,
-                      onTap: () => widget.cart.addQuantity(_code),
+                      onTap: _add,
                       scale: s,
                     ),
                   ],

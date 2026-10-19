@@ -232,6 +232,29 @@ class SettingsScreen extends ConsumerWidget {
                   ),
                 ),
                 const SizedBox(height: 18),
+                // Only under "Popis": that layout counts an article's units on
+                // one row, so it is the only one with a choice to make. The
+                // grid gives every tap its own entry by nature.
+                if (settings.orderEntryLayout == OrderEntryLayout.list) ...[
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          'Grupiraj artikle narudžbe',
+                          style: theme.textTheme.bodyLarge,
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Switch(
+                        value: settings.groupListUnits,
+                        onChanged: (v) => ref
+                            .read(settingsProvider.notifier)
+                            .setGroupListUnits(v),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 18),
+                ],
                 // Only where the venue has arranged the price list on the
                 // kasa. Without a layout there is nothing to follow, and the
                 // card stays exactly as it was.

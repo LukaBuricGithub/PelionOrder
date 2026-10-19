@@ -18,6 +18,7 @@ class SettingsState {
     this.menuViewSize = MenuViewSize.small,
     this.orderEntryLayout = OrderEntryLayout.grid,
     this.shouldGroupArticles = false,
+    this.groupListUnits = false,
     this.shouldAutoResend = false,
     this.useFloorPlan = false,
     this.followKasaMenu = true,
@@ -30,6 +31,11 @@ class SettingsState {
   /// How the order-entry screen is laid out on this phone.
   final OrderEntryLayout orderEntryLayout;
   final bool shouldGroupArticles;
+
+  /// "Grupiraj artikle narudžbe", the "Popis" layout's own setting: keep an
+  /// article's units on one line instead of sending them as separate entries.
+  /// Only ever acted on where [orderEntryLayout] is `list`.
+  final bool groupListUnits;
   final bool shouldAutoResend;
 
   /// Draw the venue's own floor plan instead of the generic grid. Only ever
@@ -41,11 +47,19 @@ class SettingsState {
   final bool followKasaMenu;
   final String? businessName;
 
+  /// Whether an article's units go out as separate entries — "Popis" with
+  /// "Grupiraj artikle narudžbe" off. The one place this rule is written down:
+  /// the grid is never split (each tap is already its own entry), and the
+  /// setting is meaningless outside "Popis".
+  bool get splitsOrderUnits =>
+      orderEntryLayout == OrderEntryLayout.list && !groupListUnits;
+
   SettingsState copyWith({
     TableViewSize? tableViewSize,
     MenuViewSize? menuViewSize,
     OrderEntryLayout? orderEntryLayout,
     bool? shouldGroupArticles,
+    bool? groupListUnits,
     bool? shouldAutoResend,
     bool? useFloorPlan,
     bool? followKasaMenu,
@@ -56,6 +70,7 @@ class SettingsState {
       menuViewSize: menuViewSize ?? this.menuViewSize,
       orderEntryLayout: orderEntryLayout ?? this.orderEntryLayout,
       shouldGroupArticles: shouldGroupArticles ?? this.shouldGroupArticles,
+      groupListUnits: groupListUnits ?? this.groupListUnits,
       shouldAutoResend: shouldAutoResend ?? this.shouldAutoResend,
       useFloorPlan: useFloorPlan ?? this.useFloorPlan,
       followKasaMenu: followKasaMenu ?? this.followKasaMenu,
@@ -73,6 +88,7 @@ class SettingsController extends StateNotifier<SettingsState> {
           menuViewSize: _storage.loadMenuViewSize(),
           orderEntryLayout: _storage.loadOrderEntryLayout(),
           shouldGroupArticles: _storage.loadShouldGroupArticles(),
+          groupListUnits: _storage.loadGroupListUnits(),
           shouldAutoResend: _storage.loadShouldAutoResend(),
           useFloorPlan: _storage.loadUseFloorPlan(),
           followKasaMenu: _storage.loadFollowKasaMenu(),
@@ -95,6 +111,11 @@ class SettingsController extends StateNotifier<SettingsState> {
   Future<void> setShouldGroupArticles(bool value) async {
     await _storage.saveShouldGroupArticles(value);
     state = state.copyWith(shouldGroupArticles: value);
+  }
+
+  Future<void> setGroupListUnits(bool value) async {
+    await _storage.saveGroupListUnits(value);
+    state = state.copyWith(groupListUnits: value);
   }
 
   Future<void> setOrderEntryLayout(OrderEntryLayout layout) async {

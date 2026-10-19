@@ -104,6 +104,30 @@ class MqttCart extends ChangeNotifier {
     incrementLine(i);
   }
 
+  /// One more of [code] that carries no napomena of its own.
+  ///
+  /// [addQuantity] raises the last line, which is right until that line has an
+  /// instruction on it: the new portion would then silently inherit "bez
+  /// šećera" from the one before it. When it does, this starts a clean line
+  /// directly after it instead, so a napomena is only ever added deliberately
+  /// — on the price-list row while the article is a single portion, or per
+  /// portion in "Detalji narudžbe".
+  void addPlainQuantity(int code) {
+    final i = lines.lastIndexWhere((l) => l.code == code);
+    if (i < 0) {
+      addLine(code);
+      return;
+    }
+    final last = lines[i];
+    if (last.remarkCodes.isEmpty && last.customNotes.isEmpty) {
+      incrementLine(i);
+      return;
+    }
+    // Next to the portion it follows, so the article's units stay together.
+    lines.insert(i + 1, MqttCartLine(code));
+    _touch();
+  }
+
   /// One fewer of [code]; at zero the article leaves the order. Works on the
   /// most recent line, so a cart built in the other layout degrades sensibly.
   void removeQuantity(int code) {
@@ -114,6 +138,26 @@ class MqttCart extends ChangeNotifier {
   /// The line [code] is ordered on, or -1. The napomene editor needs it: that
   /// editor works per line, while the "Popis" layout speaks per article.
   int lineIndexOf(int code) => lines.lastIndexWhere((l) => l.code == code);
+
+  /// One more of [code] as an entry of its own — "ne grupiraj artikle".
+  ///
+  /// Each press is a portion the kitchen reads on its own line, so it starts a
+  /// new line rather than raising the one before it, and never carries that
+  /// one's napomena. Inserted directly after the article's last entry, so its
+  /// portions stay together on the ticket even when other articles were
+  /// ordered in between.
+  ///
+  /// A quantity TYPED into the number pad is a quantity, not a count of
+  /// portions: one line of 3 is one entry of 3. Only + makes entries.
+  void addUnit(int code) {
+    final i = lines.lastIndexWhere((l) => l.code == code);
+    if (i < 0) {
+      addLine(code);
+      return;
+    }
+    lines.insert(i + 1, MqttCartLine(code));
+    _touch();
+  }
 
   /// Sets the quantity of [code] outright — what the number pad returns.
   ///

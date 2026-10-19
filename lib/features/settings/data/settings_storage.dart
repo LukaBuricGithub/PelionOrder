@@ -17,6 +17,7 @@ class SettingsStorage {
   static const _menuViewSizeKey = 'menu_view_size_v1';
   static const _orderEntryLayoutKey = 'order_entry_layout_v1';
   static const _shouldGroupArticlesKey = 'should_group_articles_v1';
+  static const _groupListUnitsKey = 'group_list_units_v1';
   static const _autoResendKey = 'auto_resend_orders_v1';
 
   /// Deliberately a NEW key, not the earlier `prefer_table_grid_v1`: that one
@@ -63,6 +64,21 @@ class SettingsStorage {
 
   Future<void> saveShouldGroupArticles(bool value) async {
     await _prefs.setBool(_shouldGroupArticlesKey, value);
+  }
+
+  /// "Grupiraj artikle narudžbe" — the "Popis" layout only.
+  ///
+  /// That layout counts units on one row, so an article ordered three times is
+  /// one line of three. **False** (the default) sends it as three entries of
+  /// one, the way the grid's three taps do; true leaves the single line.
+  ///
+  /// Deliberately its OWN key, and read only where the layout is `list`:
+  /// [loadShouldGroupArticles] drives the grid's merge at send time and must
+  /// keep meaning exactly what it means today.
+  bool loadGroupListUnits() => _prefs.getBool(_groupListUnitsKey) ?? false;
+
+  Future<void> saveGroupListUnits(bool value) async {
+    await _prefs.setBool(_groupListUnitsKey, value);
   }
 
   /// "Automatsko ponovno slanje": whether orders that didn't get through are
