@@ -32,6 +32,7 @@ import 'mqtt_kasa_silent_bar.dart';
 import 'mqtt_napomene.dart';
 import 'mqtt_order_details_screen.dart';
 import 'mqtt_qty_pad.dart';
+import 'mqtt_reorder_handle.dart';
 import 'mqtt_send_gate_bar.dart';
 
 /// Tile label size derived from the tile's ACTUAL width.
@@ -1546,12 +1547,7 @@ class _CartReorderTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    final dark = Theme.of(context).brightness == Brightness.dark;
     final s = scale;
-    // The navy of the reorder button, as a tint — the mode and the button that
-    // started it read as one thing, without a solid block on every row.
-    final handleBg = dark ? const Color(0xFF17253C) : const Color(0xFFDDE9F6);
-    final handleFg = dark ? const Color(0xFF4F8BE8) : const Color(0xFF2F6FB3);
 
     return Padding(
       padding: EdgeInsets.only(bottom: _kCartReorderGap * s),
@@ -1576,12 +1572,12 @@ class _CartReorderTile extends StatelessWidget {
                       10 * s,
                       10 * s,
                     ),
-                    // The whole name, wrapped if it needs two lines — this is
-                    // the only thing on the row.
+                    // The whole name, over as many lines as it needs — this is
+                    // the only thing on the row, and a waiter reordering a
+                    // ticket has to be able to tell two similar articles
+                    // apart, which a cut name defeats.
                     child: Text(
                       name,
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
                       style: TextStyle(
                         fontSize: 14 * s,
                         fontWeight: FontWeight.w600,
@@ -1589,20 +1585,7 @@ class _CartReorderTile extends StatelessWidget {
                     ),
                   ),
                 ),
-                // On the right, where the thumb holding the phone rests.
-                ReorderableDragStartListener(
-                  index: index,
-                  child: Container(
-                    width: 44 * s,
-                    color: handleBg,
-                    alignment: Alignment.center,
-                    child: Icon(
-                      Icons.drag_handle,
-                      size: 22 * s,
-                      color: handleFg,
-                    ),
-                  ),
-                ),
+                MqttReorderHandle(index: index, scale: s),
               ],
             ),
           ),
@@ -2644,15 +2627,15 @@ class _ArticleRowState extends State<_ArticleRow> {
     final inOrder = qty > 0;
     // The order holds this article as several portions, which may differ.
     //
-    // One row cannot speak for them: it reads and writes only the LAST of them,
-    // so the napomena button, the notes under the price and the number pad all
-    // step aside while there are several — a napomena belongs to a portion and
-    // is written per portion in "Detalji narudžbe", and "set the quantity to
-    // five" has no single meaning once three portions read differently. The
-    // stepper still counts the whole article, which is unambiguous.
+    // One row cannot speak for them — it reads and writes only the LAST of
+    // them — so the napomena button and the notes under the price step aside
+    // while there are several: a napomena belongs to a portion, and is written
+    // per portion in "Detalji narudžbe".
     //
-    // A single line is always ONE entry, whatever it counts — 3 pieces or
-    // 2.5 kg — so it keeps both controls and they stay exact.
+    // The stepper and the number pad stay put, by the user's decision: the pad
+    // must be reachable whenever an article is on the order, because anything
+    // sold by measure is typed rather than counted. With several portions it
+    // writes to the last of them.
     final several =
         widget.cart.lines.where((l) => l.code == _code).length > 1;
     final notes = (line == null || several)
@@ -2709,14 +2692,20 @@ class _ArticleRowState extends State<_ArticleRow> {
                               widget.price,
                               style: TextStyle(fontSize: 12 * s, color: sub),
                             ),
-                            if (inOrder && !several) ...[
+                            if (inOrder) ...[
                               SizedBox(width: 10 * s),
+                              // Always there once the article is on the order:
+                              // anything sold by measure is typed, not
+                              // counted, and a waiter must never have to hunt
+                              // for the pad.
                               _QtyButton(onTap: _editQty),
-                              SizedBox(width: 6 * s),
-                              _NoteButton(
-                                count: notes.length,
-                                onTap: _editRemarks,
-                              ),
+                              if (!several) ...[
+                                SizedBox(width: 6 * s),
+                                _NoteButton(
+                                  count: notes.length,
+                                  onTap: _editRemarks,
+                                ),
+                              ],
                             ],
                           ],
                         ),

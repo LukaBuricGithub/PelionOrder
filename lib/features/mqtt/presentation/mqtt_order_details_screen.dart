@@ -20,6 +20,7 @@ import 'mqtt_existing_items.dart';
 import 'mqtt_kasa_silent_bar.dart';
 import 'mqtt_napomene.dart';
 import 'mqtt_qty_pad.dart';
+import 'mqtt_reorder_handle.dart';
 import 'mqtt_send_gate_bar.dart';
 
 double _screenScale(BuildContext context) {
@@ -471,36 +472,47 @@ class _MqttOrderDetailsScreenState
                 children: [
                   Expanded(
                     child: _reordering
-                        ? ReorderableListView.builder(
-                            padding: const EdgeInsets.fromLTRB(12, 12, 12, 8),
-                            // The handle drags at once; the rest of a row after a
-                            // long press — so a plain vertical swipe on a row
-                            // still scrolls a long order.
-                            buildDefaultDragHandles: false,
-                            itemCount: lines.length,
-                            onReorderStart: (_) =>
-                                HapticFeedback.selectionClick(),
-                            onReorder: cart.moveLine,
-                            // The lifted row keeps its own rounded shape: the
-                            // default lift is a plain rectangle that also covers
-                            // the gap under the row.
-                            proxyDecorator: (child, index, animation) =>
-                                _ReorderProxy(
-                                  animation: animation,
-                                  child: child,
-                                ),
-                            itemBuilder: (context, i) {
-                              final line = lines[i];
-                              return _ReorderTile(
-                                key: ObjectKey(line),
-                                index: i,
-                                name: _name(line.code),
-                                qty: line.qty,
-                                lineTotal: money.format(
-                                  _price(line.code) * line.qty,
-                                ),
-                              );
-                            },
+                        // The row being dragged is drawn in the nearest
+                        // Overlay, and the app's own one spans the screen — so
+                        // a row could be dragged up over the app bar and down
+                        // over the total. Overlay.wrap puts an Overlay around
+                        // this list alone, clipping the lift to the list.
+                        //
+                        // Overlay.wrap, NOT a hand-built Overlay with
+                        // initialEntries: those entries are taken once, so the
+                        // list would keep rendering the order it had on its
+                        // first build and the rearranging would be lost.
+                        // Overlay.wrap rebuilds its entry on every build. The
+                        // same pairing is in Stol X's `_ReorderList`.
+                        ? Overlay.wrap(
+                            clipBehavior: Clip.hardEdge,
+                            child: ReorderableListView.builder(
+                              padding: const EdgeInsets.fromLTRB(12, 12, 12, 8),
+                              // The handle drags at once; the rest of a row
+                              // after a long press — so a plain vertical swipe
+                              // on a row still scrolls a long order.
+                              buildDefaultDragHandles: false,
+                              itemCount: lines.length,
+                              onReorderStart: (_) =>
+                                  HapticFeedback.selectionClick(),
+                              onReorder: cart.moveLine,
+                              // The lifted row keeps its own rounded shape: the
+                              // default lift is a plain rectangle that also
+                              // covers the gap under the row.
+                              proxyDecorator: (child, index, animation) =>
+                                  _ReorderProxy(
+                                    animation: animation,
+                                    child: child,
+                                  ),
+                              itemBuilder: (context, i) {
+                                final line = lines[i];
+                                return _ReorderTile(
+                                  key: ObjectKey(line),
+                                  index: i,
+                                  name: _name(line.code),
+                                );
+                              },
+                            ),
                           )
                         : showLoader
                         ? MqttExistingLoader(scale: s)
@@ -531,10 +543,11 @@ class _MqttOrderDetailsScreenState
                                 }
                                 final line = lines[i];
                                 return _LineTile(
-                                  // Keyed on the line OBJECT, not the index: the
-                                  // tile owns its expanded state, so an index
-                                  // key would leave the wrong row open after a
-                                  // move or a delete.
+                                  // Keyed on the line OBJECT, not the index, so
+                                  // a row keeps its identity through a move or
+                                  // a delete and nothing it owns — an open
+                                  // napomene sheet among it — follows the
+                                  // wrong line.
                                   key: ObjectKey(line),
                                   index: i,
                                   line: line,
@@ -614,12 +627,17 @@ class _MqttOrderDetailsScreenState
   }
 }
 
-/// One compact, expandable item row: quantity button · name · line total ·
-/// chevron. The chevron reveals the napomene (remarks) editor + delete.
+/// One item row: name · line total, then quantity · napomene · ✕.
 ///
-/// Unlike the order screen's cart line, this row keeps its napomene visible
-/// inline — this is the review-before-sending surface, and it has the width for
-/// it. Only the quantity control is shared with that screen.
+/// Nothing is hidden behind a disclosure. This is the review-before-sending
+/// surface, so the napomene — the thing a waiter opens it to check — are on the
+/// row, and so is the ✕ that removes the item. The row used to collapse to a
+/// chevron that revealed both; removing an item then cost two taps, the first
+/// of which did not look like deleting.
+///
+/// Height is unchanged for a line with no napomene: "Dodaj napomenu" rides the
+/// control line in its compact form. A line that HAS them spends one more line
+/// showing them, which is the right place for it.
 class _LineTile extends StatefulWidget {
   const _LineTile({
     super.key,
@@ -645,15 +663,27 @@ class _LineTile extends StatefulWidget {
 }
 
 class _LineTileState extends State<_LineTile> {
-  bool _expanded = false;
-
-  void _toggle() => setState(() => _expanded = !_expanded);
-
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final line = widget.line;
     final s = _screenScale(context);
+    // The line's napomene, each with how to take it off. Empty is the common
+    // case and decides the whole row: no chips line, and the compact "Dodaj
+    // napomenu" sits beside the quantity instead.
+    final chips = [
+      for (final c in line.remarkCodes)
+        MqttNoteChip(
+          label: _nameFor(c),
+          onRemove: () => widget.cart.toggleRemarkCode(widget.index, c),
+        ),
+      for (final n in line.customNotes)
+        MqttNoteChip(
+          label: n,
+          onRemove: () => widget.cart.removeCustomNote(widget.index, n),
+        ),
+    ];
+    final hasNotes = chips.isNotEmpty;
 
     return Padding(
       padding: EdgeInsets.only(bottom: 8 * s),
@@ -667,7 +697,12 @@ class _LineTileState extends State<_LineTile> {
         child: Column(
           children: [
             Padding(
-              padding: EdgeInsets.fromLTRB(12 * s, 7 * s, 6 * s, 4 * s),
+              padding: EdgeInsets.fromLTRB(
+                12 * s,
+                7 * s,
+                6 * s,
+                (hasNotes ? 8 : 4) * s,
+              ),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
@@ -675,17 +710,13 @@ class _LineTileState extends State<_LineTile> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Expanded(
-                        child: GestureDetector(
-                          onTap: _toggle,
-                          behavior: HitTestBehavior.opaque,
-                          child: Text(
-                            widget.name,
-                            maxLines: 2,
-                            overflow: TextOverflow.ellipsis,
-                            style: TextStyle(
-                              fontSize: 15 * s,
-                              fontWeight: FontWeight.w600,
-                            ),
+                        child: Text(
+                          widget.name,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: 15 * s,
+                            fontWeight: FontWeight.w600,
                           ),
                         ),
                       ),
@@ -716,73 +747,47 @@ class _LineTileState extends State<_LineTile> {
                         scale: s,
                         onTap: _editQty,
                       ),
+                      if (!hasNotes) ...[
+                        SizedBox(width: 6 * s),
+                        MqttAddNoteButton(
+                          scale: s,
+                          onTap: () => _editRemarks(context),
+                        ),
+                      ],
                       const Spacer(),
+                      // Where the chevron was, so the right end of this line
+                      // stays the row's own action — but on a full touch
+                      // target rather than the chevron's compact one, and
+                      // widened a little, which the row has the room for.
                       IconButton(
-                        onPressed: _toggle,
-                        visualDensity: VisualDensity.compact,
-                        icon: AnimatedRotation(
-                          turns: _expanded ? 0.5 : 0,
-                          duration: const Duration(milliseconds: 180),
-                          child: Icon(
-                            Icons.expand_more,
-                            size: 24 * s,
-                            color: scheme.onSurfaceVariant,
-                          ),
+                        onPressed: () => widget.cart.removeLine(widget.index),
+                        tooltip: 'Ukloni stavku',
+                        padding: EdgeInsets.zero,
+                        constraints: BoxConstraints(
+                          minWidth: 54 * s,
+                          minHeight: 48 * s,
+                        ),
+                        icon: Icon(
+                          Icons.close,
+                          size: 22 * s,
+                          color: scheme.error,
                         ),
                       ),
                     ],
                   ),
+                  // The napomene themselves, on the row: this screen exists to
+                  // be read before sending, and a note hidden behind a tap is
+                  // a note nobody checks.
+                  if (hasNotes)
+                    Padding(
+                      padding: EdgeInsets.only(top: 6 * s, right: 4 * s),
+                      child: MqttNoteRow(
+                        chips: chips,
+                        onOpen: () => _editRemarks(context),
+                      ),
+                    ),
                 ],
               ),
-            ),
-            AnimatedSize(
-              duration: const Duration(milliseconds: 180),
-              curve: Curves.easeOut,
-              alignment: Alignment.topCenter,
-              child: _expanded
-                  ? Padding(
-                      padding: EdgeInsets.fromLTRB(12 * s, 0, 10 * s, 6 * s),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          MqttNoteRow(
-                            chips: [
-                              for (final c in line.remarkCodes)
-                                MqttNoteChip(
-                                  label: _nameFor(c),
-                                  onRemove: () => widget.cart.toggleRemarkCode(
-                                    widget.index,
-                                    c,
-                                  ),
-                                ),
-                              for (final n in line.customNotes)
-                                MqttNoteChip(
-                                  label: n,
-                                  onRemove: () => widget.cart.removeCustomNote(
-                                    widget.index,
-                                    n,
-                                  ),
-                                ),
-                            ],
-                            onOpen: () => _editRemarks(context),
-                          ),
-                          Align(
-                            alignment: Alignment.centerRight,
-                            child: TextButton.icon(
-                              onPressed: () =>
-                                  widget.cart.removeLine(widget.index),
-                              style: TextButton.styleFrom(
-                                foregroundColor: scheme.error,
-                                visualDensity: VisualDensity.compact,
-                              ),
-                              icon: const Icon(Icons.delete_outline, size: 18),
-                              label: const Text('Ukloni stavku'),
-                            ),
-                          ),
-                        ],
-                      ),
-                    )
-                  : const SizedBox(width: double.infinity),
             ),
           ],
         ),
@@ -893,28 +898,25 @@ class _ReorderProxy extends StatelessWidget {
 /// Space under each row in reorder mode (unscaled).
 const double _kReorderGap = 8;
 
-/// One row in reorder mode: drag handle · name · ×qty · line total.
+/// One row in reorder mode: the article's full name · drag handle.
 ///
-/// Everything editable is deliberately absent — dragging is the only gesture
-/// on the row, so there is nothing for a drag to be confused with, and the rows
-/// stay short and uniform (more of the order on screen, predictable drop
-/// targets).
+/// Everything editable is deliberately absent — dragging is the only gesture on
+/// the row, so there is nothing for a drag to be confused with. So are the
+/// quantity and the amount: while the order is being rearranged the only
+/// question is which article goes where, and the same row in the order screen's
+/// grid layout carries nothing else either.
 ///
-/// The handle is a wide strip over the row's full height (drags at once); the
-/// rest of the row drags after a long press.
+/// The handle is a strip over the row's full height (drags at once); the rest
+/// of the row drags after a long press.
 class _ReorderTile extends StatelessWidget {
   const _ReorderTile({
     super.key,
     required this.index,
     required this.name,
-    required this.qty,
-    required this.lineTotal,
   });
 
   final int index;
   final String name;
-  final double qty;
-  final String lineTotal;
 
   @override
   Widget build(BuildContext context) {
@@ -936,19 +938,6 @@ class _ReorderTile extends StatelessWidget {
             child: Row(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                ReorderableDragStartListener(
-                  index: index,
-                  child: Container(
-                    width: 56 * s,
-                    color: scheme.primary.withValues(alpha: 0.08),
-                    alignment: Alignment.center,
-                    child: Icon(
-                      Icons.drag_handle,
-                      size: 26 * s,
-                      color: scheme.primary,
-                    ),
-                  ),
-                ),
                 Expanded(
                   child: Padding(
                     padding: EdgeInsets.fromLTRB(
@@ -957,44 +946,20 @@ class _ReorderTile extends StatelessWidget {
                       12 * s,
                       14 * s,
                     ),
-                    child: Row(
-                      children: [
-                        Expanded(
-                          child: Text(
-                            name,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: TextStyle(
-                              fontSize: 15 * s,
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                        ),
-                        SizedBox(width: 8 * s),
-                        Text(
-                          '×${formatQty(qty)}',
-                          style: TextStyle(
-                            fontSize: 14 * s,
-                            color: scheme.onSurfaceVariant,
-                          ),
-                        ),
-                        SizedBox(width: 10 * s),
-                        SizedBox(
-                          width: _kAmountBaseWidth * s,
-                          child: Text(
-                            lineTotal,
-                            textAlign: TextAlign.right,
-                            maxLines: 1,
-                            style: TextStyle(
-                              fontSize: 14 * s,
-                              fontWeight: FontWeight.w700,
-                            ),
-                          ),
-                        ),
-                      ],
+                    // The whole name, over as many lines as it needs: it is
+                    // the only thing left on the row, and a cut name is
+                    // exactly what stops a waiter telling two similar
+                    // articles apart while rearranging them.
+                    child: Text(
+                      name,
+                      style: TextStyle(
+                        fontSize: 15 * s,
+                        fontWeight: FontWeight.w600,
+                      ),
                     ),
                   ),
                 ),
+                MqttReorderHandle(index: index, scale: s),
               ],
             ),
           ),

@@ -73,6 +73,65 @@ class MqttNoteRow extends StatelessWidget {
   }
 }
 
+/// "Dodaj napomenu" in its COMPACT form, for a row that has no napomene yet
+/// and so has nothing to show on a line of its own: it rides the row's control
+/// line beside the quantity button instead, drawn to match it so the two read
+/// as a pair. Once the line HAS napomene, [MqttNoteRow]'s chips take over and
+/// bring their own add affordance.
+class MqttAddNoteButton extends StatelessWidget {
+  const MqttAddNoteButton({
+    super.key,
+    required this.scale,
+    required this.onTap,
+  });
+
+  final double scale;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final s = scale;
+
+    return Material(
+      color: Colors.transparent,
+      borderRadius: BorderRadius.circular(8 * s),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(8 * s),
+        child: Container(
+          height: 28 * s,
+          padding: EdgeInsets.symmetric(horizontal: 10 * s),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(8 * s),
+            border: Border.all(
+              color: scheme.outlineVariant.withValues(alpha: 0.7),
+            ),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                Icons.chat_bubble_outline,
+                size: 14 * s,
+                color: scheme.onSurfaceVariant,
+              ),
+              SizedBox(width: 6 * s),
+              Text(
+                'Dodaj napomenu',
+                style: TextStyle(
+                  fontSize: 12.5 * s,
+                  color: scheme.onSurfaceVariant,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _RemarkChip extends StatelessWidget {
   const _RemarkChip({
     required this.text,
