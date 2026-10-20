@@ -44,7 +44,7 @@ void main() {
   group('setting a quantity outright (the number pad)', () {
     test('enters a measure in one go, for things sold by weight', () {
       // 300 g of steak is typed once, not pressed three hundred times.
-      final cart = MqttCart()..setQuantityOf(101, 300);
+      final cart = MqttCart()..setTotalOf(101, 300);
       expect(cart.lines.length, 1);
       expect(cart.quantityOf(101), 300);
     });
@@ -52,7 +52,7 @@ void main() {
     test('replaces the quantity of an article already ordered', () {
       final cart = MqttCart()
         ..addQuantity(101)
-        ..setQuantityOf(101, 250);
+        ..setTotalOf(101, 250);
       expect(cart.quantityOf(101), 250);
       expect(cart.lines.length, 1);
     });
@@ -60,12 +60,12 @@ void main() {
     test('zero takes the article out of the order', () {
       final cart = MqttCart()
         ..addQuantity(101)
-        ..setQuantityOf(101, 0);
+        ..setTotalOf(101, 0);
       expect(cart.isEmpty, isTrue);
     });
 
     test('zero on an article that was never ordered adds nothing', () {
-      final cart = MqttCart()..setQuantityOf(101, 0);
+      final cart = MqttCart()..setTotalOf(101, 0);
       expect(cart.isEmpty, isTrue);
     });
   });

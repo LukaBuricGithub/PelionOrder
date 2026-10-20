@@ -2596,7 +2596,8 @@ class _ArticleRowState extends State<_ArticleRow> {
       initial: widget.cart.quantityOf(_code),
     );
     if (v == null || !mounted) return;
-    widget.cart.setQuantityOf(_code, v);
+    // The row shows the article's TOTAL, so that is what the pad sets.
+    widget.cart.setTotalOf(_code, v);
   }
 
   void _editRemarks() {
@@ -2714,27 +2715,42 @@ class _ArticleRowState extends State<_ArticleRow> {
                   ),
                   if (inOrder) ...[
                     SizedBox(width: 6 * s),
-                    _StepButton(
-                      icon: Icons.remove,
-                      onTap: () => widget.cart.removeQuantity(_code),
-                      scale: s,
-                    ),
-                    SizedBox(
-                      width: 42 * s,
-                      child: Text(
-                        formatQtyWithUnit(qty, ''),
-                        textAlign: TextAlign.center,
-                        style: TextStyle(
-                          fontSize: 15 * s,
-                          fontWeight: FontWeight.w700,
-                          color: text,
-                        ),
+                    // The stepper is its own island. Tapping the row adds one,
+                    // so a tap that lands in here but misses a button used to
+                    // fall through and add one — reaching for − and getting
+                    // +1 is the worst thing this screen can do. This absorbs
+                    // every tap inside the stepper: the buttons do their work,
+                    // and anything between or around them does nothing.
+                    GestureDetector(
+                      onTap: () {},
+                      behavior: HitTestBehavior.opaque,
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          _StepButton(
+                            icon: Icons.remove,
+                            onTap: () => widget.cart.removeQuantity(_code),
+                            scale: s,
+                          ),
+                          SizedBox(
+                            width: 42 * s,
+                            child: Text(
+                              formatQtyWithUnit(qty, ''),
+                              textAlign: TextAlign.center,
+                              style: TextStyle(
+                                fontSize: 15 * s,
+                                fontWeight: FontWeight.w700,
+                                color: text,
+                              ),
+                            ),
+                          ),
+                          _StepButton(
+                            icon: Icons.add,
+                            onTap: _add,
+                            scale: s,
+                          ),
+                        ],
                       ),
-                    ),
-                    _StepButton(
-                      icon: Icons.add,
-                      onTap: _add,
-                      scale: s,
                     ),
                   ],
                 ],
@@ -2818,10 +2834,16 @@ class _StepButton extends StatelessWidget {
     final fg = dark ? const Color(0xFFE3EAF2) : const Color(0xFF22303F);
     return InkResponse(
       onTap: onTap,
-      radius: 22 * scale,
-      child: Padding(
-        padding: EdgeInsets.symmetric(horizontal: 6 * scale, vertical: 4),
-        child: Icon(icon, size: 22 * scale, color: fg),
+      radius: 24 * scale,
+      // A real touch target rather than the glyph plus a few pixels: the row
+      // behind these buttons adds an item when tapped, so every pixel they
+      // don't claim is a chance to raise a quantity the waiter wanted lowered.
+      // It costs no row height — the name and price column beside it is
+      // taller.
+      child: SizedBox(
+        width: 44 * scale,
+        height: 44 * scale,
+        child: Center(child: Icon(icon, size: 22 * scale, color: fg)),
       ),
     );
   }

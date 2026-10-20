@@ -159,19 +159,48 @@ class MqttCart extends ChangeNotifier {
     _touch();
   }
 
-  /// Sets the quantity of [code] outright — what the number pad returns.
+  /// Makes the order hold exactly [q] of [code] — what the price-list row's
+  /// number pad returns.
   ///
-  /// Anything sold by weight or measure needs this: 300 g of steak is one
-  /// entry, not three hundred presses of +. Creates the line when the article
-  /// isn't in the order yet, and removes it at zero.
-  void setQuantityOf(int code, double q) {
-    final i = lines.lastIndexWhere((l) => l.code == code);
-    if (i >= 0) {
-      setQuantity(i, q);
+  /// Anything sold by weight or measure needs this: 300 g of steak is typed
+  /// once, not pressed three hundred times. Creates the line when the article
+  /// isn't in the order yet, and takes it out of the order at zero.
+  ///
+  /// The row speaks for the whole ARTICLE and shows the SUM of its lines, so
+  /// the number typed in is the total. It is adjusted from the END: the
+  /// difference lands on the article's last portion, and a decrease drops whole
+  /// portions off the back first, so the earlier ones — which may each carry a
+  /// napomena of their own — are left alone.
+  ///
+  /// It replaced a version that wrote to the last line and nothing else. That
+  /// was right while an article could only be on one line; once a press of +
+  /// started a portion of its own, three portions plus a typed 5 came out as
+  /// 1 + 1 + 5 = 7.
+  void setTotalOf(int code, double q) {
+    final mine = [
+      for (final l in lines)
+        if (l.code == code) l,
+    ];
+    if (mine.isEmpty) {
+      if (q <= 0) return;
+      lines.add(MqttCartLine(code)..qty = q);
+      _touch();
       return;
     }
-    if (q <= 0) return;
-    lines.add(MqttCartLine(code)..qty = q);
+    if (q <= 0) {
+      lines.removeWhere((l) => l.code == code);
+      _touch();
+      return;
+    }
+    var total = mine.fold(0.0, (s, l) => s + l.qty);
+    // Whole portions off the back while they alone already exceed the target.
+    while (mine.length > 1 && total - mine.last.qty >= q) {
+      total -= mine.last.qty;
+      lines.remove(mine.removeLast());
+    }
+    // Set, not added to: one line left means `q` exactly, with no rounding
+    // drift on a measure like 0,3.
+    mine.last.qty = q - (total - mine.last.qty);
     _touch();
   }
 

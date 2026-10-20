@@ -56,9 +56,90 @@ void main() {
 
     test('a typed quantity stays one entry — only + makes entries', () {
       final cart = MqttCart()..addUnit(101);
-      cart.setQuantityOf(101, 3);
+      cart.setTotalOf(101, 3);
       expect(cart.lines.length, 1, reason: '3 × KAVA, one line');
       expect(cart.lines.first.qty, 3);
+    });
+
+    group('the pad sets the TOTAL the row shows', () {
+      // The row speaks for the article and shows the sum of its portions, so
+      // the number typed in has to come back out of it. Writing to the last
+      // portion alone gave 1 + 1 + 5 = 7 on a row that read 3.
+      test('typing 5 over three portions leaves five, not seven', () {
+        final cart = MqttCart()
+          ..addUnit(101)
+          ..addUnit(101)
+          ..addUnit(101);
+        cart.setTotalOf(101, 5);
+        expect(cart.quantityOf(101), 5);
+      });
+
+      test('typing less drops whole portions off the back', () {
+        final cart = MqttCart()
+          ..addUnit(101)
+          ..addUnit(101)
+          ..addUnit(101);
+        cart.setTotalOf(101, 2);
+        expect(cart.quantityOf(101), 2);
+        expect(cart.lines.length, 2);
+      });
+
+      test('down to one portion', () {
+        final cart = MqttCart()
+          ..addUnit(101)
+          ..addUnit(101)
+          ..addUnit(101);
+        cart.setTotalOf(101, 1);
+        expect(cart.quantityOf(101), 1);
+        expect(cart.lines.length, 1);
+      });
+
+      test('the napomena on an earlier portion survives', () {
+        final cart = MqttCart()..addUnit(101);
+        cart
+          ..addCustomNote(0, 'bez šećera')
+          ..addUnit(101)
+          ..setTotalOf(101, 6);
+        expect(cart.quantityOf(101), 6);
+        expect(cart.lines.first.customNotes, ['bez šećera']);
+      });
+
+      test('shrinking past it keeps it, reduced', () {
+        final cart = MqttCart()..addUnit(101);
+        cart
+          ..addCustomNote(0, 'bez šećera')
+          ..addUnit(101)
+          ..addUnit(101)
+          ..setTotalOf(101, 1);
+        expect(cart.quantityOf(101), 1);
+        expect(cart.lines.single.customNotes, ['bez šećera']);
+      });
+
+      test('a measure lands exactly, with no rounding drift', () {
+        final cart = MqttCart()..addUnit(101);
+        cart.setTotalOf(101, 0.3);
+        expect(cart.quantityOf(101), 0.3);
+      });
+
+      test('other articles are untouched', () {
+        final cart = MqttCart()
+          ..addUnit(101)
+          ..addUnit(202)
+          ..addUnit(101);
+        cart.setTotalOf(101, 4);
+        expect(cart.quantityOf(101), 4);
+        expect(cart.quantityOf(202), 1);
+      });
+
+      test('zero clears every portion of the article', () {
+        final cart = MqttCart()
+          ..addUnit(101)
+          ..addUnit(101)
+          ..addUnit(202);
+        cart.setTotalOf(101, 0);
+        expect(cart.quantityOf(101), 0);
+        expect(cart.lines.map((l) => l.code).toList(), [202]);
+      });
     });
 
     test('− takes a portion away, and the last one empties the order', () {
